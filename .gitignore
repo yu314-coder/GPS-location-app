@@ -1,0 +1,22 @@
+# Xcode user data
+xcuserdata/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# Build output
+build/
+DerivedData/
+
+# CocoaPods / SPM
+Pods/
+.build/
+
+# Misc
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Claude Code
+.claude/

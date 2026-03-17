@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Location Services Permissions -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>We need your location to track your flight path and altitude during takeoff and climb.</string>
+
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Flight tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your flight.</string>
+
+    <key>NSLocationAlwaysUsageDescription</key>
+    <string>Flight tracking requires continuous location access to track your complete flight path from ground operations through initial climb.</string>
+
+    <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+    <dict>
+        <key>FullAccuracyTracking</key>
+        <string>We need full accuracy location to capture a precise GPS track during your flight.</string>
+    </dict>
+
+    <!-- HealthKit Permissions -->
+    <key>NSHealthShareUsageDescription</key>
+    <string>We need to read your health data to display your flight history from the Health app.</string>
+
+    <key>NSHealthUpdateUsageDescription</key>
+    <string>We need to save your flight workouts and routes to the Health app so they appear in your Fitness history.</string>
+
+    <!-- Motion & Fitness Permissions -->
+    <key>NSMotionUsageDescription</key>
+    <string>We use motion data to improve altitude tracking and flight metrics accuracy.</string>
+
+    <!-- Background Modes -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>location</string>
+        <string>processing</string>
+        <string>workout-processing</string>
+    </array>
+
+    <!-- Required Device Capabilities -->
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>location-services</string>
+        <string>gps</string>
+        <string>healthkit</string>
+    </array>
+
+    <!-- HealthKit Capability -->
+    <key>UIRequiresPersistentWiFi</key>
+    <false/>
+
+    <!-- App Configuration -->
+    <key>CFBundleDisplayName</key>
+    <string>Flight GPS Tracker</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <!-- Live Activities Support -->
+    <key>NSSupportsLiveActivities</key>
+    <true/>
+
+    <!-- Privacy - Allow arbitrary loads for development -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+    </dict>
+
+    <!-- Supported Interface Orientations -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+
+    <!-- Launch Screen -->
+    <key>UILaunchScreen</key>
+    <dict>
+        <key>UIImageName</key>
+        <string>LaunchImage</string>
+    </dict>
+
+    <!-- Files App Integration - Make Documents folder visible in Files app -->
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+
+    <!-- CarPlay Configuration -->
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <true/>
+        <key>UISceneConfigurations</key>
+        <dict>
+            <key>CPTemplateApplicationSceneSessionRoleApplication</key>
+            <array>
+                <dict>
+                    <key>UISceneConfigurationName</key>
+                    <string>CarPlay</string>
+                    <key>UISceneDelegateClassName</key>
+                    <string>$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate</string>
+                </dict>
+            </array>
+        </dict>
+    </dict>
+</dict>
+</plist>
