@@ -3,6 +3,33 @@ import WatchConnectivity
 import Combine
 import CoreLocation
 
+struct FlightCheckpointPayload: Codable {
+    let flightID: UUID
+    let startDate: Date
+    let endDate: Date?
+    let locations: [FlightLocation]
+    let locationStartIndex: Int
+    let totalLocationCount: Int
+    let metrics: FlightMetrics
+    let effort: Int?
+    let workoutType: UInt?
+    let isFinal: Bool
+}
+
+struct FlightCheckpointEnvelope: Codable {
+    let type: String
+    let payload: Data
+}
+
+struct IPhoneMotionAssist {
+    let acceleration: Double?
+    let horizontalAcceleration: Double?
+    let forwardAcceleration: Double?
+    let lateralAcceleration: Double?
+    let directionDegrees: Double?
+    let timestamp: Date
+}
+
 class WatchConnectivityManager: NSObject, ObservableObject {
     static let shared = WatchConnectivityManager()
 
@@ -21,6 +48,8 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     @Published var isUsingIPhoneGPS = false
     @Published var isIPhoneGPSRequestPending = false
     var onIPhoneLocationReceived: ((FlightLocation, IPhoneLocationFeedMode) -> Void)?
+    var onIPhoneMotionAccelerationReceived: ((Double, Date) -> Void)?
+    var onIPhoneMotionAssistReceived: ((IPhoneMotionAssist) -> Void)?
     private var dualSourceAssistEnabled = false
     var isDualSourceAssistEnabled: Bool { dualSourceAssistEnabled }
 
@@ -83,21 +112,82 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     }
 
     func transferFlightToPhone(_ flight: Flight) {
-        guard let session = session else { return }
+        transferFlightToPhone(flight, metadataType: "flight")
+    }
 
-        let fileName = "flight_transfer_\(flight.id.uuidString).json"
-        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+    @discardableResult
+    func transferFlightCheckpointToPhone(_ payload: FlightCheckpointPayload) -> Bool {
+        transferPayloadToPhone(payload, metadataType: "flightCheckpoint", flightID: payload.flightID, preferImmediateMessage: true)
+    }
+
+    private func transferFlightToPhone(_ flight: Flight, metadataType: String) {
+        _ = transferPayloadToPhone(flight, metadataType: metadataType, flightID: flight.id, preferImmediateMessage: false)
+    }
+
+    @discardableResult
+    private func transferPayloadToPhone<T: Encodable>(_ payload: T, metadataType: String, flightID: UUID, preferImmediateMessage: Bool) -> Bool {
+        guard let session = session else { return false }
 
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(flight)
+            let data = try encoder.encode(payload)
+
+            if metadataType == "flightCheckpoint" {
+                let pendingTransfers = session.outstandingFileTransfers.count
+                guard pendingTransfers < 3 else {
+                    print("⌚ ⚠️ Skipping checkpoint file transfer; \(pendingTransfers) file transfers already pending")
+                    return false
+                }
+
+                let fileURL = temporaryPayloadURL(metadataType: metadataType, flightID: flightID)
+                try data.write(to: fileURL, options: .atomic)
+                session.transferFile(fileURL, metadata: ["type": metadataType])
+                print("⌚ 📤 Queued durable \(metadataType) transfer to iPhone: \(flightID)")
+
+                if preferImmediateMessage, session.activationState == .activated, session.isReachable {
+                    let envelope = FlightCheckpointEnvelope(type: metadataType, payload: data)
+                    let envelopeData = try encoder.encode(envelope)
+                    session.sendMessageData(envelopeData, replyHandler: nil) { error in
+                        print("⌚ ❌ Immediate \(metadataType) message failed: \(error.localizedDescription)")
+                    }
+                    print("⌚ 📡 Sent immediate \(metadataType) message to iPhone: \(flightID), bytes=\(envelopeData.count)")
+                }
+
+                return true
+            }
+
+            if preferImmediateMessage, session.activationState == .activated, session.isReachable {
+                let envelope = FlightCheckpointEnvelope(type: metadataType, payload: data)
+                let envelopeData = try encoder.encode(envelope)
+                session.sendMessageData(envelopeData, replyHandler: nil) { error in
+                    print("⌚ ❌ Immediate \(metadataType) message failed: \(error.localizedDescription)")
+                }
+                print("⌚ 📡 Sent immediate \(metadataType) message to iPhone: \(flightID), bytes=\(envelopeData.count)")
+                return true
+            }
+
+            let pendingTransfers = session.outstandingFileTransfers.count
+            guard metadataType == "flight" || pendingTransfers < 1 else {
+                print("⌚ ⚠️ Skipping checkpoint file transfer; \(pendingTransfers) file transfer already pending")
+                return false
+            }
+
+            let fileURL = temporaryPayloadURL(metadataType: metadataType, flightID: flightID)
             try data.write(to: fileURL, options: .atomic)
-            session.transferFile(fileURL, metadata: ["type": "flight"])
-            print("⌚ 📤 Queued flight transfer to iPhone: \(flight.id)")
+            session.transferFile(fileURL, metadata: ["type": metadataType])
+            print("⌚ 📤 Queued \(metadataType) transfer to iPhone: \(flightID)")
+            return true
         } catch {
-            print("⌚ ❌ Failed to transfer flight to iPhone: \(error.localizedDescription)")
+            print("⌚ ❌ Failed to transfer \(metadataType) to iPhone: \(error.localizedDescription)")
+            return false
         }
+    }
+
+    private func temporaryPayloadURL(metadataType: String, flightID: UUID) -> URL {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let fileName = "\(metadataType)_\(flightID.uuidString)_\(timestamp)_\(UUID().uuidString).json"
+        return FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
     }
 
     // MARK: - iPhone GPS Fallback
@@ -277,6 +367,31 @@ extension WatchConnectivityManager: WCSessionDelegate {
         let timestamp = Date(timeIntervalSince1970: timestampInterval)
         let relaySource = message["relaySource"] as? String ?? "unknown"
         let usingRawRelayLocation = (message["usingRawRelayLocation"] as? Bool) ?? false
+        let motionAcceleration = message["motionAcceleration"] as? Double
+        let motionHorizontalAcceleration = message["motionHorizontalAcceleration"] as? Double
+        let motionForwardAcceleration = message["motionForwardAcceleration"] as? Double
+        let motionLateralAcceleration = message["motionLateralAcceleration"] as? Double
+        let motionDirectionDegrees = message["motionDirectionDegrees"] as? Double
+
+        if let acceleration = motionAcceleration {
+            onIPhoneMotionAccelerationReceived?(acceleration, timestamp)
+        }
+        if motionAcceleration != nil ||
+            motionHorizontalAcceleration != nil ||
+            motionForwardAcceleration != nil ||
+            motionLateralAcceleration != nil ||
+            motionDirectionDegrees != nil {
+            onIPhoneMotionAssistReceived?(
+                IPhoneMotionAssist(
+                    acceleration: motionAcceleration,
+                    horizontalAcceleration: motionHorizontalAcceleration,
+                    forwardAcceleration: motionForwardAcceleration,
+                    lateralAcceleration: motionLateralAcceleration,
+                    directionDegrees: motionDirectionDegrees,
+                    timestamp: timestamp
+                )
+            )
+        }
 
         // Create CLLocation from iPhone GPS data
         let clLocation = CLLocation(

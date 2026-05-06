@@ -26,6 +26,8 @@ struct AnalysisView: View {
                     if analytics.isLoading {
                         ProgressView("Loading data...")
                             .frame(maxWidth: .infinity, minHeight: isIPad ? 300 : 200)
+                    } else if analytics.isAllTimeSelected {
+                        AllTimeDistanceChartView(analytics: analytics)
                     } else if isIPad {
                         // iPad: charts side by side
                         HStack(alignment: .top, spacing: 16) {
@@ -49,6 +51,12 @@ struct AnalysisView: View {
                 analytics.fetchData()
             }
             .onChange(of: analytics.selectedYear) {
+                analytics.fetchData()
+            }
+            .onChange(of: analytics.isAllTimeSelected) {
+                analytics.fetchData()
+            }
+            .onChange(of: analytics.allTimeYearFilter) {
                 analytics.fetchData()
             }
             .onChange(of: analytics.activityFilter) {

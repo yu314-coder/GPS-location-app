@@ -153,6 +153,62 @@ class FlightDataStore: ObservableObject {
         }
     }
 
+    func mergeFlightCheckpoint(_ checkpoint: FlightCheckpointPayload) {
+        var mergedFlight = loadFlightDetails(id: checkpoint.flightID) ?? Flight(
+            id: checkpoint.flightID,
+            startDate: checkpoint.startDate
+        )
+
+        mergedFlight.startDate = checkpoint.startDate
+        mergedFlight.endDate = checkpoint.endDate
+        mergedFlight.metrics = mergeMetrics(existing: mergedFlight.metrics, checkpoint: checkpoint.metrics)
+        mergedFlight.effort = checkpoint.effort
+        mergedFlight.workoutType = checkpoint.workoutType
+
+        if checkpoint.locationStartIndex <= mergedFlight.locations.count {
+            if checkpoint.locationStartIndex < mergedFlight.locations.count {
+                mergedFlight.locations.removeSubrange(checkpoint.locationStartIndex..<mergedFlight.locations.count)
+            }
+            mergedFlight.locations.append(contentsOf: checkpoint.locations)
+        } else {
+            print("📱 ⚠️ Watch checkpoint gap: local=\(mergedFlight.locations.count), incomingStart=\(checkpoint.locationStartIndex)")
+            mergedFlight.locations.append(contentsOf: checkpoint.locations)
+            mergedFlight.locations.sort { $0.timestamp < $1.timestamp }
+        }
+
+        saveFlightIncremental(mergedFlight, metrics: mergedFlight.metrics ?? checkpoint.metrics)
+    }
+
+    private func mergeMetrics(existing: FlightMetrics?, checkpoint: FlightMetrics) -> FlightMetrics {
+        guard var existing else {
+            return checkpoint
+        }
+
+        let existingSpeedHistory = existing.speedHistory
+        let existingAltitudeHistory = existing.altitudeHistory
+        let existingPressureHistory = existing.pressureHistory
+        let existingAccelerationHistory = existing.accelerationHistory ?? []
+        let existingMotionAccelerationHistory = existing.motionAccelerationHistory ?? []
+        let existingAttitudeHistory = existing.attitudeHistory ?? []
+        let existingRotationRateHistory = existing.rotationRateHistory ?? []
+        let existingCompassHeadingHistory = existing.compassHeadingHistory ?? []
+        let existingBarometricAltitudeHistory = existing.barometricAltitudeHistory ?? []
+        let existingGPSQualityHistory = existing.gpsQualityHistory ?? []
+
+        existing = checkpoint
+        existing.speedHistory = existingSpeedHistory + checkpoint.speedHistory
+        existing.altitudeHistory = existingAltitudeHistory + checkpoint.altitudeHistory
+        existing.pressureHistory = existingPressureHistory + checkpoint.pressureHistory
+        existing.accelerationHistory = existingAccelerationHistory + (checkpoint.accelerationHistory ?? [])
+        existing.motionAccelerationHistory = existingMotionAccelerationHistory + (checkpoint.motionAccelerationHistory ?? [])
+        existing.attitudeHistory = existingAttitudeHistory + (checkpoint.attitudeHistory ?? [])
+        existing.rotationRateHistory = existingRotationRateHistory + (checkpoint.rotationRateHistory ?? [])
+        existing.compassHeadingHistory = existingCompassHeadingHistory + (checkpoint.compassHeadingHistory ?? [])
+        existing.barometricAltitudeHistory = existingBarometricAltitudeHistory + (checkpoint.barometricAltitudeHistory ?? [])
+        existing.gpsQualityHistory = existingGPSQualityHistory + (checkpoint.gpsQualityHistory ?? [])
+        return existing
+    }
+
     func deleteFlight(_ flight: Flight) {
         print("🗑️ Deleting flight: \(flight.id)")
         runOnMain {

@@ -84,6 +84,50 @@ struct YearChip: View {
     }
 }
 
+// MARK: - All Time Chip
+
+struct AllTimeChip: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                Text("All Time")
+            }
+            .font(.subheadline)
+            .fontWeight(isSelected ? .bold : .medium)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(isSelected ? Color.cyan : Color(.secondarySystemGroupedBackground))
+            .foregroundColor(isSelected ? .white : .primary)
+            .cornerRadius(20)
+        }
+    }
+}
+
+// MARK: - All Time Range Chip
+
+struct AllTimeRangeChip: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(isSelected ? .bold : .medium)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(isSelected ? Color.blue : Color(.tertiarySystemGroupedBackground))
+                .foregroundColor(isSelected ? .white : .primary)
+                .cornerRadius(16)
+        }
+    }
+}
+
 // MARK: - Month/Year/Activity Picker Section
 
 struct MonthActivityPickerSection: View {
@@ -91,7 +135,7 @@ struct MonthActivityPickerSection: View {
 
     private var availableYears: [Int] {
         let currentYear = Calendar.current.component(.year, from: Date())
-        return Array((currentYear - 4)...currentYear).reversed()
+        return Array((currentYear - 10)...currentYear).reversed()
     }
 
     var body: some View {
@@ -99,12 +143,20 @@ struct MonthActivityPickerSection: View {
             // Year picker
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    AllTimeChip(isSelected: analytics.isAllTimeSelected) {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            analytics.isAllTimeSelected = true
+                            analytics.allTimeYearFilter = nil
+                        }
+                    }
+
                     ForEach(availableYears, id: \.self) { year in
                         YearChip(
                             year: year,
-                            isSelected: analytics.selectedYear == year
+                            isSelected: !analytics.isAllTimeSelected && analytics.selectedYear == year
                         ) {
                             withAnimation(.easeInOut(duration: 0.3)) {
+                                analytics.isAllTimeSelected = false
                                 analytics.selectedYear = year
                             }
                         }
@@ -113,21 +165,48 @@ struct MonthActivityPickerSection: View {
                 .padding(.horizontal, 4)
             }
 
-            // Month picker - horizontal scroll
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(1...12, id: \.self) { month in
-                        MonthChip(
-                            month: month,
-                            isSelected: analytics.selectedMonth == month
+            if analytics.isAllTimeSelected {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        AllTimeRangeChip(
+                            title: "All",
+                            isSelected: analytics.allTimeYearFilter == nil
                         ) {
                             withAnimation(.easeInOut(duration: 0.3)) {
-                                analytics.selectedMonth = month
+                                analytics.allTimeYearFilter = nil
+                            }
+                        }
+
+                        ForEach(availableYears, id: \.self) { year in
+                            AllTimeRangeChip(
+                                title: String(year),
+                                isSelected: analytics.allTimeYearFilter == year
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    analytics.allTimeYearFilter = year
+                                }
                             }
                         }
                     }
+                    .padding(.horizontal, 4)
                 }
-                .padding(.horizontal, 4)
+            } else {
+                // Month picker - horizontal scroll
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(1...12, id: \.self) { month in
+                            MonthChip(
+                                month: month,
+                                isSelected: analytics.selectedMonth == month
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    analytics.selectedMonth = month
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
             }
 
             // Activity filter
@@ -189,8 +268,64 @@ struct SummaryStatsSection: View {
         )
     }
 
+    private var allTimeCard: some View {
+        AnalysisStatCard(
+            title: analytics.allTimeRangeTitle,
+            value: String(format: "%.0f km", analytics.allTimeTotalKm),
+            color: .blue,
+            isIPad: isIPad
+        )
+    }
+
+    private var allTimeWorkoutCard: some View {
+        AnalysisStatCard(
+            title: "Workouts",
+            value: "\(analytics.allTimeWorkoutCount)",
+            color: .green,
+            isIPad: isIPad
+        )
+    }
+
+    private var allTimeBestYearCard: some View {
+        AnalysisStatCard(
+            title: "Best Year",
+            value: String(format: "%.0f km", analytics.allTimeBestYearKm),
+            color: .cyan,
+            isIPad: isIPad
+        )
+    }
+
+    private var allTimeAverageCard: some View {
+        AnalysisStatCard(
+            title: "Avg / Year",
+            value: String(format: "%.0f km", analytics.allTimeAverageYearKm),
+            color: .orange,
+            isIPad: isIPad
+        )
+    }
+
     var body: some View {
-        if isIPad {
+        if analytics.isAllTimeSelected {
+            if isIPad {
+                HStack(spacing: 12) {
+                    allTimeCard
+                    allTimeWorkoutCard
+                    allTimeBestYearCard
+                    allTimeAverageCard
+                }
+            } else {
+                VStack(spacing: 8) {
+                    HStack(spacing: 12) {
+                        allTimeCard
+                        allTimeWorkoutCard
+                    }
+                    HStack(spacing: 12) {
+                        allTimeBestYearCard
+                        allTimeAverageCard
+                    }
+                }
+            }
+        } else if isIPad {
             // iPad: all 4 cards in a single row
             HStack(spacing: 12) {
                 monthCard

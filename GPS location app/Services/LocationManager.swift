@@ -10,6 +10,7 @@ class LocationManager: NSObject, ObservableObject {
     private let kalmanFilter = KalmanFilterEngine()
     private let dataValidator = DataValidator()
     private let altimeter = CMAltimeter()
+    private let motionManager = CMMotionManager()
 
     @Published var currentLocation: CLLocation?
     @Published var latestRawLocation: CLLocation?
@@ -19,11 +20,28 @@ class LocationManager: NSObject, ObservableObject {
     @Published var gpsSignalQuality: GPSSignalQuality = .unknown
     @Published var locationSource: LocationSource = .unknown
     @Published var currentPressure: Double? // in kilopascals (kPa)
+    @Published var currentMotionAcceleration: Double? // in m/s², gravity removed
+    @Published var currentPitch: Double? // degrees
+    @Published var currentRoll: Double? // degrees
+    @Published var currentYaw: Double? // degrees
+    @Published var currentRotationRate: Double? // rad/s magnitude
+    @Published var currentCompassHeading: Double? // degrees
+    @Published var currentMotionHorizontalAcceleration: Double? // in m/s², gravity removed
+    @Published var currentMotionForwardAcceleration: Double? // in m/s² along current travel direction
+    @Published var currentMotionLateralAcceleration: Double? // in m/s² sideways to current travel direction
+    @Published var currentMotionDirectionDegrees: Double? // degrees, estimated movement direction
+    @Published var currentRelativeAltitude: Double? // in meters from altimeter start
+    @Published var currentVerticalSpeed: Double? // in m/s
 
     var onLocationUpdate: ((FlightLocation) -> Void)?
+    var onMotionAccelerationUpdate: ((Double, Double?, Double?, Double?, Double?, Double?, Double?, Double?, Double?, Double?, Date) -> Void)?
+    var onCompassHeadingUpdate: ((Double, Date) -> Void)?
+    var onBarometricAltitudeUpdate: ((Double, Double?, Date) -> Void)?
 
     // Pressure tracking
     private var latestPressure: Double?
+    private var lastRelativeAltitudeSample: (altitude: Double, timestamp: Date)?
+    private let standardGravity = 9.80665
 
     // GPS reconnection logic
     private var gpsTimeoutTimer: Timer?
@@ -128,6 +146,9 @@ class LocationManager: NSObject, ObservableObject {
 
         print("   Calling CLLocationManager.startUpdatingLocation()...")
         locationManager.startUpdatingLocation()
+        if CLLocationManager.headingAvailable() {
+            locationManager.startUpdatingHeading()
+        }
         if authorizationStatus == .authorizedAlways {
             locationManager.startMonitoringSignificantLocationChanges()
             print("   Significant-change monitoring: Active (relaunch safety)")
@@ -144,6 +165,9 @@ class LocationManager: NSObject, ObservableObject {
 
         // Start pressure tracking
         startPressureTracking()
+
+        // Start device-motion acceleration recording. This is metrics-only and does not drive detection.
+        startMotionTracking()
 
         print("✅ Started GPS tracking with WiFi/Cellular fallback")
         print("   isTracking: \(isTracking)")
@@ -176,6 +200,7 @@ class LocationManager: NSObject, ObservableObject {
 
         print("   Calling CLLocationManager.stopUpdatingLocation()...")
         locationManager.stopUpdatingLocation()
+        locationManager.stopUpdatingHeading()
         locationManager.stopMonitoringSignificantLocationChanges()
 
         // Clean up timers
@@ -191,6 +216,9 @@ class LocationManager: NSObject, ObservableObject {
 
         // Stop pressure tracking
         stopPressureTracking()
+
+        // Stop motion tracking
+        stopMotionTracking()
 
         // Restore high accuracy mode for next session
         if #available(iOS 15.0, *) {
@@ -496,11 +524,25 @@ class LocationManager: NSObject, ObservableObject {
             // Convert pressure from kPa to hPa (hectopascals/millibars) for display
             // CMAltitudeData.pressure is in kilopascals (kPa)
             let pressureKPa = data.pressure.doubleValue
+            let relativeAltitude = data.relativeAltitude.doubleValue
+            let timestamp = Date()
 
             self.latestPressure = pressureKPa
+            self.onBarometricAltitudeUpdate?(relativeAltitude, pressureKPa, timestamp)
+
+            var verticalSpeed: Double?
+            if let previous = self.lastRelativeAltitudeSample {
+                let timeDelta = timestamp.timeIntervalSince(previous.timestamp)
+                if timeDelta > 0.2 {
+                    verticalSpeed = (relativeAltitude - previous.altitude) / timeDelta
+                }
+            }
+            self.lastRelativeAltitudeSample = (relativeAltitude, timestamp)
 
             DispatchQueue.main.async {
                 self.currentPressure = pressureKPa
+                self.currentRelativeAltitude = relativeAltitude
+                self.currentVerticalSpeed = verticalSpeed
             }
         }
     }
@@ -508,10 +550,145 @@ class LocationManager: NSObject, ObservableObject {
     private func stopPressureTracking() {
         altimeter.stopRelativeAltitudeUpdates()
         latestPressure = nil
+        lastRelativeAltitudeSample = nil
         DispatchQueue.main.async { [weak self] in
             self?.currentPressure = nil
+            self?.currentRelativeAltitude = nil
+            self?.currentVerticalSpeed = nil
         }
         print("🌡️ Stopped barometric pressure tracking")
+    }
+
+    // MARK: - Motion Tracking
+
+    private func startMotionTracking() {
+        guard motionManager.isDeviceMotionAvailable else {
+            print("⚠️ Device motion acceleration not available on this device")
+            return
+        }
+
+        motionManager.deviceMotionUpdateInterval = 0.5
+        print("📈 Starting device-motion acceleration recording")
+
+        let referenceFrame: CMAttitudeReferenceFrame = CMMotionManager.availableAttitudeReferenceFrames().contains(.xMagneticNorthZVertical)
+            ? .xMagneticNorthZVertical
+            : .xArbitraryZVertical
+
+        motionManager.startDeviceMotionUpdates(using: referenceFrame, to: .main) { [weak self] motion, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                print("❌ Device motion error: \(error.localizedDescription)")
+                return
+            }
+
+            guard let motion else { return }
+            let userAcceleration = motion.userAcceleration
+            let acceleration = sqrt(
+                pow(userAcceleration.x, 2) +
+                pow(userAcceleration.y, 2) +
+                pow(userAcceleration.z, 2)
+            ) * self.standardGravity
+            let accelerationX = userAcceleration.x * self.standardGravity
+            let accelerationY = userAcceleration.y * self.standardGravity
+            let accelerationZ = userAcceleration.z * self.standardGravity
+            let referenceAcceleration = self.referenceFrameAcceleration(from: motion)
+            let horizontalAcceleration = sqrt(
+                referenceAcceleration.north * referenceAcceleration.north +
+                referenceAcceleration.east * referenceAcceleration.east
+            )
+            let movementDirection = self.currentLocation?.course ?? self.currentCompassHeading ?? (
+                horizontalAcceleration > 0.05
+                    ? self.normalizedDegrees(atan2(referenceAcceleration.east, referenceAcceleration.north) * 180 / .pi)
+                    : nil
+            )
+            let projectedAcceleration = self.projectAcceleration(
+                north: referenceAcceleration.north,
+                east: referenceAcceleration.east,
+                directionDegrees: movementDirection
+            )
+            let pitch = motion.attitude.pitch * 180 / .pi
+            let roll = motion.attitude.roll * 180 / .pi
+            let yaw = motion.attitude.yaw * 180 / .pi
+            let rotationRate = motion.rotationRate
+            let rotationMagnitude = sqrt(
+                pow(rotationRate.x, 2) +
+                pow(rotationRate.y, 2) +
+                pow(rotationRate.z, 2)
+            )
+            let timestamp = Date()
+
+            self.currentMotionAcceleration = acceleration
+            self.currentPitch = pitch
+            self.currentRoll = roll
+            self.currentYaw = yaw
+            self.currentRotationRate = rotationMagnitude
+            self.currentMotionHorizontalAcceleration = horizontalAcceleration
+            self.currentMotionForwardAcceleration = projectedAcceleration.forward
+            self.currentMotionLateralAcceleration = projectedAcceleration.lateral
+            self.currentMotionDirectionDegrees = movementDirection
+            self.onMotionAccelerationUpdate?(
+                acceleration,
+                accelerationX,
+                accelerationY,
+                accelerationZ,
+                pitch,
+                roll,
+                yaw,
+                rotationRate.x,
+                rotationRate.y,
+                rotationRate.z,
+                timestamp
+            )
+        }
+    }
+
+    private func stopMotionTracking() {
+        motionManager.stopDeviceMotionUpdates()
+        DispatchQueue.main.async { [weak self] in
+            self?.currentMotionAcceleration = nil
+            self?.currentPitch = nil
+            self?.currentRoll = nil
+            self?.currentYaw = nil
+            self?.currentRotationRate = nil
+            self?.currentCompassHeading = nil
+            self?.currentMotionHorizontalAcceleration = nil
+            self?.currentMotionForwardAcceleration = nil
+            self?.currentMotionLateralAcceleration = nil
+            self?.currentMotionDirectionDegrees = nil
+        }
+        print("📈 Stopped device-motion acceleration recording")
+    }
+
+    private func referenceFrameAcceleration(from motion: CMDeviceMotion) -> (north: Double, east: Double, up: Double) {
+        let acceleration = motion.userAcceleration
+        let matrix = motion.attitude.rotationMatrix
+
+        // Convert gravity-free device acceleration into the motion reference frame.
+        let north = (acceleration.x * matrix.m11 + acceleration.y * matrix.m21 + acceleration.z * matrix.m31) * standardGravity
+        let east = (acceleration.x * matrix.m12 + acceleration.y * matrix.m22 + acceleration.z * matrix.m32) * standardGravity
+        let up = (acceleration.x * matrix.m13 + acceleration.y * matrix.m23 + acceleration.z * matrix.m33) * standardGravity
+        return (north, east, up)
+    }
+
+    private func projectAcceleration(
+        north: Double,
+        east: Double,
+        directionDegrees: Double?
+    ) -> (forward: Double?, lateral: Double?) {
+        guard let directionDegrees else {
+            return (nil, nil)
+        }
+
+        let radians = directionDegrees * .pi / 180
+        let forward = north * cos(radians) + east * sin(radians)
+        let lateral = -north * sin(radians) + east * cos(radians)
+        return (forward, lateral)
+    }
+
+    private func normalizedDegrees(_ degrees: Double) -> Double {
+        let value = degrees.truncatingRemainder(dividingBy: 360)
+        return value >= 0 ? value : value + 360
     }
 
     // MARK: - GPS Reconnection Logic
@@ -586,6 +763,14 @@ extension LocationManager: CLLocationManagerDelegate {
         }
 
         processLocation(location)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        guard heading >= 0 else { return }
+
+        currentCompassHeading = heading
+        onCompassHeadingUpdate?(heading, Date())
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

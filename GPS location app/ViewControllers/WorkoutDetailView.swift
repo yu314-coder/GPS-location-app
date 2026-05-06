@@ -184,6 +184,46 @@ struct WorkoutDetailView: View {
                             color: .red
                         )
 
+                        if metrics.maxAcceleration != nil {
+                            DetailMetricCard(
+                                icon: "gauge.with.dots.needle.67percent",
+                                title: "Max Accel",
+                                value: String(format: "%.1f", metrics.maxAccelerationKmhPerSecond),
+                                unit: "km/h/s",
+                                color: .pink
+                            )
+                        }
+
+                        if let motionAcceleration = metrics.maxMotionAcceleration {
+                            DetailMetricCard(
+                                icon: "waveform.path.ecg",
+                                title: "Motion Accel",
+                                value: String(format: "%.2f", motionAcceleration),
+                                unit: "m/s²",
+                                color: .pink
+                            )
+                        }
+
+                        if let heading = metrics.currentCompassHeading {
+                            DetailMetricCard(
+                                icon: "safari.fill",
+                                title: "Last Heading",
+                                value: String(format: "%.0f", heading),
+                                unit: "°",
+                                color: .indigo
+                            )
+                        }
+
+                        if let rotation = metrics.maxRotationRate {
+                            DetailMetricCard(
+                                icon: "rotate.3d",
+                                title: "Max Rotation",
+                                value: String(format: "%.2f", rotation),
+                                unit: "rad/s",
+                                color: .purple
+                            )
+                        }
+
                         DetailMetricCard(
                             icon: "mountain.2.fill",
                             title: "Max Altitude",
@@ -191,6 +231,26 @@ struct WorkoutDetailView: View {
                             unit: "m",
                             color: .purple
                         )
+
+                        if let gpsQuality = metrics.averageGPSQualityScore {
+                            DetailMetricCard(
+                                icon: "location.magnifyingglass",
+                                title: "GPS Quality",
+                                value: String(format: "%.0f", gpsQuality),
+                                unit: "/100",
+                                color: gpsQuality >= 80 ? .green : gpsQuality >= 50 ? .orange : .red
+                            )
+                        }
+
+                        if let climbRate = metrics.maxClimbRate {
+                            DetailMetricCard(
+                                icon: "arrow.up.right",
+                                title: "Max Climb",
+                                value: String(format: "%.0f", climbRate * 60.0),
+                                unit: "m/min",
+                                color: .teal
+                            )
+                        }
 
                         DetailMetricCard(
                             icon: "flame.fill",
@@ -216,7 +276,13 @@ struct WorkoutDetailView: View {
                     Divider()
 
                     // No GPS Data Message
-                    if metrics.speedHistory.isEmpty && metrics.altitudeHistory.isEmpty && activeFlight.locations.isEmpty {
+                    if metrics.speedHistory.isEmpty &&
+                        metrics.altitudeHistory.isEmpty &&
+                        (metrics.accelerationHistory ?? []).isEmpty &&
+                        (metrics.motionAccelerationHistory ?? []).isEmpty &&
+                        (metrics.barometricAltitudeHistory ?? []).isEmpty &&
+                        (metrics.gpsQualityHistory ?? []).isEmpty &&
+                        activeFlight.locations.isEmpty {
                         VStack(spacing: 16) {
                             Image(systemName: "chart.line.uptrend.xyaxis")
                                 .font(.system(size: 50))
@@ -249,7 +315,12 @@ struct WorkoutDetailView: View {
                     }
 
                     // Graphs Section
-                    if !metrics.speedHistory.isEmpty || !metrics.altitudeHistory.isEmpty {
+                    if !metrics.speedHistory.isEmpty ||
+                        !metrics.altitudeHistory.isEmpty ||
+                        !(metrics.accelerationHistory ?? []).isEmpty ||
+                        !(metrics.motionAccelerationHistory ?? []).isEmpty ||
+                        !(metrics.barometricAltitudeHistory ?? []).isEmpty ||
+                        !(metrics.gpsQualityHistory ?? []).isEmpty {
                         VStack(alignment: .leading, spacing: 20) {
                             Text("Activity Graphs")
                                 .font(.headline)
@@ -267,6 +338,92 @@ struct WorkoutDetailView: View {
                                     if #available(iOS 16.0, *) {
                                         SpeedChartView(speedHistory: metrics.speedHistory, maxSpeed: metrics.maxSpeed)
                                             .frame(height: 200)
+                                            .padding(.horizontal)
+                                    }
+                                }
+                            }
+
+                            // Acceleration Graph
+                            if let accelerationHistory = metrics.accelerationHistory, !accelerationHistory.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Acceleration")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
+
+                                    if #available(iOS 16.0, *) {
+                                        AccelerationChartView(
+                                            accelerationHistory: accelerationHistory,
+                                            maxAcceleration: metrics.maxAcceleration ?? 0,
+                                            maxDeceleration: metrics.maxDeceleration ?? 0
+                                        )
+                                        .frame(height: 200)
+                                        .padding(.horizontal)
+                                    }
+                                }
+                            }
+
+                            // Device Motion Acceleration Graph
+                            if let motionAccelerationHistory = metrics.motionAccelerationHistory, !motionAccelerationHistory.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Device Motion Acceleration")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
+
+                                    if #available(iOS 16.0, *) {
+                                        MotionAccelerationChartView(motionAccelerationHistory: motionAccelerationHistory)
+                                            .frame(height: 600)
+                                            .padding(.horizontal)
+                                    }
+                                }
+                            }
+
+                            if let attitudeHistory = metrics.attitudeHistory, !attitudeHistory.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Attitude / Orientation")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
+
+                                    if #available(iOS 16.0, *) {
+                                        AttitudeChartView(attitudeHistory: attitudeHistory)
+                                            .frame(height: 450)
+                                            .padding(.horizontal)
+                                    }
+                                }
+                            }
+
+                            if let rotationRateHistory = metrics.rotationRateHistory, !rotationRateHistory.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Rotation Rate")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
+
+                                    if #available(iOS 16.0, *) {
+                                        RotationRateChartView(rotationRateHistory: rotationRateHistory)
+                                            .frame(height: 600)
+                                            .padding(.horizontal)
+                                    }
+                                }
+                            }
+
+                            if let compassHeadingHistory = metrics.compassHeadingHistory, !compassHeadingHistory.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Compass Heading")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
+
+                                    if #available(iOS 16.0, *) {
+                                        CompassHeadingChartView(compassHeadingHistory: compassHeadingHistory)
+                                            .frame(height: 160)
                                             .padding(.horizontal)
                                     }
                                 }
@@ -293,6 +450,23 @@ struct WorkoutDetailView: View {
                                 }
                             }
 
+                            // Barometric Altitude Graph
+                            if let barometricAltitudeHistory = metrics.barometricAltitudeHistory, !barometricAltitudeHistory.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Barometric Climb")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
+
+                                    if #available(iOS 16.0, *) {
+                                        BarometricAltitudeChartView(barometricAltitudeHistory: barometricAltitudeHistory)
+                                            .frame(height: 200)
+                                            .padding(.horizontal)
+                                    }
+                                }
+                            }
+
                             // Pressure Graph
                             if !metrics.pressureHistory.isEmpty {
                                 VStack(alignment: .leading, spacing: 8) {
@@ -304,6 +478,23 @@ struct WorkoutDetailView: View {
 
                                     if #available(iOS 16.0, *) {
                                         PressureChartView(pressureHistory: metrics.pressureHistory)
+                                            .frame(height: 200)
+                                            .padding(.horizontal)
+                                    }
+                                }
+                            }
+
+                            // GPS Quality Graph
+                            if let gpsQualityHistory = metrics.gpsQualityHistory, !gpsQualityHistory.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("GPS Quality")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal)
+
+                                    if #available(iOS 16.0, *) {
+                                        GPSQualityChartView(gpsQualityHistory: gpsQualityHistory)
                                             .frame(height: 200)
                                             .padding(.horizontal)
                                     }
@@ -342,6 +533,53 @@ struct WorkoutDetailView: View {
                             DetailRow(icon: "arrow.up.circle.fill", title: "Altitude Gain", value: String(format: "%.0f m", metrics.totalAltitudeGain), color: .green)
                             DetailRow(icon: "arrow.down.circle.fill", title: "Altitude Loss", value: String(format: "%.0f m", metrics.totalAltitudeLoss), color: .red)
                             DetailRow(icon: "mountain.2", title: "Min Altitude", value: String(format: "%.0f m", metrics.minAltitude), color: .gray)
+                            if metrics.maxAcceleration != nil || metrics.maxDeceleration != nil {
+                                DetailRow(icon: "gauge.with.dots.needle.67percent", title: "Peak Acceleration", value: String(format: "+%.2f m/s²", metrics.maxAcceleration ?? 0), color: .pink)
+                                DetailRow(icon: "gauge.with.dots.needle.33percent", title: "Peak Deceleration", value: String(format: "%.2f m/s²", metrics.maxDeceleration ?? 0), color: .orange)
+                                DetailRow(icon: "waveform.path.ecg", title: "Avg Acceleration", value: String(format: "%.2f m/s²", metrics.averageAcceleration ?? 0), color: .purple)
+                            }
+                            if metrics.maxMotionAcceleration != nil {
+                                DetailRow(icon: "waveform.path.ecg", title: "Max Motion Accel", value: String(format: "%.2f m/s²", metrics.maxMotionAcceleration ?? 0), color: .pink)
+                                DetailRow(icon: "waveform.path", title: "Avg Motion Accel", value: String(format: "%.2f m/s²", metrics.averageMotionAcceleration ?? 0), color: .purple)
+                                DetailRow(icon: "xmark", title: "Current a_x", value: String(format: "%.2f m/s²", metrics.currentMotionAccelerationX ?? 0), color: .blue)
+                                DetailRow(icon: "y.circle", title: "Current a_y", value: String(format: "%.2f m/s²", metrics.currentMotionAccelerationY ?? 0), color: .green)
+                                DetailRow(icon: "z.circle", title: "Current a_z", value: String(format: "%.2f m/s²", metrics.currentMotionAccelerationZ ?? 0), color: .orange)
+                            }
+                            if metrics.currentPitch != nil || metrics.currentCompassHeading != nil || metrics.currentRotationRate != nil {
+                                if let pitch = metrics.currentPitch {
+                                    DetailRow(icon: "arrow.up.and.down.and.arrow.left.and.right", title: "Last Pitch", value: String(format: "%.0f°", pitch), color: .purple)
+                                }
+                                if let roll = metrics.currentRoll {
+                                    DetailRow(icon: "rotate.left", title: "Last Roll", value: String(format: "%.0f°", roll), color: .purple)
+                                }
+                                if let yaw = metrics.currentYaw {
+                                    DetailRow(icon: "rotate.3d", title: "Last Yaw", value: String(format: "%.0f°", yaw), color: .mint)
+                                }
+                                if let heading = metrics.currentCompassHeading {
+                                    DetailRow(icon: "safari.fill", title: "Last Heading", value: String(format: "%.0f°", heading), color: .indigo)
+                                }
+                                if let rotation = metrics.currentRotationRate {
+                                    DetailRow(icon: "gyroscope", title: "Last Rotation", value: String(format: "%.2f rad/s", rotation), color: .pink)
+                                }
+                                if let maxRotation = metrics.maxRotationRate {
+                                    DetailRow(icon: "rotate.3d", title: "Max Rotation", value: String(format: "%.2f rad/s", maxRotation), color: .orange)
+                                }
+                                if let rotationX = metrics.currentRotationRateX {
+                                    DetailRow(icon: "arrow.left.and.right", title: "Last r_x", value: String(format: "%.2f rad/s", rotationX), color: .blue)
+                                }
+                                if let rotationY = metrics.currentRotationRateY {
+                                    DetailRow(icon: "arrow.up.and.down", title: "Last r_y", value: String(format: "%.2f rad/s", rotationY), color: .green)
+                                }
+                                if let rotationZ = metrics.currentRotationRateZ {
+                                    DetailRow(icon: "arrow.clockwise", title: "Last r_z", value: String(format: "%.2f rad/s", rotationZ), color: .orange)
+                                }
+                            }
+                            if metrics.barometricAltitudeGain != nil || metrics.maxClimbRate != nil {
+                                DetailRow(icon: "arrow.up.circle.fill", title: "Baro Climb", value: String(format: "%.0f m", metrics.barometricAltitudeGain ?? 0), color: .teal)
+                                DetailRow(icon: "arrow.down.circle.fill", title: "Baro Descent", value: String(format: "%.0f m", metrics.barometricAltitudeLoss ?? 0), color: .cyan)
+                                DetailRow(icon: "arrow.up.right", title: "Max Climb Rate", value: String(format: "%.0f m/min", metrics.maxClimbRateMetersPerMinute), color: .green)
+                                DetailRow(icon: "arrow.down.right", title: "Max Descent Rate", value: String(format: "%.0f m/min", metrics.maxDescentRateMetersPerMinute), color: .orange)
+                            }
 
                             Divider()
 
@@ -350,6 +588,10 @@ struct WorkoutDetailView: View {
                             DetailRow(icon: "checkmark.circle.fill", title: "Valid Points", value: "\(metrics.validPoints)", color: .green)
                             DetailRow(icon: "antenna.radiowaves.left.and.right", title: "GPS Coverage", value: String(format: "%.1f%%", metrics.signalCoverage), color: .blue)
                             DetailRow(icon: "scope", title: "Avg Accuracy", value: String(format: "±%.1f m", metrics.averageAccuracy), color: .purple)
+                            if metrics.averageGPSQualityScore != nil {
+                                DetailRow(icon: "location.magnifyingglass", title: "Avg GPS Quality", value: String(format: "%.0f/100", metrics.averageGPSQualityScore ?? 0), color: .green)
+                                DetailRow(icon: "exclamationmark.triangle", title: "Worst GPS Quality", value: String(format: "%.0f/100", metrics.worstGPSQualityScore ?? 0), color: .orange)
+                            }
                         }
                         .padding(.horizontal)
                     }
@@ -833,7 +1075,7 @@ struct DetailMetricCard: View {
                     }
                 }
 
-                Text(title)
+                LatexLabelText(text: title)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -857,7 +1099,7 @@ struct DetailRow: View {
                 .foregroundColor(color)
                 .frame(width: 24)
 
-            Text(title)
+            LatexLabelText(text: title)
                 .foregroundColor(.secondary)
 
             Spacer()
@@ -866,6 +1108,36 @@ struct DetailRow: View {
                 .fontWeight(.medium)
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct LatexLabelText: View {
+    let text: String
+    var uppercase = false
+
+    private var axisParts: (prefix: String, base: String, subscriptText: String)? {
+        for label in ["a_x", "a_y", "a_z", "r_x", "r_y", "r_z"] {
+            guard text.hasSuffix(label) else { continue }
+            let prefix = String(text.dropLast(label.count))
+            return (prefix, String(label.prefix(1)), String(label.suffix(1)))
+        }
+        return nil
+    }
+
+    var body: some View {
+        if let axisParts {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                if !axisParts.prefix.isEmpty {
+                    Text(axisParts.prefix)
+                }
+                Text(axisParts.base)
+                Text(axisParts.subscriptText)
+                    .font(.caption2)
+                    .baselineOffset(-3)
+            }
+        } else {
+            Text(uppercase ? text.uppercased() : text)
+        }
     }
 }
 
@@ -939,6 +1211,292 @@ struct SpeedChartView: View {
             }
             .padding(.horizontal)
         }
+    }
+}
+
+@available(iOS 16.0, *)
+struct AccelerationChartView: View {
+    let accelerationHistory: [AccelerationSample]
+    let maxAcceleration: Double
+    let maxDeceleration: Double
+
+    private var yDomain: ClosedRange<Double> {
+        let values = accelerationHistory.map(\.acceleration) + [maxAcceleration, maxDeceleration]
+        let minValue = values.min() ?? -1
+        let maxValue = values.max() ?? 1
+        let padding = max((maxValue - minValue) * 0.15, 0.5)
+        return (minValue - padding)...(maxValue + padding)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Chart {
+                ForEach(Array(accelerationHistory.enumerated()), id: \.offset) { _, sample in
+                    LineMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("Acceleration", sample.acceleration)
+                    )
+                    .foregroundStyle(Color.pink.gradient)
+                    .interpolationMethod(.catmullRom)
+
+                    AreaMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("Acceleration", sample.acceleration)
+                    )
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Color.pink.opacity(0.25), Color.pink.opacity(0.04)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .interpolationMethod(.catmullRom)
+                }
+
+                RuleMark(y: .value("Zero", 0))
+                    .foregroundStyle(Color.gray.opacity(0.45))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+
+                if maxAcceleration > 0 {
+                    RuleMark(y: .value("Max Accel", maxAcceleration))
+                        .foregroundStyle(Color.green.opacity(0.5))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                }
+
+                if maxDeceleration < 0 {
+                    RuleMark(y: .value("Max Decel", maxDeceleration))
+                        .foregroundStyle(Color.orange.opacity(0.5))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                }
+            }
+            .chartYAxisLabel("Acceleration (m/s²)")
+            .chartYScale(domain: yDomain)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                    AxisValueLabel(format: .dateTime.hour().minute())
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
+
+            HStack(spacing: 16) {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color.pink)
+                        .frame(width: 8, height: 8)
+                    Text("Acceleration")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                HStack(spacing: 4) {
+                    Rectangle()
+                        .fill(Color.green.opacity(0.5))
+                        .frame(width: 12, height: 2)
+                    Text("Max: \(String(format: "%.2f", maxAcceleration)) m/s²")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                HStack(spacing: 4) {
+                    Rectangle()
+                        .fill(Color.orange.opacity(0.5))
+                        .frame(width: 12, height: 2)
+                    Text("Min: \(String(format: "%.2f", maxDeceleration)) m/s²")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+struct MotionAccelerationChartView: View {
+    let motionAccelerationHistory: [MotionAccelerationSample]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MotionAccelerationAxisChart(
+                title: "a",
+                unit: "m/s²",
+                color: .pink,
+                samples: motionAccelerationHistory.map { ($0.timestamp, $0.acceleration) },
+                forceZeroBaseline: true
+            )
+
+            MotionAccelerationAxisChart(
+                title: "a_x",
+                unit: "m/s²",
+                color: .blue,
+                samples: motionAccelerationHistory.compactMap { sample in
+                    sample.x.map { (sample.timestamp, $0) }
+                }
+            )
+
+            MotionAccelerationAxisChart(
+                title: "a_y",
+                unit: "m/s²",
+                color: .green,
+                samples: motionAccelerationHistory.compactMap { sample in
+                    sample.y.map { (sample.timestamp, $0) }
+                }
+            )
+
+            MotionAccelerationAxisChart(
+                title: "a_z",
+                unit: "m/s²",
+                color: .orange,
+                samples: motionAccelerationHistory.compactMap { sample in
+                    sample.z.map { (sample.timestamp, $0) }
+                }
+            )
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+private struct MotionAccelerationAxisChart: View {
+    let title: String
+    let unit: String
+    let color: Color
+    let samples: [(timestamp: Date, value: Double)]
+    var forceZeroBaseline = false
+
+    private var yDomain: ClosedRange<Double> {
+        let values = samples.map { $0.value }
+        let minValue = values.min() ?? 0
+        let maxValue = values.max() ?? 1
+        let padding = max((maxValue - minValue) * 0.15, 0.25)
+        let lower = forceZeroBaseline ? 0 : min(minValue - padding, -0.25)
+        let upper = max(maxValue + padding, forceZeroBaseline ? 1 : 0.25)
+        return lower...upper
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                LatexLabelText(text: title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                Spacer()
+                if let latest = samples.last?.value {
+                    Text(String(format: "%.2f %@", latest, unit))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Chart {
+                ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
+                    LineMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value(title, sample.value)
+                    )
+                    .foregroundStyle(color.gradient)
+                    .interpolationMethod(.catmullRom)
+                }
+
+                RuleMark(y: .value("Zero", 0))
+                    .foregroundStyle(Color.secondary.opacity(0.25))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            }
+            .chartYScale(domain: yDomain)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisValueLabel(format: .dateTime.hour().minute())
+                }
+            }
+            .frame(height: 130)
+            .padding(10)
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+struct AttitudeChartView: View {
+    let attitudeHistory: [AttitudeSample]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MotionAccelerationAxisChart(
+                title: "Pitch",
+                unit: "°",
+                color: .purple,
+                samples: attitudeHistory.map { ($0.timestamp, $0.pitch) }
+            )
+
+            MotionAccelerationAxisChart(
+                title: "Roll",
+                unit: "°",
+                color: .indigo,
+                samples: attitudeHistory.map { ($0.timestamp, $0.roll) }
+            )
+
+            MotionAccelerationAxisChart(
+                title: "Yaw",
+                unit: "°",
+                color: .mint,
+                samples: attitudeHistory.map { ($0.timestamp, $0.yaw) }
+            )
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+struct RotationRateChartView: View {
+    let rotationRateHistory: [RotationRateSample]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MotionAccelerationAxisChart(
+                title: "r",
+                unit: "rad/s",
+                color: .pink,
+                samples: rotationRateHistory.map { ($0.timestamp, $0.magnitude) },
+                forceZeroBaseline: true
+            )
+
+            MotionAccelerationAxisChart(
+                title: "r_x",
+                unit: "rad/s",
+                color: .blue,
+                samples: rotationRateHistory.map { ($0.timestamp, $0.x) }
+            )
+
+            MotionAccelerationAxisChart(
+                title: "r_y",
+                unit: "rad/s",
+                color: .green,
+                samples: rotationRateHistory.map { ($0.timestamp, $0.y) }
+            )
+
+            MotionAccelerationAxisChart(
+                title: "r_z",
+                unit: "rad/s",
+                color: .orange,
+                samples: rotationRateHistory.map { ($0.timestamp, $0.z) }
+            )
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+struct CompassHeadingChartView: View {
+    let compassHeadingHistory: [HeadingSample]
+
+    var body: some View {
+        MotionAccelerationAxisChart(
+            title: "Heading",
+            unit: "°",
+            color: .indigo,
+            samples: compassHeadingHistory.map { ($0.timestamp, $0.heading) }
+        )
     }
 }
 
@@ -1168,6 +1726,62 @@ struct PaceChartView: View {
 }
 
 @available(iOS 16.0, *)
+struct BarometricAltitudeChartView: View {
+    let barometricAltitudeHistory: [BarometricAltitudeSample]
+
+    private var yDomain: ClosedRange<Double> {
+        let values = barometricAltitudeHistory.map(\.relativeAltitude)
+        let minValue = values.min() ?? 0
+        let maxValue = values.max() ?? 1
+        let padding = max((maxValue - minValue) * 0.15, 1.0)
+        return (minValue - padding)...(maxValue + padding)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Chart {
+                ForEach(Array(barometricAltitudeHistory.enumerated()), id: \.offset) { _, sample in
+                    LineMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("Relative Altitude", sample.relativeAltitude)
+                    )
+                    .foregroundStyle(Color.teal.gradient)
+                    .interpolationMethod(.catmullRom)
+
+                    AreaMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("Relative Altitude", sample.relativeAltitude)
+                    )
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Color.teal.opacity(0.3), Color.teal.opacity(0.05)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .interpolationMethod(.catmullRom)
+                }
+
+                RuleMark(y: .value("Start", 0))
+                    .foregroundStyle(Color.gray.opacity(0.45))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            }
+            .chartYAxisLabel("Baro Altitude (m)")
+            .chartYScale(domain: yDomain)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                    AxisValueLabel(format: .dateTime.hour().minute())
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
+        }
+    }
+}
+
+@available(iOS 16.0, *)
 struct PressureChartView: View {
     let pressureHistory: [PressureSample]
 
@@ -1256,6 +1870,58 @@ struct PressureChartView: View {
                 }
             }
             .padding(.horizontal)
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+struct GPSQualityChartView: View {
+    let gpsQualityHistory: [GPSQualitySample]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Chart {
+                ForEach(Array(gpsQualityHistory.enumerated()), id: \.offset) { _, sample in
+                    LineMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("GPS Quality", sample.score)
+                    )
+                    .foregroundStyle(Color.green.gradient)
+                    .interpolationMethod(.catmullRom)
+
+                    AreaMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("GPS Quality", sample.score)
+                    )
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Color.green.opacity(0.25), Color.green.opacity(0.04)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .interpolationMethod(.catmullRom)
+                }
+
+                RuleMark(y: .value("Good", 80))
+                    .foregroundStyle(Color.green.opacity(0.5))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+
+                RuleMark(y: .value("Weak", 50))
+                    .foregroundStyle(Color.orange.opacity(0.5))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+            }
+            .chartYAxisLabel("Quality")
+            .chartYScale(domain: 0...100)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                    AxisValueLabel(format: .dateTime.hour().minute())
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
         }
     }
 }

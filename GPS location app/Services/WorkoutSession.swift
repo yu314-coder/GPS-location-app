@@ -48,7 +48,7 @@ class WorkoutSession: ObservableObject {
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var didAttemptSnapshotRestore = false
     private var lastSnapshotSaveDate: Date?
-    private let ACTIVE_WORKOUT_AUTOSAVE_INTERVAL: TimeInterval = 20.0
+    private let ACTIVE_WORKOUT_AUTOSAVE_INTERVAL: TimeInterval = 5.0
     private let ACTIVE_WORKOUT_MAX_RESTORE_AGE: TimeInterval = 24 * 60 * 60
     private let activeWorkoutSnapshotQueue = DispatchQueue(
         label: "com.exmstc.gps.activeWorkoutSnapshot",
@@ -90,15 +90,29 @@ class WorkoutSession: ObservableObject {
         return max(0, active) // Ensure never negative
     }
 
-    // GPS accuracy thresholds (Modern approach based on Google Maps & fitness apps research)
-    private let MAX_HORIZONTAL_ACCURACY: Double = 50.0  // 50m maximum (Apple's recommended threshold)
-    private let MAX_LOCATION_AGE: TimeInterval = 10.0  // 10 seconds maximum age (reject cached locations)
-    private let DEFAULT_MAX_SPEED_MPS: Double = 20.0
-    private let DEFAULT_MAX_DISTANCE_JUMP: Double = 80.0
+    // GPS accuracy thresholds. Keep iPhone/iPad aligned with the Watch path so
+    // fast GPS workouts do not lose most of their distance on the phone.
+    private let MAX_HORIZONTAL_ACCURACY: Double = 100.0
+    private let MAX_LOCATION_AGE: TimeInterval = 15.0
+    private let DEFAULT_MAX_SPEED_MPS: Double = 50.0
+    private let DEFAULT_MAX_DISTANCE_JUMP: Double = 150.0
+    private let DEFAULT_MAX_ACCELERATION_MPS2: Double = 10.0
 
     // ABSOLUTE SAFETY LIMITS - applied even in Raw GPS mode to prevent impossible physics
     private let ABSOLUTE_MAX_SPEED_MPS: Double = 150.0  // 150 m/s = 540 km/h (no human activity exceeds this)
-    private let ABSOLUTE_MAX_DISTANCE_JUMP: Double = 500.0  // 500m instant teleport = definitely GPS glitch
+    private let ABSOLUTE_MAX_DISTANCE_JUMP: Double = 2000.0
+
+    // Estimated-location fallback for GPS gaps. These points are explicitly marked
+    // as estimated so the app can distinguish them from real Core Location fixes.
+    private var estimatedFallbackTimer: Timer?
+    private var isUsingEstimatedLocationFallback = false
+    private var lastRealLocationTime: Date = .distantPast
+    private var lastEstimatedFallbackTick: Date?
+    private var estimatedFallbackSpeed: Double = 0.0
+    private let ESTIMATED_LOCATION_GAP_THRESHOLD: TimeInterval = 5.0
+    private let ESTIMATED_LOCATION_TICK_INTERVAL: TimeInterval = 1.0
+    private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
+    private let ESTIMATED_LOCATION_VERTICAL_ACCURACY: Double = 250.0
 
     private var healthKitExportType: HKWorkoutActivityType {
         let preference = UserDefaults.standard.string(forKey: "healthKitExportType") ?? "auto"
@@ -142,16 +156,8 @@ class WorkoutSession: ObservableObject {
 
     private func maxSpeedThresholdMps(for type: HKWorkoutActivityType) -> Double {
         switch type {
-        case .walking:
-            return 8.5   // 30.6 km/h
-        case .running:
-            return 12.5  // 45.0 km/h
-        case .hiking:
-            return 8.0   // 28.8 km/h
-        case .cycling:
-            return 30.0  // 108.0 km/h
-        case .traditionalStrengthTraining:
-            return 6.0   // 21.6 km/h
+        case .walking, .running, .hiking, .cycling, .traditionalStrengthTraining:
+            return DEFAULT_MAX_SPEED_MPS
         case .other:
             // Flight mode handled separately.
             return DEFAULT_MAX_SPEED_MPS
@@ -162,21 +168,24 @@ class WorkoutSession: ObservableObject {
 
     private func maxDistanceJumpThreshold(for type: HKWorkoutActivityType) -> Double {
         switch type {
-        case .walking:
-            return 45.0
-        case .running:
-            return 65.0
-        case .hiking:
-            return 50.0
-        case .cycling:
-            return 120.0
-        case .traditionalStrengthTraining:
-            return 35.0
+        case .walking, .running, .hiking, .cycling, .traditionalStrengthTraining:
+            return DEFAULT_MAX_DISTANCE_JUMP
         case .other:
             // Flight mode handled separately.
             return DEFAULT_MAX_DISTANCE_JUMP
         default:
             return DEFAULT_MAX_DISTANCE_JUMP
+        }
+    }
+
+    private func maxAccelerationThresholdMps2(for type: HKWorkoutActivityType) -> Double {
+        switch type {
+        case .walking, .running, .hiking, .cycling, .traditionalStrengthTraining:
+            return DEFAULT_MAX_ACCELERATION_MPS2
+        case .other:
+            return 25.0
+        default:
+            return 6.0
         }
     }
 
@@ -190,6 +199,34 @@ class WorkoutSession: ObservableObject {
     private func setupLocationUpdates() {
         locationManager.onLocationUpdate = { [weak self] location in
             self?.processNewLocation(location)
+        }
+        locationManager.onMotionAccelerationUpdate = { [weak self] acceleration, x, y, z, pitch, roll, yaw, rotationX, rotationY, rotationZ, timestamp in
+            guard let self = self, self.isActive, !self.isPaused else { return }
+            self.currentMetrics.updateWithMotionAcceleration(
+                acceleration,
+                x: x,
+                y: y,
+                z: z,
+                pitch: pitch,
+                roll: roll,
+                yaw: yaw,
+                rotationRateX: rotationX,
+                rotationRateY: rotationY,
+                rotationRateZ: rotationZ,
+                timestamp: timestamp
+            )
+        }
+        locationManager.onCompassHeadingUpdate = { [weak self] heading, timestamp in
+            guard let self = self, self.isActive, !self.isPaused else { return }
+            self.currentMetrics.updateWithCompassHeading(heading, timestamp: timestamp)
+        }
+        locationManager.onBarometricAltitudeUpdate = { [weak self] relativeAltitude, pressure, timestamp in
+            guard let self = self, self.isActive, !self.isPaused else { return }
+            self.currentMetrics.updateWithBarometricAltitude(
+                relativeAltitude: relativeAltitude,
+                pressure: pressure,
+                timestamp: timestamp
+            )
         }
     }
 
@@ -452,6 +489,10 @@ class WorkoutSession: ObservableObject {
         flight = Flight(startDate: startDate)
         flight.workoutType = workoutType.rawValue
         isActive = true
+        lastRealLocationTime = startDate
+        isUsingEstimatedLocationFallback = false
+        lastEstimatedFallbackTick = nil
+        estimatedFallbackSpeed = 0.0
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
 
         print("✅ Flight initialized at: \(startDate)")
@@ -463,7 +504,8 @@ class WorkoutSession: ObservableObject {
         if workoutType != .other {
             let speedThresholdKmh = maxSpeedThresholdMps(for: workoutType) * 3.6
             let jumpThreshold = maxDistanceJumpThreshold(for: workoutType)
-            print("📏 Movement thresholds: maxSpeed=\(String(format: "%.1f", speedThresholdKmh))km/h, maxJump=\(String(format: "%.0f", jumpThreshold))m")
+            let accelerationThreshold = maxAccelerationThresholdMps2(for: workoutType)
+            print("📏 Movement thresholds: maxSpeed=\(String(format: "%.1f", speedThresholdKmh))km/h, maxJump=\(String(format: "%.0f", jumpThreshold))m, maxAccel=\(String(format: "%.1f", accelerationThreshold))m/s²")
         }
 
         // Start Live Activity for Dynamic Island
@@ -521,6 +563,7 @@ class WorkoutSession: ObservableObject {
             locationManager.startTracking()
             print("📍 GPS tracking active - locations will be collected")
         }
+        startEstimatedFallbackTimer()
 
         // HealthKit operations (only on real devices)
         #if targetEnvironment(simulator)
@@ -568,6 +611,7 @@ class WorkoutSession: ObservableObject {
 
     func stopWorkout(completion: @escaping (Bool) -> Void) {
         persistActiveWorkoutSnapshot(force: true, reason: "stopWorkoutRequested", shouldLog: true)
+        stopEstimatedFallbackTimer()
 
         // Stop location tracking
         locationManager.stopTracking()
@@ -640,6 +684,9 @@ class WorkoutSession: ObservableObject {
         print("📊 Distance: \(String(format: "%.2f", currentMetrics.totalDistance/1000))km (\(currentMetrics.totalDistance)m)")
         print("📊 Avg Speed: \(String(format: "%.1f", currentMetrics.averageSpeed * 3.6))km/h (\(currentMetrics.averageSpeed)m/s)")
         print("📊 Max Speed: \(String(format: "%.1f", currentMetrics.maxSpeed * 3.6))km/h (\(currentMetrics.maxSpeed)m/s)")
+        print("📊 Max Acceleration: \(String(format: "%.2f", currentMetrics.maxAcceleration ?? 0))m/s²")
+        print("📊 Max Deceleration: \(String(format: "%.2f", currentMetrics.maxDeceleration ?? 0))m/s²")
+        print("📊 Max Motion Acceleration: \(String(format: "%.2f", currentMetrics.maxMotionAcceleration ?? 0))m/s²")
         print("📊 Smoothed Speed: \(String(format: "%.1f", currentMetrics.smoothedSpeed * 3.6))km/h (\(currentMetrics.smoothedSpeed)m/s)")
         print("📊 Current Speed: \(String(format: "%.1f", currentMetrics.currentSpeed * 3.6))km/h (\(currentMetrics.currentSpeed)m/s)")
         print("📊 Avg Pace: \(currentMetrics.formattedAveragePace)")
@@ -647,6 +694,8 @@ class WorkoutSession: ObservableObject {
         print("📊 Min Altitude: \(String(format: "%.1f", currentMetrics.minAltitude))m")
         print("📊 Altitude Gain: \(String(format: "%.1f", currentMetrics.totalAltitudeGain))m")
         print("📊 Altitude Loss: \(String(format: "%.1f", currentMetrics.totalAltitudeLoss))m")
+        print("📊 Baro Gain/Loss: \(String(format: "%.1f", currentMetrics.barometricAltitudeGain ?? 0))m / \(String(format: "%.1f", currentMetrics.barometricAltitudeLoss ?? 0))m")
+        print("📊 GPS Quality: current=\(String(format: "%.0f", currentMetrics.currentGPSQualityScore ?? 0)), avg=\(String(format: "%.0f", currentMetrics.averageGPSQualityScore ?? 0))")
         print("📊 Calories: \(String(format: "%.0f", currentMetrics.caloriesBurned))kcal")
         if let steps = currentMetrics.stepsCount {
             print("📊 Steps: \(String(format: "%.0f", steps)) steps")
@@ -712,6 +761,10 @@ class WorkoutSession: ObservableObject {
         flight.locations = []
         currentMetrics.speedHistory = []
         currentMetrics.altitudeHistory = []
+        currentMetrics.accelerationHistory = []
+        currentMetrics.motionAccelerationHistory = []
+        currentMetrics.barometricAltitudeHistory = []
+        currentMetrics.gpsQualityHistory = []
         print("   ⚡️ Cleared location arrays from memory - data saved to file")
 
         #if targetEnvironment(simulator)
@@ -758,15 +811,27 @@ class WorkoutSession: ObservableObject {
             "com.exmstc.gps.gpsDistanceMeters": displayedDistance,
             "averageSpeed": currentMetrics.averageSpeed,
             "maxSpeed": currentMetrics.maxSpeed,
+            "maxAcceleration": currentMetrics.maxAcceleration ?? 0,
+            "maxDeceleration": currentMetrics.maxDeceleration ?? 0,
+            "averageAcceleration": currentMetrics.averageAcceleration ?? 0,
+            "maxMotionAcceleration": currentMetrics.maxMotionAcceleration ?? 0,
+            "averageMotionAcceleration": currentMetrics.averageMotionAcceleration ?? 0,
             "maxAltitude": currentMetrics.maxAltitude,
             "minAltitude": currentMetrics.minAltitude,
             "altitudeGain": currentMetrics.totalAltitudeGain,
             "altitudeLoss": currentMetrics.totalAltitudeLoss,
+            "barometricAltitudeGain": currentMetrics.barometricAltitudeGain ?? 0,
+            "barometricAltitudeLoss": currentMetrics.barometricAltitudeLoss ?? 0,
+            "maxClimbRate": currentMetrics.maxClimbRate ?? 0,
+            "maxDescentRate": currentMetrics.maxDescentRate ?? 0,
             "averagePace": currentMetrics.averagePacePerKm,
             "gpsPoints": currentMetrics.totalPoints,
             "validPoints": currentMetrics.validPoints,
-            "averageAccuracy": currentMetrics.averageAccuracy
+            "averageAccuracy": currentMetrics.averageAccuracy,
+            "averageGPSQualityScore": currentMetrics.averageGPSQualityScore ?? 0,
+            "worstGPSQualityScore": currentMetrics.worstGPSQualityScore ?? 0
         ]
+        currentMetrics.healthKitSensorMetadata.forEach { metadata[$0.key] = $0.value }
         if let nativeStepDistance = currentMetrics.nativeStepDistance, nativeStepDistance > 0 {
             metadata["com.exmstc.gps.nativeStepDistanceMeters"] = nativeStepDistance
         }
@@ -1117,133 +1182,190 @@ class WorkoutSession: ObservableObject {
         return totalDistance
     }
 
-    private func processNewLocation(_ location: FlightLocation) {
-        // Check user setting for raw GPS mode
-        let useRawGPS = UserDefaults.standard.bool(forKey: "useRawGPS")
-        let isFlight = workoutType == .other
-        let maxSpeedMps = isFlight ? (10000.0 / 3.6) : maxSpeedThresholdMps(for: workoutType)
-        let maxDistanceJump = isFlight ? 500.0 : maxDistanceJumpThreshold(for: workoutType)
-        let absoluteMaxSpeedMps = isFlight ? (10000.0 / 3.6) : ABSOLUTE_MAX_SPEED_MPS
-        let absoluteMaxDistanceJump = isFlight ? 2000.0 : ABSOLUTE_MAX_DISTANCE_JUMP
-        let reanchorGap: TimeInterval = isFlight ? 10.0 : 15.0
+    private func startEstimatedFallbackTimer() {
+        stopEstimatedFallbackTimer()
+        estimatedFallbackTimer = Timer.scheduledTimer(withTimeInterval: ESTIMATED_LOCATION_TICK_INTERVAL, repeats: true) { [weak self] _ in
+            self?.checkEstimatedLocationFallback()
+        }
+        RunLoop.main.add(estimatedFallbackTimer!, forMode: .common)
+        print("📍 Estimated-location fallback timer started")
+    }
 
-        func reanchorLocation(_ reason: String) {
-            print("⚠️ \(reason) - reanchoring to new GPS fix")
-            flight.locations.append(location)
-            NotificationCenter.default.post(
-                name: .workoutLocationUpdated,
-                object: nil,
-                userInfo: ["location": location.toCLLocation()]
-            )
-            currentMetrics.currentAltitude = location.altitude
-            if location.altitude > currentMetrics.maxAltitude {
-                currentMetrics.maxAltitude = location.altitude
+    private func stopEstimatedFallbackTimer() {
+        estimatedFallbackTimer?.invalidate()
+        estimatedFallbackTimer = nil
+        if isUsingEstimatedLocationFallback {
+            endEstimatedLocationFallback(reason: "workout stopped")
+        }
+    }
+
+    private func checkEstimatedLocationFallback() {
+        guard isActive && !isPaused else { return }
+        guard let anchor = flight.locations.last(where: { !$0.isEstimated && $0.isValid }) else { return }
+
+        let timeSinceRealFix = Date().timeIntervalSince(lastRealLocationTime)
+        guard timeSinceRealFix >= ESTIMATED_LOCATION_GAP_THRESHOLD else {
+            if isUsingEstimatedLocationFallback {
+                endEstimatedLocationFallback(reason: "GPS returned")
             }
+            return
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // STEP 1: ABSOLUTE SAFETY CHECKS - Always applied, even in Raw GPS mode
-        // These catch physically impossible GPS glitches that would corrupt data
-        // ═══════════════════════════════════════════════════════════════════════
+        if !isUsingEstimatedLocationFallback {
+            startEstimatedLocationFallback(anchor: anchor, gapSeconds: timeSinceRealFix)
+        }
 
-        // 1a. Always reject invalid GPS (negative accuracy = no fix)
+        let now = Date()
+        let previousTick = lastEstimatedFallbackTick ?? now.addingTimeInterval(-ESTIMATED_LOCATION_TICK_INTERVAL)
+        let dt = min(max(now.timeIntervalSince(previousTick), 0.5), 2.0)
+        lastEstimatedFallbackTick = now
+
+        let headingDegrees = normalizedHeading(
+            locationManager.currentCompassHeading
+                ?? locationManager.currentMotionDirectionDegrees
+                ?? validCourse(anchor.course)
+                ?? 0.0
+        )
+        let forwardAcceleration = locationManager.currentMotionForwardAcceleration ?? 0.0
+        let maxFallbackSpeed = estimatedFallbackMaxSpeed()
+        let nextSpeed: Double
+        if abs(forwardAcceleration) >= 0.05 {
+            nextSpeed = min(max(estimatedFallbackSpeed + forwardAcceleration * dt, 0.0), maxFallbackSpeed)
+        } else {
+            nextSpeed = min(max(estimatedFallbackSpeed * 0.98, 0.0), maxFallbackSpeed)
+        }
+
+        let distance = min(((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt, maxFallbackSpeed * dt)
+        estimatedFallbackSpeed = nextSpeed
+
+        guard distance >= 0.25 else { return }
+        appendEstimatedLocation(distanceMeters: distance, headingDegrees: headingDegrees, timestamp: now)
+    }
+
+    private func startEstimatedLocationFallback(anchor: FlightLocation, gapSeconds: TimeInterval) {
+        isUsingEstimatedLocationFallback = true
+        lastEstimatedFallbackTick = nil
+        estimatedFallbackSpeed = min(
+            max(currentMetrics.smoothedSpeed > 0 ? currentMetrics.smoothedSpeed : anchor.speed, 0.0),
+            estimatedFallbackMaxSpeed()
+        )
+        print("📍 Estimated-location fallback started after \(String(format: "%.1f", gapSeconds))s without GPS")
+    }
+
+    private func endEstimatedLocationFallback(reason: String) {
+        guard isUsingEstimatedLocationFallback else { return }
+        print("📍 Estimated-location fallback ended: \(reason)")
+        isUsingEstimatedLocationFallback = false
+        lastEstimatedFallbackTick = nil
+        estimatedFallbackSpeed = 0.0
+    }
+
+    private func reanchorAfterEstimatedFallback(with location: FlightLocation) {
+        endEstimatedLocationFallback(reason: "real GPS fix received")
+        flight.locations.append(location)
+        lastRealLocationTime = Date()
+        NotificationCenter.default.post(
+            name: .workoutLocationUpdated,
+            object: nil,
+            userInfo: ["location": location.toCLLocation()]
+        )
+        currentMetrics.currentAltitude = location.altitude
+        if location.altitude > currentMetrics.maxAltitude {
+            currentMetrics.maxAltitude = location.altitude
+        }
+        currentMetrics.currentPressure = locationManager.currentPressure
+        persistActiveWorkoutSnapshot(force: false, reason: "estimatedFallbackReanchor")
+        print("📍 Estimated fallback reanchored to GPS without adding reanchor distance")
+    }
+
+    private func appendEstimatedLocation(distanceMeters: Double, headingDegrees: Double, timestamp: Date) {
+        guard let previousLocation = flight.locations.last else { return }
+        let coordinate = projectedCoordinate(
+            from: CLLocationCoordinate2D(latitude: previousLocation.latitude, longitude: previousLocation.longitude),
+            distanceMeters: distanceMeters,
+            bearingDegrees: headingDegrees
+        )
+        let location = CLLocation(
+            coordinate: coordinate,
+            altitude: previousLocation.altitude,
+            horizontalAccuracy: ESTIMATED_LOCATION_HORIZONTAL_ACCURACY,
+            verticalAccuracy: ESTIMATED_LOCATION_VERTICAL_ACCURACY,
+            course: headingDegrees,
+            speed: max(distanceMeters / max(timestamp.timeIntervalSince(previousLocation.timestamp), 0.5), 0.0),
+            timestamp: timestamp
+        )
+        let estimatedLocation = FlightLocation(
+            from: location,
+            isFiltered: false,
+            isValid: true,
+            signalStrength: 20.0,
+            pressure: locationManager.currentPressure,
+            isEstimated: true
+        )
+
+        flight.locations.append(estimatedLocation)
+        NotificationCenter.default.post(
+            name: .workoutLocationUpdated,
+            object: nil,
+            userInfo: ["location": estimatedLocation.toCLLocation()]
+        )
+        currentMetrics.updateWithLocation(estimatedLocation, previousLocation: previousLocation, elapsedTime: activeDuration)
+        currentMetrics.currentPressure = locationManager.currentPressure
+        currentMetrics.updateSplits(startDate: flight.startDate)
+        persistActiveWorkoutSnapshot(force: false, reason: "estimatedLocationTick")
+    }
+
+    private func estimatedFallbackMaxSpeed() -> Double {
+        if workoutType == .other {
+            return 35.0
+        }
+        return min(maxSpeedThresholdMps(for: workoutType), 35.0)
+    }
+
+    private func validCourse(_ course: Double) -> Double? {
+        guard course >= 0, course <= 360 else { return nil }
+        return course
+    }
+
+    private func normalizedHeading(_ heading: Double) -> Double {
+        let normalized = heading.truncatingRemainder(dividingBy: 360.0)
+        return normalized >= 0 ? normalized : normalized + 360.0
+    }
+
+    private func projectedCoordinate(from coordinate: CLLocationCoordinate2D, distanceMeters: Double, bearingDegrees: Double) -> CLLocationCoordinate2D {
+        let earthRadiusMeters = 6_371_000.0
+        let angularDistance = distanceMeters / earthRadiusMeters
+        let bearing = bearingDegrees * .pi / 180.0
+        let latitude1 = coordinate.latitude * .pi / 180.0
+        let longitude1 = coordinate.longitude * .pi / 180.0
+
+        let latitude2 = asin(
+            sin(latitude1) * cos(angularDistance)
+            + cos(latitude1) * sin(angularDistance) * cos(bearing)
+        )
+        let longitude2 = longitude1 + atan2(
+            sin(bearing) * sin(angularDistance) * cos(latitude1),
+            cos(angularDistance) - sin(latitude1) * sin(latitude2)
+        )
+
+        return CLLocationCoordinate2D(
+            latitude: latitude2 * 180.0 / .pi,
+            longitude: longitude2 * 180.0 / .pi
+        )
+    }
+
+    private func processNewLocation(_ location: FlightLocation) {
+        // Accept every usable Core Location GPS fix on iPhone/iPad. Distance is
+        // calculated from the recorded track without speed, jump, acceleration,
+        // stale-time, or accuracy caps.
         if location.horizontalAccuracy < 0 {
             print("🚫 INVALID GPS (no satellite fix) - REJECTED")
             return
         }
 
-        // 1b. Always check for impossible teleportation (GPS glitch)
-        if let lastLocation = flight.locations.last {
-            let distance = location.distance(to: lastLocation)
-            let timeDelta = location.timestamp.timeIntervalSince(lastLocation.timestamp)
-
-            if timeDelta >= reanchorGap && distance > absoluteMaxDistanceJump {
-                reanchorLocation("Large jump after \(String(format: "%.1f", timeDelta))s gap")
-                return
-            }
-
-            // Reject obvious teleportation (>500m instant jump)
-            if distance > absoluteMaxDistanceJump {
-                print("🚫 GPS TELEPORT: \(String(format: "%.0f", distance))m jump (max: \(String(format: "%.0f", absoluteMaxDistanceJump))m) - REJECTED")
-                return
-            }
-
-            // Reject impossible speed (>540 km/h)
-            if timeDelta > 0.1 {  // Need at least 100ms between points
-                let instantSpeed = distance / timeDelta
-                if instantSpeed > absoluteMaxSpeedMps {
-                    print("🚫 IMPOSSIBLE SPEED: \(String(format: "%.0f", instantSpeed * 3.6))km/h (max: \(String(format: "%.0f", absoluteMaxSpeedMps * 3.6))km/h) - REJECTED")
-                    return
-                }
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // STEP 2: NORMAL FILTERING - Applied unless Raw GPS mode is enabled
-        // ═══════════════════════════════════════════════════════════════════════
-
-        if !useRawGPS {
-            // 2a. Check for poor GPS signal quality
-            if location.horizontalAccuracy > MAX_HORIZONTAL_ACCURACY {
-                print("⚠️ Poor GPS signal: ±\(String(format: "%.0f", location.horizontalAccuracy))m (threshold: \(String(format: "%.0f", MAX_HORIZONTAL_ACCURACY))m) - SKIPPING")
-                return
-            }
-
-            // 2b. Check for cached/old location (reject stale data)
-            let locationAge = Date().timeIntervalSince(location.timestamp)
-            if locationAge > MAX_LOCATION_AGE {
-                print("⚠️ Stale GPS location: \(String(format: "%.1f", locationAge))s old (threshold: \(String(format: "%.0f", MAX_LOCATION_AGE))s) - SKIPPING")
-                return
-            }
-
-            // 2c. Check for suspicious speed or distance jumps
-            if let lastLocation = flight.locations.last {
-                let distance = location.distance(to: lastLocation)
-                let timeDelta = location.timestamp.timeIntervalSince(lastLocation.timestamp)
-                let dynamicMaxJump = max(maxDistanceJump, maxSpeedMps * max(timeDelta, 1.0) * 1.2)
-
-                // Check for unrealistic distance jump
-                if distance > dynamicMaxJump {
-                    if timeDelta >= reanchorGap {
-                        reanchorLocation("Distance jump after \(String(format: "%.1f", timeDelta))s gap")
-                        return
-                    }
-                    print("⚠️ GPS glitch: distance jump \(String(format: "%.0f", distance))m (threshold: \(String(format: "%.0f", dynamicMaxJump))m) - SKIPPING")
-                    return
-                }
-
-                // Check for unrealistic speed
-                if timeDelta > 0 {
-                    let instantSpeed = distance / timeDelta
-                    if instantSpeed > maxSpeedMps {
-                        if timeDelta >= reanchorGap {
-                            reanchorLocation("Speed spike after \(String(format: "%.1f", timeDelta))s gap")
-                            return
-                        }
-                        print("⚠️ GPS glitch: speed \(String(format: "%.0f", instantSpeed * 3.6))km/h (threshold: \(String(format: "%.0f", maxSpeedMps * 3.6))km/h) - SKIPPING")
-                        return
-                    }
-                }
-            }
-        } else {
-            // Raw GPS mode - only log once at start
-            if flight.locations.isEmpty {
-                print("🟡 RAW GPS MODE - Only absolute safety checks applied (no signal quality filtering)")
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // STEP 3: TIME-BASED FILTERING - Ensure minimum 1 second between points
-        // ═══════════════════════════════════════════════════════════════════════
-        if let lastLocation = flight.locations.last {
-            let timeDelta = location.timestamp.timeIntervalSince(lastLocation.timestamp)
-
-            // Skip locations that are too close in time (should be ~1 second apart)
-            // Allow some tolerance for timer precision
-            if timeDelta < 1.0 {
-                print("⏱️ Location too close in time (Δt=\(String(format: "%.3f", timeDelta))s) - SKIPPING")
-                return
-            }
+        if isUsingEstimatedLocationFallback {
+            reanchorAfterEstimatedFallback(with: location)
+            return
         }
 
         // Check if we need to skip locations after resume from pause
@@ -1253,6 +1375,7 @@ class WorkoutSession: ObservableObject {
 
             // Add location but don't calculate distance
             flight.locations.append(location)
+            lastRealLocationTime = Date()
             NotificationCenter.default.post(
                 name: .workoutLocationUpdated,
                 object: nil,
@@ -1270,6 +1393,7 @@ class WorkoutSession: ObservableObject {
 
         // Add to flight (after GPS filtering passed)
         flight.locations.append(location)
+        lastRealLocationTime = Date()
         NotificationCenter.default.post(
             name: .workoutLocationUpdated,
             object: nil,
@@ -1467,6 +1591,7 @@ class WorkoutSession: ObservableObject {
     }
 
     func reset() {
+        stopEstimatedFallbackTimer()
         workoutBuilder = nil
         flight = Flight()
         currentMetrics = FlightMetrics()

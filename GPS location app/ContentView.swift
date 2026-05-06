@@ -27,26 +27,33 @@ struct ContentView: View {
                 }
                 .tag(1)
 
+            // Map Tab
+            WorkoutMapView()
+                .tabItem {
+                    Label("Map", systemImage: "map.fill")
+                }
+                .tag(2)
+
             // Analysis Tab
             AnalysisView()
                 .tabItem {
                     Label("Analysis", systemImage: "chart.xyaxis.line")
                 }
-                .tag(2)
+                .tag(3)
 
             // Test Tab - FOR DEBUGGING PERMISSIONS
             PermissionTestView()
                 .tabItem {
                     Label("Test", systemImage: "wrench.and.screwdriver")
                 }
-                .tag(3)
+                .tag(4)
 
             // Settings Tab
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")
                 }
-                .tag(4)
+                .tag(5)
         }
         .sheet(isPresented: $showLiveSession) {
             LiveSessionView()

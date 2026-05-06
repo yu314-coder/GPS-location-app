@@ -2,6 +2,24 @@ import Foundation
 import WatchConnectivity
 import Combine
 
+struct FlightCheckpointPayload: Codable {
+    let flightID: UUID
+    let startDate: Date
+    let endDate: Date?
+    let locations: [FlightLocation]
+    let locationStartIndex: Int
+    let totalLocationCount: Int
+    let metrics: FlightMetrics
+    let effort: Int?
+    let workoutType: UInt?
+    let isFinal: Bool
+}
+
+struct FlightCheckpointEnvelope: Codable {
+    let type: String
+    let payload: Data
+}
+
 class WatchConnectivityManager: NSObject, ObservableObject {
     static let shared = WatchConnectivityManager()
 
@@ -219,7 +237,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         )
 
         // Convert CLLocation to dictionary for WatchConnectivity transfer
-        let locationData: [String: Any] = [
+        var locationData: [String: Any] = [
             "action": "gpsLocation",
             "latitude": location.coordinate.latitude,
             "longitude": location.coordinate.longitude,
@@ -232,6 +250,21 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             "relaySource": sourceTag,
             "usingRawRelayLocation": usingRawRelayLocation
         ]
+        if let acceleration = locationManager.currentMotionAcceleration {
+            locationData["motionAcceleration"] = acceleration
+        }
+        if let horizontalAcceleration = locationManager.currentMotionHorizontalAcceleration {
+            locationData["motionHorizontalAcceleration"] = horizontalAcceleration
+        }
+        if let forwardAcceleration = locationManager.currentMotionForwardAcceleration {
+            locationData["motionForwardAcceleration"] = forwardAcceleration
+        }
+        if let lateralAcceleration = locationManager.currentMotionLateralAcceleration {
+            locationData["motionLateralAcceleration"] = lateralAcceleration
+        }
+        if let directionDegrees = locationManager.currentMotionDirectionDegrees {
+            locationData["motionDirectionDegrees"] = directionDegrees
+        }
 
         if session.isReachable {
             session.sendMessage(locationData, replyHandler: nil) { error in
@@ -371,9 +404,13 @@ extension WatchConnectivityManager: WCSessionDelegate {
         }
     }
 
+    func session(_ session: WCSession, didReceiveMessageData messageData: Data) {
+        handleFlightCheckpointMessageData(messageData)
+    }
+
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
         let metadataType = file.metadata?["type"] as? String
-        guard metadataType == "flight" else {
+        guard metadataType == "flight" || metadataType == "flightCheckpoint" else {
             print("📱 Received unknown file from watch")
             return
         }
@@ -382,17 +419,43 @@ extension WatchConnectivityManager: WCSessionDelegate {
             let data = try Data(contentsOf: file.fileURL)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let flight = try decoder.decode(Flight.self, from: data)
 
-            guard let metrics = flight.metrics else {
-                print("📱 Flight transfer missing metrics - skipping HealthKit save")
+            if metadataType == "flightCheckpoint" {
+                let checkpoint = try decoder.decode(FlightCheckpointPayload.self, from: data)
+                FlightDataStore.shared.mergeFlightCheckpoint(checkpoint)
+                print("📱 💾 Saved watch checkpoint locally: \(checkpoint.flightID), newLocations=\(checkpoint.locations.count), total=\(checkpoint.totalLocationCount)")
+            } else {
+                let flight = try decoder.decode(Flight.self, from: data)
+
+                guard let metrics = flight.metrics else {
+                    print("📱 Flight transfer missing metrics - skipping HealthKit save")
+                    return
+                }
+
+                print("📱 Received final flight transfer from watch: \(flight.id)")
+                saveFlightToHealthKit(flight: flight, metrics: metrics)
+            }
+        } catch {
+            print("❌ Failed to decode flight transfer: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleFlightCheckpointMessageData(_ messageData: Data) {
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let envelope = try decoder.decode(FlightCheckpointEnvelope.self, from: messageData)
+
+            guard envelope.type == "flightCheckpoint" else {
+                print("📱 Received unknown data message from watch: \(envelope.type)")
                 return
             }
 
-            print("📱 Received flight transfer from watch: \(flight.id)")
-            saveFlightToHealthKit(flight: flight, metrics: metrics)
+            let checkpoint = try decoder.decode(FlightCheckpointPayload.self, from: envelope.payload)
+            FlightDataStore.shared.mergeFlightCheckpoint(checkpoint)
+            print("📱 💾 Saved immediate watch checkpoint: \(checkpoint.flightID), newLocations=\(checkpoint.locations.count), total=\(checkpoint.totalLocationCount)")
         } catch {
-            print("❌ Failed to decode flight transfer: \(error.localizedDescription)")
+            print("❌ Failed to decode watch checkpoint message: \(error.localizedDescription)")
         }
     }
 

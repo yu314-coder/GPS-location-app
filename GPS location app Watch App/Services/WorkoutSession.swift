@@ -23,6 +23,11 @@ class WorkoutSession: NSObject, ObservableObject {
     private var keepAliveTimer: Timer?  // CRITICAL: Prevents app from sleeping
     private var watchdogTimer: Timer?   // CRITICAL: Detects when locations actually stop
     private var forceRestartTimer: Timer?  // CRITICAL: Periodic forced GPS restart
+    private var phoneCheckpointTimer: Timer?  // CRITICAL: Flushes workout data to iPhone every 10s
+    private var lastPhoneCheckpointLocationCount = 0
+    private var retainedLocationOffset = 0
+    private let maxRetainedLocationsOnWatch = 180
+    private let minRetainedLocationsOnWatch = 2
     private var lastLocationCount: Int = 0  // Track if locations are actually arriving
 
     @Published var isActive = false
@@ -52,9 +57,6 @@ class WorkoutSession: NSObject, ObservableObject {
     private var locationsToSkipAfterResume = 0
     private let LOCATIONS_TO_SKIP_AFTER_RESUME = 0  // Don't skip locations after resume - GPS is already stable
 
-    // CRITICAL: Incremental save to prevent memory overflow
-    private let INCREMENTAL_SAVE_BATCH_SIZE = 10  // Save every 10 locations
-    private var unsavedLocationCount = 0
     private let saveQueue = DispatchQueue(label: "com.workout.incrementalsave", qos: .utility)
 
     // Track location filtering statistics
@@ -68,16 +70,33 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastManualRefreshRequestTime: Date?
     private var lastManualRefreshTapTime: Date = .distantPast
     private let manualRefreshCooldown: TimeInterval = 2.0
+    private var latestIPhoneMotionAssist: IPhoneMotionAssist?
+    private let motionAssistMaxAge: TimeInterval = 3.0
+    private let motionAssistExtraAccelerationAllowance: Double = 12.0
+    private let motionAssistDirectionToleranceDegrees: Double = 70.0
     private let pathMonitor = NWPathMonitor()
     private let pathMonitorQueue = DispatchQueue(label: "com.gpsapp.watch.pathmonitor")
     private var latestPathStatus: NWPath.Status = .requiresConnection
     private var latestPathInterface = "unknown"
+
+    // Pedometer fallback for GPS gaps (tunnels, underground, poor signal)
+    // When GPS is lost for >GPS_GAP_THRESHOLD seconds, use CMPedometer incremental
+    // distance to keep totalDistance growing. Only for step-based activities.
+    private var isUsingPedometerFallback = false
+    private var pedometerDistanceAtGapStart: Double = 0.0  // pedometer.currentDistance when gap started
+    private var gpsDistanceAtGapStart: Double = 0.0  // totalDistance when gap started
+    private var pedometerFallbackDistanceAdded: Double = 0.0  // how much pedometer distance was added during this gap
+    private let GPS_GAP_THRESHOLD: TimeInterval = 5.0  // seconds without valid GPS before switching to pedometer
+    private var lastPedometerFallbackLogTime: Date = .distantPast
+    private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
+    private let ESTIMATED_LOCATION_VERTICAL_ACCURACY: Double = 250.0
 
     // GPS accuracy thresholds (Modern approach based on Google Maps & fitness apps research)
     private let MAX_HORIZONTAL_ACCURACY: Double = 100.0  // 100m maximum (more lenient to capture more distance points)
     private let MAX_LOCATION_AGE: TimeInterval = 15.0  // 15 seconds maximum age (more lenient for watch GPS)
     private let MAX_SPEED_MPS: Double = 50.0  // 50 m/s = 180 km/h (realistic maximum for cycling/running)
     private let MAX_DISTANCE_JUMP: Double = 150.0  // 150m maximum jump between points (more lenient to avoid rejecting valid movement)
+    private let MAX_ACCELERATION_MPS2: Double = 10.0  // Reject sudden GPS-derived speed changes that exceed workout movement
 
     // ABSOLUTE SAFETY LIMITS - applied even in Raw GPS mode to prevent impossible physics
     private let ABSOLUTE_MAX_SPEED_MPS: Double = 150.0  // 150 m/s = 540 km/h (no human activity exceeds this)
@@ -122,6 +141,22 @@ class WorkoutSession: NSObject, ObservableObject {
     private func setupLocationUpdates() {
         locationManager.onLocationUpdate = { [weak self] location in
             self?.processNewLocation(location, source: .watchGPS)
+        }
+        connectivityManager.onIPhoneMotionAccelerationReceived = { [weak self] acceleration, timestamp in
+            guard let self = self, self.isActive, !self.isPaused else { return }
+            self.currentMetrics.updateWithMotionAcceleration(acceleration, timestamp: timestamp)
+        }
+        connectivityManager.onIPhoneMotionAssistReceived = { [weak self] assist in
+            guard let self = self, self.isActive, !self.isPaused else { return }
+            self.latestIPhoneMotionAssist = assist
+        }
+        locationManager.onBarometricAltitudeUpdate = { [weak self] relativeAltitude, pressure, timestamp in
+            guard let self = self, self.isActive, !self.isPaused else { return }
+            self.currentMetrics.updateWithBarometricAltitude(
+                relativeAltitude: relativeAltitude,
+                pressure: pressure,
+                timestamp: timestamp
+            )
         }
 
         // Set up iPhone GPS fallback callback
@@ -256,10 +291,17 @@ class WorkoutSession: NSObject, ObservableObject {
             builder.delegate = self
 
             // Set data source (watchOS only)
-            builder.dataSource = HKLiveWorkoutDataSource(
+            let dataSource = HKLiveWorkoutDataSource(
                 healthStore: healthStore,
                 workoutConfiguration: configuration
             )
+            if let walkingRunningDistance = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning) {
+                dataSource.disableCollection(for: walkingRunningDistance)
+            }
+            if let cyclingDistance = HKQuantityType.quantityType(forIdentifier: .distanceCycling) {
+                dataSource.disableCollection(for: cyclingDistance)
+            }
+            builder.dataSource = dataSource
 
             workoutSession = session
             workoutBuilder = builder
@@ -275,6 +317,7 @@ class WorkoutSession: NSObject, ObservableObject {
                     self?.startKeepAliveTimer()
                     self?.startWatchdogTimer()
                     self?.startForceRestartTimer()
+                    self?.startPhoneCheckpointTimer()
                 } else {
                     print("❌ Failed to start workout session: \(error?.localizedDescription ?? "Unknown error")")
                     // Try to recover
@@ -290,7 +333,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // Reset location filtering statistics
             skippedLocationCount = 0
             lastLocationTime = Date()
-            unsavedLocationCount = 0  // Reset unsaved location counter
+            latestIPhoneMotionAssist = nil
 
             let activityType: CLActivityType = (workoutType == .other) ? .airborne : .fitness
             locationManager.updateActivityType(activityType)
@@ -313,7 +356,8 @@ class WorkoutSession: NSObject, ObservableObject {
             print("⌚ 💓 Keep-Alive Timer: Active (1s heartbeat)")
             print("⌚ 🔍 Watchdog Timer: Active (10s location arrival check)")
             print("⌚ 🔄 Force Restart Timer: Active (2min preventive GPS restart)")
-            print("⌚ 💾 Incremental Save: Active (saves every \(INCREMENTAL_SAVE_BATCH_SIZE) locations)")
+            print("⌚ 📲 iPhone Checkpoint Timer: Active (10s transfer)")
+            print("⌚ 💾 Watch local checkpoint save: Active (preserves GPS + estimated points across crashes)")
             print("⌚ 📍 GPS Tracking: Active")
             print("⌚ 👟 Pedometer: \(pedometerManager.isPedometerAvailable ? "Active (real step counting)" : "Unavailable (using GPS estimation)")")
 
@@ -373,10 +417,14 @@ class WorkoutSession: NSObject, ObservableObject {
         print("⌚ 🛑 Stopping all monitoring and recovery systems...")
 
         // Stop ALL timers and monitoring
+        if isUsingPedometerFallback {
+            endPedometerFallback(reason: "workout stopped")
+        }
         stopSessionHealthMonitoring()
         stopKeepAliveTimer()
         stopWatchdogTimer()
         stopForceRestartTimer()
+        stopPhoneCheckpointTimer()
 
         // Stop iPhone relay/fallback commands
         if connectivityManager.isUsingIPhoneGPS || connectivityManager.isIPhoneGPSRequestPending {
@@ -384,6 +432,7 @@ class WorkoutSession: NSObject, ObservableObject {
             connectivityManager.stopIPhoneGPS()
         }
         connectivityManager.setDualSourceAssistEnabled(false)
+        latestIPhoneMotionAssist = nil
 
         // Stop location tracking
         locationManager.stopTracking()
@@ -420,8 +469,7 @@ class WorkoutSession: NSObject, ObservableObject {
         guard flight.locations.count > 0 else {
             print("⌚ ⚠️ WARNING: Workout has no locations - saving minimal data")
             flight.metrics = currentMetrics
-            // Try to save what we have
-            FlightDataStore.shared.saveFlight(flight)
+            transferWorkoutCheckpointToPhone(isFinal: true)
             session.end()
             DispatchQueue.main.async {
                 self.isActive = false
@@ -476,38 +524,15 @@ class WorkoutSession: NSObject, ObservableObject {
             flight.metrics = currentMetrics
         }
 
-        // CRITICAL FIX: Save any remaining unsaved locations
-        // Since we save incrementally every 10 locations, there may be < 10 unsaved at the end
-        print("⌚ 💾 Saving final workout data (incremental save already saved \(flight.locations.count - unsavedLocationCount) locations)...")
-        if unsavedLocationCount > 0 {
-            print("⌚ 💾 Saving final \(unsavedLocationCount) unsaved locations...")
-        }
-
-        // Create a copy to avoid reference issues
-        var flightCopy = flight
-        let metricsCopy = currentMetrics
-        flightCopy.metrics = metricsCopy
-
-        // Save on background queue to avoid blocking
-        DispatchQueue.global(qos: .userInitiated).async {
-            FlightDataStore.shared.saveFlightIncremental(flightCopy, metrics: metricsCopy)
-            DispatchQueue.main.async {
-                print("⌚ ✅ Flight saved to local storage - data is safe! Total locations: \(flightCopy.locations.count)")
-            }
-        }
-
-        unsavedLocationCount = 0
-        print("⌚ ✅ Local save initiated successfully")
-
         // Send one final payload so iPhone receives terminal GPS + native step channels.
+        print("⌚ 📲 Sending final workout checkpoint to iPhone")
+        transferWorkoutCheckpointToPhone(isFinal: true)
         sendFinalWorkoutUpdateToPhone(endDate: endDate, gpsDistance: displayedDistance)
 
         // Notify iPhone
         connectivityManager.notifyWorkoutStopped()
 
-        // IMPORTANT: Data is already safe on disk from incremental saves
-        // HealthKit save is a bonus - if it fails, we still have the data locally
-        print("⌚ 🏥 Starting HealthKit save (data already safe on disk)...")
+        print("⌚ 🏥 Starting HealthKit save (route checkpoints already sent to iPhone)...")
         print("⌚ 📊 Workout summary: \(flight.locations.count) locations, \(String(format: "%.2f", currentMetrics.totalDistance/1000))km")
         if healthKitMetrics.totalDistance != currentMetrics.totalDistance {
             print("⌚ 📊 HealthKit distance override: \(String(format: "%.2f", healthKitMetrics.totalDistance/1000))km")
@@ -538,15 +563,27 @@ class WorkoutSession: NSObject, ObservableObject {
             "com.exmstc.gps.gpsDistanceMeters": displayedDistance,
             "averageSpeed": currentMetrics.averageSpeed,
             "maxSpeed": currentMetrics.maxSpeed,
+            "maxAcceleration": currentMetrics.maxAcceleration ?? 0,
+            "maxDeceleration": currentMetrics.maxDeceleration ?? 0,
+            "averageAcceleration": currentMetrics.averageAcceleration ?? 0,
+            "maxMotionAcceleration": currentMetrics.maxMotionAcceleration ?? 0,
+            "averageMotionAcceleration": currentMetrics.averageMotionAcceleration ?? 0,
             "maxAltitude": currentMetrics.maxAltitude,
             "minAltitude": currentMetrics.minAltitude,
             "altitudeGain": currentMetrics.totalAltitudeGain,
             "altitudeLoss": currentMetrics.totalAltitudeLoss,
+            "barometricAltitudeGain": currentMetrics.barometricAltitudeGain ?? 0,
+            "barometricAltitudeLoss": currentMetrics.barometricAltitudeLoss ?? 0,
+            "maxClimbRate": currentMetrics.maxClimbRate ?? 0,
+            "maxDescentRate": currentMetrics.maxDescentRate ?? 0,
             "averagePace": currentMetrics.averagePacePerKm,
             "gpsPoints": currentMetrics.totalPoints,
             "validPoints": currentMetrics.validPoints,
-            "averageAccuracy": currentMetrics.averageAccuracy
+            "averageAccuracy": currentMetrics.averageAccuracy,
+            "averageGPSQualityScore": currentMetrics.averageGPSQualityScore ?? 0,
+            "worstGPSQualityScore": currentMetrics.worstGPSQualityScore ?? 0
         ]
+        currentMetrics.healthKitSensorMetadata.forEach { metadata[$0.key] = $0.value }
         if let nativeStepDistance = currentMetrics.nativeStepDistance, nativeStepDistance > 0 {
             metadata["com.exmstc.gps.nativeStepDistanceMeters"] = nativeStepDistance
         }
@@ -583,8 +620,7 @@ class WorkoutSession: NSObject, ObservableObject {
                 activityType: exportType,
                 locations: self.flight.locations
             ) {
-                // Prefer HKLiveWorkoutDataSource distance, but backfill a manual sample if HealthKit has none.
-                // We still add calories and step count using our custom calculations.
+                // Add calories and step count using our custom calculations.
                 self.healthKitManager.addCaloriesAndStepsSamples(
                     to: builder,
                     metrics: healthKitMetrics,
@@ -592,45 +628,60 @@ class WorkoutSession: NSObject, ObservableObject {
                     endDate: endDate,
                     activityType: exportType
                 ) {
-                    self.healthKitManager.addDistanceSamplesIfMissing(
+                    self.healthKitManager.addWorkoutTotalDistanceSample(
                         to: builder,
                         metrics: healthKitMetrics,
                         startDate: self.flight.startDate,
                         endDate: endDate,
                         activityType: exportType
-                    ) {
+                    ) { distanceAdded in
+                        if !distanceAdded {
+                            print("⌚ ⚠️ GPS workout total distance sample was not added before finish")
+                        }
+
                         // 2. End collection
                         builder.endCollection(withEnd: endDate) { [weak self] success, error in
                             guard let self = self else { return }
 
                             if success {
-                                // 3. Finish workout (MUST be before session.end())
-                                builder.finishWorkout { workout, error in
-                                    if let workout = workout {
-                                        self.flight.workoutUUID = workout.uuid
-                                        print("✅ Workout finished successfully")
-                                        print("   UUID: \(workout.uuid)")
-                                        print("   Type: \(workout.workoutActivityType.rawValue)")
-                                        print("   Duration: \(workout.duration)s")
-                                        if let distance = workout.totalDistance {
-                                            print("   Distance: \(String(format: "%.2f", distance.doubleValue(for: .meter())/1000))km")
-                                        }
-                                        if let energy = workout.statistics(for: HKQuantityType(.activeEnergyBurned))?
-                                            .sumQuantity()?
-                                            .doubleValue(for: .kilocalorie()) {
-                                            print("   Energy: \(String(format: "%.0f", energy)) kcal")
-                                        }
-                                        if let stepType = HKQuantityType.quantityType(forIdentifier: .stepCount),
-                                           let steps = workout.statistics(for: stepType)?
-                                            .sumQuantity()?
-                                            .doubleValue(for: .count()) {
-                                            print("   Steps (HealthKit): \(String(format: "%.0f", steps))")
-                                        } else {
-                                            print("   Steps (HealthKit): not available")
-                                        }
-                                        self.logSavedHealthKitMovementStats(for: workout)
+                            // 3. Finish workout (MUST be before session.end())
+                            builder.finishWorkout { workout, error in
+                                if let workout = workout {
+                                    self.flight.workoutUUID = workout.uuid
+                                    print("✅ Workout finished successfully")
+                                    print("   UUID: \(workout.uuid)")
+                                    print("   Type: \(workout.workoutActivityType.rawValue)")
+                                    print("   Duration: \(workout.duration)s")
+                                    if let distance = workout.totalDistance {
+                                        print("   Distance: \(String(format: "%.2f", distance.doubleValue(for: .meter())/1000))km")
+                                    }
+                                    if let energy = workout.statistics(for: HKQuantityType(.activeEnergyBurned))?
+                                        .sumQuantity()?
+                                        .doubleValue(for: .kilocalorie()) {
+                                        print("   Energy: \(String(format: "%.0f", energy)) kcal")
+                                    }
+                                    if let stepType = HKQuantityType.quantityType(forIdentifier: .stepCount),
+                                       let steps = workout.statistics(for: stepType)?
+                                        .sumQuantity()?
+                                        .doubleValue(for: .count()) {
+                                        print("   Steps (HealthKit): \(String(format: "%.0f", steps))")
+                                    } else {
+                                        print("   Steps (HealthKit): not available")
+                                    }
+                                    self.logSavedHealthKitMovementStats(for: workout)
 
-                                        // 4. Save route to the existing workout using filtered flight locations
+                                    // 4. Associate GPS distance samples AFTER finishWorkout
+                                    // This bypasses the HKLiveWorkoutDataSource conflict
+                                    self.healthKitManager.associateDistanceSamples(
+                                        to: workout,
+                                        metrics: healthKitMetrics,
+                                        startDate: self.flight.startDate,
+                                        endDate: endDate,
+                                        activityType: exportType,
+                                        includeGPSDistance: !distanceAdded,
+                                        includeNativeStepDistance: true
+                                    ) { _, _ in
+                                        // 5. Save route to the existing workout using filtered flight locations
                                         print("⌚ 🗺️ Preparing to save route with \(self.flight.locations.count) filtered locations")
                                         self.healthKitManager.saveRoute(
                                             for: workout,
@@ -657,23 +708,24 @@ class WorkoutSession: NSObject, ObservableObject {
                                             }
                                             completion(success)
                                         }
-                                    } else {
-                                        print("Failed to finish workout: \(error?.localizedDescription ?? "Unknown")")
-                                        session.end()
+                                    }
+                                } else {
+                                    print("Failed to finish workout: \(error?.localizedDescription ?? "Unknown")")
+                                    session.end()
 
-                                        // CRITICAL FIX: Set isActive = false even on failure
-                                        DispatchQueue.main.async {
-                                            self.isActive = false
-                                            print("⌚ ⚠️ Workout stopped with errors (but data saved locally)")
+                                    // CRITICAL FIX: Set isActive = false even on failure
+                                    DispatchQueue.main.async {
+                                        self.isActive = false
+                                        print("⌚ ⚠️ Workout stopped with errors (but data saved locally)")
+                                    }
+                                    self.fallbackSaveToHealthKit(locations: self.flight.locations, endDate: endDate) { success in
+                                        if !success {
+                                            self.connectivityManager.transferFlightToPhone(self.flight)
                                         }
-                                        self.fallbackSaveToHealthKit(locations: self.flight.locations, endDate: endDate) { success in
-                                            if !success {
-                                                self.connectivityManager.transferFlightToPhone(self.flight)
-                                            }
-                                            completion(success)
-                                        }
+                                        completion(success)
                                     }
                                 }
+                            }
                             } else {
                                 print("Failed to end collection: \(error?.localizedDescription ?? "Unknown")")
                                 session.end()
@@ -839,11 +891,17 @@ class WorkoutSession: NSObject, ObservableObject {
             // This is a legitimate watchOS technique to prevent app suspension during workouts
             self.objectWillChange.send()
 
+            // Pedometer fallback for GPS gaps (tunnels, underground)
+            if !self.isPaused {
+                self.checkPedometerFallback()
+            }
+
             // Every 10 seconds, log that we're still alive
             let elapsed = Date().timeIntervalSince(self.flight.startDate)
             if Int(elapsed).isMultiple(of: 10) {
                 let gpsDelay = Date().timeIntervalSince(self.lastLocationTime)
-                print("⌚ 💓 ALIVE: \(Int(elapsed))s elapsed, \(self.flight.locations.count) locations, GPS delay: \(Int(gpsDelay))s")
+                let fallbackStatus = self.isUsingPedometerFallback ? " [PEDOMETER FALLBACK +\(String(format: "%.1f", self.pedometerFallbackDistanceAdded))m]" : ""
+                print("⌚ 💓 ALIVE: \(Int(elapsed))s elapsed, \(self.flight.locations.count) locations, GPS delay: \(Int(gpsDelay))s\(fallbackStatus)")
             }
         }
         // CRITICAL: Add to RunLoop to ensure it runs in background
@@ -944,6 +1002,143 @@ class WorkoutSession: NSObject, ObservableObject {
         forceRestartTimer?.invalidate()
         forceRestartTimer = nil
         print("⌚ 🔄 Force restart timer stopped")
+    }
+
+    // MARK: - iPhone Checkpoint Timer (Memory Crash Prevention)
+
+    private func startPhoneCheckpointTimer() {
+        lastPhoneCheckpointLocationCount = 0
+        retainedLocationOffset = 0
+        phoneCheckpointTimer?.invalidate()
+        phoneCheckpointTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+            self?.transferWorkoutCheckpointToPhone()
+        }
+        RunLoop.main.add(phoneCheckpointTimer!, forMode: .common)
+        print("⌚ 📲 iPhone checkpoint timer started - transfer every 10s")
+    }
+
+    private func stopPhoneCheckpointTimer() {
+        phoneCheckpointTimer?.invalidate()
+        phoneCheckpointTimer = nil
+        print("⌚ 📲 iPhone checkpoint timer stopped")
+    }
+
+    // MARK: - Pedometer Fallback for GPS Gaps
+
+    private func checkPedometerFallback() {
+        let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
+        let isStepBasedActivity = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
+
+        // Only use pedometer fallback for step-based activities where pedometer is running
+        guard isStepBasedActivity, pedometerManager.isPedometerAvailable else {
+            if isUsingPedometerFallback {
+                endPedometerFallback(reason: "activity not step-based or pedometer unavailable")
+            }
+            return
+        }
+
+        if !isUsingPedometerFallback {
+            // Check if we should START pedometer fallback
+            if timeSinceLastGPS >= GPS_GAP_THRESHOLD {
+                startPedometerFallback()
+            }
+        } else {
+            // Already in pedometer fallback — accumulate distance
+            let currentPedometerDistance = pedometerManager.currentDistance
+            let pedometerDelta = currentPedometerDistance - pedometerDistanceAtGapStart
+
+            // Only add positive increments (pedometer should only grow)
+            if pedometerDelta > pedometerFallbackDistanceAdded {
+                let newDistance = pedometerDelta - pedometerFallbackDistanceAdded
+                appendEstimatedPedometerFallbackLocation(distanceMeters: newDistance, timestamp: Date())
+                pedometerFallbackDistanceAdded = pedometerDelta
+
+                // Log every 5 seconds to avoid spam
+                let now = Date()
+                if now.timeIntervalSince(lastPedometerFallbackLogTime) >= 5.0 {
+                    print("⌚ 🦶 PEDOMETER FALLBACK: +\(String(format: "%.1f", pedometerFallbackDistanceAdded))m added (GPS gap: \(Int(timeSinceLastGPS))s, total: \(String(format: "%.2f", currentMetrics.totalDistance/1000))km)")
+                    lastPedometerFallbackLogTime = now
+                }
+            }
+        }
+    }
+
+    private func startPedometerFallback() {
+        isUsingPedometerFallback = true
+        pedometerDistanceAtGapStart = pedometerManager.currentDistance
+        gpsDistanceAtGapStart = currentMetrics.totalDistance
+        pedometerFallbackDistanceAdded = 0.0
+        lastPedometerFallbackLogTime = Date()
+
+        let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
+        print("⌚ 🦶 PEDOMETER FALLBACK STARTED: GPS lost for \(Int(timeSinceLastGPS))s")
+        print("⌚ 🦶 Pedometer baseline: \(String(format: "%.2f", pedometerDistanceAtGapStart))m")
+        print("⌚ 🦶 GPS distance at gap start: \(String(format: "%.2f", gpsDistanceAtGapStart/1000))km")
+        print("⌚ 🦶 Will use pedometer incremental distance until GPS returns")
+    }
+
+    private func appendEstimatedPedometerFallbackLocation(distanceMeters: Double, timestamp: Date) {
+        guard distanceMeters > 0.0, let previousLocation = flight.locations.last else { return }
+
+        let headingDegrees = normalizedHeading(
+            recentIPhoneMotionAssist(near: timestamp)?.directionDegrees
+                ?? validCourse(previousLocation.course)
+                ?? 0.0
+        )
+        let coordinate = projectedCoordinate(
+            from: CLLocationCoordinate2D(latitude: previousLocation.latitude, longitude: previousLocation.longitude),
+            distanceMeters: distanceMeters,
+            bearingDegrees: headingDegrees
+        )
+        let timeDelta = max(timestamp.timeIntervalSince(previousLocation.timestamp), 0.5)
+        let location = CLLocation(
+            coordinate: coordinate,
+            altitude: previousLocation.altitude,
+            horizontalAccuracy: ESTIMATED_LOCATION_HORIZONTAL_ACCURACY,
+            verticalAccuracy: ESTIMATED_LOCATION_VERTICAL_ACCURACY,
+            course: headingDegrees,
+            speed: distanceMeters / timeDelta,
+            timestamp: timestamp
+        )
+        let estimatedLocation = FlightLocation(
+            from: location,
+            isFiltered: false,
+            isValid: true,
+            signalStrength: 20.0,
+            pressure: locationManager.currentPressure,
+            isEstimated: true
+        )
+
+        flight.locations.append(estimatedLocation)
+        currentMetrics.updateWithLocation(
+            estimatedLocation,
+            previousLocation: previousLocation,
+            elapsedTime: Date().timeIntervalSince(flight.startDate)
+        )
+        currentMetrics.currentPressure = locationManager.currentPressure
+        currentMetrics.updateSplits(startDate: flight.startDate)
+        pruneWatchMemoryIfNeeded(reason: "estimatedLocation")
+
+        let now = Date()
+        if now.timeIntervalSince(lastPhoneSyncTime) >= 1.0 {
+            sendWorkoutUpdateToPhone()
+            lastPhoneSyncTime = now
+        }
+    }
+
+    /// Called when a valid GPS location arrives after a pedometer fallback period.
+    /// Does NOT recalculate distance — just ends the fallback and resumes GPS tracking.
+    private func endPedometerFallback(reason: String) {
+        guard isUsingPedometerFallback else { return }
+
+        print("⌚ 🦶 PEDOMETER FALLBACK ENDED: \(reason)")
+        print("⌚ 🦶 Pedometer distance added during gap: +\(String(format: "%.1f", pedometerFallbackDistanceAdded))m")
+        print("⌚ 🦶 Total distance now: \(String(format: "%.2f", currentMetrics.totalDistance/1000))km")
+
+        isUsingPedometerFallback = false
+        pedometerFallbackDistanceAdded = 0.0
+        pedometerDistanceAtGapStart = 0.0
+        gpsDistanceAtGapStart = 0.0
     }
 
     private func preventiveGPSRestart() {
@@ -1135,6 +1330,94 @@ class WorkoutSession: NSObject, ObservableObject {
         return totalDistance
     }
 
+    private func recentIPhoneMotionAssist(near timestamp: Date) -> IPhoneMotionAssist? {
+        guard let assist = latestIPhoneMotionAssist else { return nil }
+        return abs(timestamp.timeIntervalSince(assist.timestamp)) <= motionAssistMaxAge ? assist : nil
+    }
+
+    private func bearingDegrees(from start: FlightLocation, to end: FlightLocation) -> Double {
+        let startLat = start.latitude * .pi / 180
+        let startLon = start.longitude * .pi / 180
+        let endLat = end.latitude * .pi / 180
+        let endLon = end.longitude * .pi / 180
+        let deltaLon = endLon - startLon
+        let y = sin(deltaLon) * cos(endLat)
+        let x = cos(startLat) * sin(endLat) - sin(startLat) * cos(endLat) * cos(deltaLon)
+        return normalizedDegrees(atan2(y, x) * 180 / .pi)
+    }
+
+    private func normalizedDegrees(_ degrees: Double) -> Double {
+        let value = degrees.truncatingRemainder(dividingBy: 360)
+        return value >= 0 ? value : value + 360
+    }
+
+    private func angleDifferenceDegrees(_ first: Double, _ second: Double) -> Double {
+        let difference = abs(normalizedDegrees(first) - normalizedDegrees(second))
+        return min(difference, 360 - difference)
+    }
+
+    private func motionAssistAccelerationThreshold(
+        baseThreshold: Double,
+        gpsAcceleration: Double,
+        previousLocation: FlightLocation,
+        currentLocation: FlightLocation
+    ) -> Double {
+        guard let assist = recentIPhoneMotionAssist(near: currentLocation.timestamp) else {
+            return baseThreshold
+        }
+
+        let routeBearing = bearingDegrees(from: previousLocation, to: currentLocation)
+        if let direction = assist.directionDegrees,
+           angleDifferenceDegrees(routeBearing, direction) > motionAssistDirectionToleranceDegrees {
+            return baseThreshold
+        }
+
+        let forwardAcceleration = assist.forwardAcceleration ?? 0
+        let horizontalAcceleration = assist.horizontalAcceleration ?? assist.acceleration ?? 0
+        let sameDirection = gpsAcceleration == 0 || forwardAcceleration == 0 || (gpsAcceleration > 0) == (forwardAcceleration > 0)
+        guard sameDirection || abs(horizontalAcceleration) >= 2.0 else {
+            return baseThreshold
+        }
+
+        let motionAllowance = min(
+            motionAssistExtraAccelerationAllowance,
+            max(abs(forwardAcceleration) * 2.0, abs(horizontalAcceleration))
+        )
+        return baseThreshold + motionAllowance
+    }
+
+    private func validCourse(_ course: Double) -> Double? {
+        guard course >= 0, course <= 360 else { return nil }
+        return course
+    }
+
+    private func normalizedHeading(_ heading: Double) -> Double {
+        let normalized = heading.truncatingRemainder(dividingBy: 360.0)
+        return normalized >= 0 ? normalized : normalized + 360.0
+    }
+
+    private func projectedCoordinate(from coordinate: CLLocationCoordinate2D, distanceMeters: Double, bearingDegrees: Double) -> CLLocationCoordinate2D {
+        let earthRadiusMeters = 6_371_000.0
+        let angularDistance = distanceMeters / earthRadiusMeters
+        let bearing = bearingDegrees * .pi / 180.0
+        let latitude1 = coordinate.latitude * .pi / 180.0
+        let longitude1 = coordinate.longitude * .pi / 180.0
+
+        let latitude2 = asin(
+            sin(latitude1) * cos(angularDistance)
+            + cos(latitude1) * sin(angularDistance) * cos(bearing)
+        )
+        let longitude2 = longitude1 + atan2(
+            sin(bearing) * sin(angularDistance) * cos(latitude1),
+            cos(angularDistance) - sin(latitude1) * sin(latitude2)
+        )
+
+        return CLLocationCoordinate2D(
+            latitude: latitude2 * 180.0 / .pi,
+            longitude: longitude2 * 180.0 / .pi
+        )
+    }
+
     private func processNewLocation(_ location: FlightLocation, source: LocationInputSource) {
         // Check user setting for raw GPS mode
         let useRawGPS = UserDefaults.standard.bool(forKey: "useRawGPS")
@@ -1158,6 +1441,7 @@ class WorkoutSession: NSObject, ObservableObject {
         let sourceAgeThreshold: TimeInterval = isIPhoneSource ? 30.0 : MAX_LOCATION_AGE
         let sourceSpeedThreshold = isIPhoneSource ? max(maxSpeedMps, 65.0) : maxSpeedMps
         let sourceDistanceJumpThreshold = isIPhoneSource ? max(maxDistanceJump, 500.0) : maxDistanceJump
+        let sourceAccelerationThreshold = isIPhoneSource ? max(MAX_ACCELERATION_MPS2, 15.0) : MAX_ACCELERATION_MPS2
         let reanchorGap: TimeInterval = isFlight ? 10.0 : 15.0
 
         func reanchorLocation(_ reason: String) {
@@ -1178,6 +1462,33 @@ class WorkoutSession: NSObject, ObservableObject {
         // 1a. Always reject invalid GPS (negative accuracy = no fix)
         if location.horizontalAccuracy < 0 {
             print("⌚ 🚫 [\(sourceLabel)] INVALID location (no fix) - REJECTED")
+            return
+        }
+
+        if isUsingPedometerFallback {
+            if !useRawGPS {
+                if location.horizontalAccuracy > sourceAccuracyThreshold {
+                    print("⌚ ⚠️ [\(sourceLabel)] GPS reanchor still poor: ±\(String(format: "%.0f", location.horizontalAccuracy))m - waiting")
+                    skippedLocationCount += 1
+                    return
+                }
+
+                let locationAge = Date().timeIntervalSince(location.timestamp)
+                if locationAge > sourceAgeThreshold {
+                    print("⌚ ⚠️ [\(sourceLabel)] GPS reanchor stale: \(String(format: "%.1f", locationAge))s old - waiting")
+                    skippedLocationCount += 1
+                    return
+                }
+            }
+
+            endPedometerFallback(reason: "GPS returned (±\(String(format: "%.0f", location.horizontalAccuracy))m, src=\(sourceLabel))")
+            flight.locations.append(location)
+            lastLocationTime = Date()
+            currentMetrics.currentAltitude = location.altitude
+            if location.altitude > currentMetrics.maxAltitude {
+                currentMetrics.maxAltitude = location.altitude
+            }
+            print("⌚ 🦶→📡 GPS reanchor after estimated pedometer gap — position updated, distance skipped for this point")
             return
         }
 
@@ -1268,6 +1579,29 @@ class WorkoutSession: NSObject, ObservableObject {
                         return
                     }
                 }
+
+                if flight.locations.count >= 2 && timeDelta > 0.5 {
+                    let instantSpeed = distance / timeDelta
+                    let gpsAcceleration = (instantSpeed - currentMetrics.currentSpeed) / timeDelta
+                    let acceleration = abs(gpsAcceleration)
+                    let assistedAccelerationThreshold = motionAssistAccelerationThreshold(
+                        baseThreshold: sourceAccelerationThreshold,
+                        gpsAcceleration: gpsAcceleration,
+                        previousLocation: lastLocation,
+                        currentLocation: location
+                    )
+                    if acceleration > assistedAccelerationThreshold {
+                        if timeDelta >= reanchorGap {
+                            reanchorLocation("Acceleration spike after \(String(format: "%.1f", timeDelta))s gap")
+                            return
+                        }
+                        print("⌚ ⚠️ [\(sourceLabel)] GPS glitch: acceleration \(String(format: "%.1f", acceleration))m/s² (threshold: \(String(format: "%.1f", assistedAccelerationThreshold))m/s²) - SKIPPING")
+                        skippedLocationCount += 1
+                        return
+                    } else if assistedAccelerationThreshold > sourceAccelerationThreshold && acceleration > sourceAccelerationThreshold {
+                        print("⌚ 📱 Motion assist allowed GPS acceleration \(String(format: "%.1f", acceleration))m/s² (base \(String(format: "%.1f", sourceAccelerationThreshold)) → \(String(format: "%.1f", assistedAccelerationThreshold))m/s²)")
+                    }
+                }
             }
         } else {
             // Raw GPS mode - only log once at start
@@ -1335,19 +1669,13 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Update splits
         currentMetrics.updateSplits(startDate: flight.startDate)
+        pruneWatchMemoryIfNeeded(reason: "locationTick")
 
         // Performance: Throttle iPhone sync to 1Hz (every 1.0s) to match GPS frequency
         let now = Date()
         if now.timeIntervalSince(lastPhoneSyncTime) >= 1.0 {
             sendWorkoutUpdateToPhone()
             lastPhoneSyncTime = now
-        }
-
-        // CRITICAL: Incremental save every 10 locations to prevent memory overflow
-        unsavedLocationCount += 1
-        if unsavedLocationCount >= INCREMENTAL_SAVE_BATCH_SIZE {
-            print("⌚ 💾 Triggering incremental save (\(unsavedLocationCount) unsaved locations)")
-            saveIncrementally()
         }
 
         // Log summary every 50 locations
@@ -1358,33 +1686,72 @@ class WorkoutSession: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Incremental Save (Memory Overflow Prevention)
+    private func transferWorkoutCheckpointToPhone() {
+        transferWorkoutCheckpointToPhone(isFinal: false)
+    }
 
-    private func saveIncrementally() {
-        // Save on background queue to avoid blocking GPS processing
+    private func transferWorkoutCheckpointToPhone(isFinal: Bool) {
+        guard isActive else { return }
+
+        let startIndex = lastPhoneCheckpointLocationCount
+        let totalLocationCount = retainedLocationOffset + flight.locations.count
+        guard totalLocationCount > startIndex || isFinal else { return }
+
+        let localStartIndex = max(0, startIndex - retainedLocationOffset)
+        guard localStartIndex < flight.locations.count || isFinal else { return }
+
+        let newLocations = localStartIndex < flight.locations.count
+            ? Array(flight.locations[localStartIndex..<flight.locations.count])
+            : []
+        var checkpointMetrics = currentMetrics
+        checkpointMetrics.clearCheckpointedHistories()
+
+        let payload = FlightCheckpointPayload(
+            flightID: flight.id,
+            startDate: flight.startDate,
+            endDate: flight.endDate,
+            locations: newLocations,
+            locationStartIndex: startIndex,
+            totalLocationCount: totalLocationCount,
+            metrics: checkpointMetrics,
+            effort: flight.effort,
+            workoutType: flight.workoutType,
+            isFinal: isFinal
+        )
+
+        FlightDataStore.shared.mergeFlightCheckpoint(payload)
+
         saveQueue.async { [weak self] in
             guard let self = self else { return }
-
-            // Create a snapshot of current state
-            var flightSnapshot = self.flight
-            let metricsSnapshot = self.currentMetrics
-            flightSnapshot.metrics = metricsSnapshot
-
-            // Validate data before saving
-            guard flightSnapshot.locations.count > 0 else {
-                print("⌚ ⚠️ Skipping incremental save - no locations yet")
-                return
-            }
-
-            // Save to disk
-            FlightDataStore.shared.saveFlightIncremental(flightSnapshot, metrics: metricsSnapshot)
-
-            // Reset counter only on success
             DispatchQueue.main.async {
-                self.unsavedLocationCount = 0
-                print("⌚ ✅ Incremental save completed - \(flightSnapshot.locations.count) total locations on disk")
+                let queued = self.connectivityManager.transferFlightCheckpointToPhone(payload)
+                if queued {
+                    self.lastPhoneCheckpointLocationCount = totalLocationCount
+                    self.pruneCheckpointedWorkoutData()
+                    print("⌚ 📲 \(isFinal ? "Final" : "10s") checkpoint sent to iPhone - newLocations=\(newLocations.count), total=\(totalLocationCount), retained=\(self.flight.locations.count)")
+                }
             }
         }
+    }
+
+    private func pruneCheckpointedWorkoutData() {
+        let locationsToKeep = minRetainedLocationsOnWatch
+        if flight.locations.count > locationsToKeep {
+            let removeCount = flight.locations.count - locationsToKeep
+            flight.locations.removeFirst(removeCount)
+            retainedLocationOffset += removeCount
+        }
+        currentMetrics.clearCheckpointedHistories()
+    }
+
+    private func pruneWatchMemoryIfNeeded(reason: String) {
+        guard flight.locations.count > maxRetainedLocationsOnWatch else { return }
+        let removeCount = flight.locations.count - minRetainedLocationsOnWatch
+        flight.locations.removeFirst(removeCount)
+        retainedLocationOffset += removeCount
+        lastPhoneCheckpointLocationCount = max(lastPhoneCheckpointLocationCount, retainedLocationOffset)
+        currentMetrics.clearCheckpointedHistories()
+        print("⌚ 🧹 Emergency memory prune (\(reason)): removed=\(removeCount), retained=\(flight.locations.count), offset=\(retainedLocationOffset)")
     }
 
     private func sendWorkoutUpdateToPhone() {
@@ -1459,6 +1826,11 @@ class WorkoutSession: NSObject, ObservableObject {
         }
 
         print("⌚ ⏸️ Pausing workout...")
+
+        // End pedometer fallback if active (pause stops movement tracking)
+        if isUsingPedometerFallback {
+            endPedometerFallback(reason: "workout paused")
+        }
 
         // Update state IMMEDIATELY on main thread for UI responsiveness
         isPaused = true

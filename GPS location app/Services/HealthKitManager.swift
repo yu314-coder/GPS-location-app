@@ -522,8 +522,20 @@ class HealthKitManager: ObservableObject {
                 "maxAltitude": metrics.maxAltitude,
                 "minAltitude": metrics.minAltitude,
                 "maxSpeed": metrics.maxSpeed,
-                "averageAccuracy": metrics.averageAccuracy
+                "maxAcceleration": metrics.maxAcceleration ?? 0,
+                "maxDeceleration": metrics.maxDeceleration ?? 0,
+                "averageAcceleration": metrics.averageAcceleration ?? 0,
+                "maxMotionAcceleration": metrics.maxMotionAcceleration ?? 0,
+                "averageMotionAcceleration": metrics.averageMotionAcceleration ?? 0,
+                "barometricAltitudeGain": metrics.barometricAltitudeGain ?? 0,
+                "barometricAltitudeLoss": metrics.barometricAltitudeLoss ?? 0,
+                "maxClimbRate": metrics.maxClimbRate ?? 0,
+                "maxDescentRate": metrics.maxDescentRate ?? 0,
+                "averageAccuracy": metrics.averageAccuracy,
+                "averageGPSQualityScore": metrics.averageGPSQualityScore ?? 0,
+                "worstGPSQualityScore": metrics.worstGPSQualityScore ?? 0
             ]
+            metrics.healthKitSensorMetadata.forEach { metadata[$0.key] = $0.value }
             if let effort = flight.effort {
                 metadata["effort"] = effort
             }
@@ -706,10 +718,22 @@ class HealthKitManager: ObservableObject {
             "maxAltitude": metrics.maxAltitude,
             "minAltitude": metrics.minAltitude,
             "maxSpeed": metrics.maxSpeed,
+            "maxAcceleration": metrics.maxAcceleration ?? 0,
+            "maxDeceleration": metrics.maxDeceleration ?? 0,
+            "averageAcceleration": metrics.averageAcceleration ?? 0,
+            "maxMotionAcceleration": metrics.maxMotionAcceleration ?? 0,
+            "averageMotionAcceleration": metrics.averageMotionAcceleration ?? 0,
+            "barometricAltitudeGain": metrics.barometricAltitudeGain ?? 0,
+            "barometricAltitudeLoss": metrics.barometricAltitudeLoss ?? 0,
+            "maxClimbRate": metrics.maxClimbRate ?? 0,
+            "maxDescentRate": metrics.maxDescentRate ?? 0,
             "averageAccuracy": metrics.averageAccuracy,
+            "averageGPSQualityScore": metrics.averageGPSQualityScore ?? 0,
+            "worstGPSQualityScore": metrics.worstGPSQualityScore ?? 0,
             "com.exmstc.gps.gpsDistanceMeters": metrics.totalDistance,
             HKMetadataKeyTimeZone: TimeZone.current.identifier
         ]
+        metrics.healthKitSensorMetadata.forEach { metadata[$0.key] = $0.value }
 
         if let effort = flight.effort {
             metadata["effort"] = effort

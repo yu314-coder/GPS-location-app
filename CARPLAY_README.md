@@ -50,6 +50,9 @@ The code is complete but requires Apple's CarPlay entitlement approval to functi
 - 🏃 **Current Speed** - Real-time speed in km/h
 - 📊 **Average Speed** - Average speed throughout workout
 - ⚡ **Max Speed** - Maximum speed reached
+- 🚀 **Acceleration** - GPS-derived and Core Motion acceleration are tracked by the workout session for analysis; not yet displayed on CarPlay
+- 🛰️ **GPS Quality** - Saved with workouts for diagnostics; not yet displayed on CarPlay
+- 📈 **Climb/Descent** - Barometer-derived climb rate is saved when available; not yet displayed on CarPlay
 - ⛰️ **Altitude** - Current altitude in meters
 - 🔥 **Calories** - Calories burned (if available)
 - ❤️ **Heart Rate** - Current heart rate from Apple Watch (if available)
@@ -176,6 +179,7 @@ Potential features to add:
 - [ ] Maps integration showing route
 - [ ] Voice announcements for milestones
 - [ ] Workout type selection in CarPlay
+- [ ] Acceleration and deceleration metric cards
 - [ ] Multiple workout sessions support
 - [ ] Route replay on car screen
 

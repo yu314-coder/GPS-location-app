@@ -19,6 +19,55 @@ struct PressureSample: Codable, Hashable {
     let pressure: Double  // in kilopascals (kPa)
 }
 
+// Acceleration sample for history tracking
+struct AccelerationSample: Codable, Hashable {
+    let timestamp: Date
+    let acceleration: Double  // in m/s²
+}
+
+// Device-motion acceleration sample for history tracking
+struct MotionAccelerationSample: Codable, Hashable {
+    let timestamp: Date
+    let acceleration: Double  // in m/s², gravity removed
+    let x: Double?
+    let y: Double?
+    let z: Double?
+}
+
+struct AttitudeSample: Codable, Hashable {
+    let timestamp: Date
+    let pitch: Double  // degrees
+    let roll: Double   // degrees
+    let yaw: Double    // degrees
+}
+
+struct RotationRateSample: Codable, Hashable {
+    let timestamp: Date
+    let x: Double      // rad/s
+    let y: Double      // rad/s
+    let z: Double      // rad/s
+    let magnitude: Double
+}
+
+struct HeadingSample: Codable, Hashable {
+    let timestamp: Date
+    let heading: Double  // degrees, 0...360
+}
+
+// Barometric altitude sample for history tracking
+struct BarometricAltitudeSample: Codable, Hashable {
+    let timestamp: Date
+    let relativeAltitude: Double  // in meters from the workout start reference
+    let verticalSpeed: Double?    // in m/s
+}
+
+// GPS quality sample for history tracking
+struct GPSQualitySample: Codable, Hashable {
+    let timestamp: Date
+    let score: Double             // 0...100
+    let horizontalAccuracy: Double
+}
+
 struct FlightMetrics: Codable, Hashable {
     // Distance metrics
     var totalDistance: Double = 0.0  // in meters
@@ -29,12 +78,50 @@ struct FlightMetrics: Codable, Hashable {
     var currentSpeed: Double = 0.0   // in m/s (instantaneous)
     var smoothedSpeed: Double = 0.0  // in m/s (exponentially smoothed)
 
+    // Acceleration metrics. Optional for backward-compatible decoding of older saved workouts.
+    var currentAcceleration: Double? = nil  // in m/s²
+    var maxAcceleration: Double? = nil      // peak positive acceleration in m/s²
+    var maxDeceleration: Double? = nil      // peak negative acceleration in m/s²
+    var averageAcceleration: Double? = nil  // average absolute acceleration in m/s²
+
+    // Device-motion acceleration metrics. These are recorded only and do not affect movement detection.
+    var currentMotionAcceleration: Double? = nil
+    var maxMotionAcceleration: Double? = nil
+    var averageMotionAcceleration: Double? = nil
+    var currentMotionAccelerationX: Double? = nil
+    var currentMotionAccelerationY: Double? = nil
+    var currentMotionAccelerationZ: Double? = nil
+
+    // Device orientation and rotation metrics.
+    var currentPitch: Double? = nil
+    var currentRoll: Double? = nil
+    var currentYaw: Double? = nil
+    var currentRotationRate: Double? = nil
+    var maxRotationRate: Double? = nil
+    var currentRotationRateX: Double? = nil
+    var currentRotationRateY: Double? = nil
+    var currentRotationRateZ: Double? = nil
+
+    // Compass heading independent of GPS course when available.
+    var currentCompassHeading: Double? = nil
+
     // Altitude metrics
     var maxAltitude: Double = 0.0    // in meters
     var minAltitude: Double = 0.0    // in meters
     var currentAltitude: Double = 0.0 // in meters
     var totalAltitudeGain: Double = 0.0
     var totalAltitudeLoss: Double = 0.0
+
+    // Barometer-derived climb/descent metrics. Optional for old saved workouts.
+    var currentBarometricRelativeAltitude: Double? = nil
+    var maxBarometricRelativeAltitude: Double? = nil
+    var minBarometricRelativeAltitude: Double? = nil
+    var barometricAltitudeGain: Double? = nil
+    var barometricAltitudeLoss: Double? = nil
+    var currentVerticalSpeed: Double? = nil
+    var maxClimbRate: Double? = nil
+    var maxDescentRate: Double? = nil
+    var averageVerticalSpeed: Double? = nil
 
     // Atmospheric data
     var currentPressure: Double? = nil  // in kilopascals (kPa)
@@ -61,8 +148,16 @@ struct FlightMetrics: Codable, Hashable {
     var speedHistory: [SpeedSample] = []
     var tenSecondAverageSpeed: Double = 0.0  // 10-second rolling average in m/s
 
+    // Acceleration history for graphing
+    var accelerationHistory: [AccelerationSample]? = nil
+    var motionAccelerationHistory: [MotionAccelerationSample]? = nil
+    var attitudeHistory: [AttitudeSample]? = nil
+    var rotationRateHistory: [RotationRateSample]? = nil
+    var compassHeadingHistory: [HeadingSample]? = nil
+
     // Altitude history for graphing
     var altitudeHistory: [AltitudeSample] = []
+    var barometricAltitudeHistory: [BarometricAltitudeSample]? = nil
 
     // Pressure history for graphing
     var pressureHistory: [PressureSample] = []
@@ -77,6 +172,11 @@ struct FlightMetrics: Codable, Hashable {
     var validPoints: Int = 0
     var averageAccuracy: Double = 0.0
     var signalCoverage: Double = 0.0  // percentage
+    var currentGPSQualityScore: Double? = nil
+    var averageGPSQualityScore: Double? = nil
+    var bestGPSQualityScore: Double? = nil
+    var worstGPSQualityScore: Double? = nil
+    var gpsQualityHistory: [GPSQualitySample]? = nil
 
     // Computed properties
     var distanceInKilometers: Double {
@@ -105,6 +205,34 @@ struct FlightMetrics: Codable, Hashable {
 
     var tenSecondAverageSpeedKmh: Double {
         return tenSecondAverageSpeed * 3.6
+    }
+
+    var currentAccelerationKmhPerSecond: Double {
+        return (currentAcceleration ?? 0) * 3.6
+    }
+
+    var maxAccelerationKmhPerSecond: Double {
+        return (maxAcceleration ?? 0) * 3.6
+    }
+
+    var maxDecelerationKmhPerSecond: Double {
+        return (maxDeceleration ?? 0) * 3.6
+    }
+
+    var averageAccelerationKmhPerSecond: Double {
+        return (averageAcceleration ?? 0) * 3.6
+    }
+
+    var currentVerticalSpeedMetersPerMinute: Double {
+        return (currentVerticalSpeed ?? 0) * 60.0
+    }
+
+    var maxClimbRateMetersPerMinute: Double {
+        return (maxClimbRate ?? 0) * 60.0
+    }
+
+    var maxDescentRateMetersPerMinute: Double {
+        return (maxDescentRate ?? 0) * 60.0
     }
 
     var averagePace: Double {
@@ -149,6 +277,29 @@ struct FlightMetrics: Codable, Hashable {
         return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 
+    var healthKitSensorMetadata: [String: Double] {
+        var metadata: [String: Double] = [:]
+        metadata["com.exmstc.gps.acceleration.max"] = maxAcceleration ?? 0
+        metadata["com.exmstc.gps.acceleration.maxDeceleration"] = maxDeceleration ?? 0
+        metadata["com.exmstc.gps.acceleration.averageAbs"] = averageAcceleration ?? 0
+        metadata["com.exmstc.gps.motionAcceleration.current"] = currentMotionAcceleration ?? 0
+        metadata["com.exmstc.gps.motionAcceleration.max"] = maxMotionAcceleration ?? 0
+        metadata["com.exmstc.gps.motionAcceleration.average"] = averageMotionAcceleration ?? 0
+        metadata["com.exmstc.gps.motionAcceleration.x"] = currentMotionAccelerationX ?? 0
+        metadata["com.exmstc.gps.motionAcceleration.y"] = currentMotionAccelerationY ?? 0
+        metadata["com.exmstc.gps.motionAcceleration.z"] = currentMotionAccelerationZ ?? 0
+        metadata["com.exmstc.gps.attitude.pitch"] = currentPitch ?? 0
+        metadata["com.exmstc.gps.attitude.roll"] = currentRoll ?? 0
+        metadata["com.exmstc.gps.attitude.yaw"] = currentYaw ?? 0
+        metadata["com.exmstc.gps.rotationRate.current"] = currentRotationRate ?? 0
+        metadata["com.exmstc.gps.rotationRate.max"] = maxRotationRate ?? 0
+        metadata["com.exmstc.gps.rotationRate.x"] = currentRotationRateX ?? 0
+        metadata["com.exmstc.gps.rotationRate.y"] = currentRotationRateY ?? 0
+        metadata["com.exmstc.gps.rotationRate.z"] = currentRotationRateZ ?? 0
+        metadata["com.exmstc.gps.compass.heading"] = currentCompassHeading ?? 0
+        return metadata
+    }
+
     mutating func updateWithLocation(_ location: FlightLocation, previousLocation: FlightLocation?, elapsedTime: TimeInterval = 0) {
         totalPoints += 1
         if location.isValid {
@@ -160,21 +311,14 @@ struct FlightMetrics: Codable, Hashable {
 
         // Update distance and altitude gain/loss
         if let previous = previousLocation {
-            let rawDistance = location.distance(to: previous)
-            let noiseFloor = max(1.5, min(8.0, (location.horizontalAccuracy + previous.horizontalAccuracy) * 0.25))
-            let distance = rawDistance >= noiseFloor ? rawDistance : 0.0
+            let distance = location.distance(to: previous)
+            let previousSpeed = currentSpeed
 
-            if distance > 0 {
-                totalDistance += distance
-            }
+            totalDistance += distance
 
             // Performance: Reduce distance logging to every 50 points (matches summary logging)
             if totalPoints % 50 == 0 {
-                if distance > 0 {
-                    print("📏 Distance: +\(String(format: "%.2f", distance))m → Total: \(String(format: "%.2f", totalDistance))m (\(String(format: "%.3f", totalDistance/1000))km)")
-                } else {
-                    print("📏 Distance suppressed as GPS noise: raw=\(String(format: "%.2f", rawDistance))m, threshold=\(String(format: "%.2f", noiseFloor))m")
-                }
+                print("📏 Distance: +\(String(format: "%.2f", distance))m → Total: \(String(format: "%.2f", totalDistance))m (\(String(format: "%.3f", totalDistance/1000))km)")
             }
 
             let altitudeDelta = location.altitude - previous.altitude
@@ -202,6 +346,25 @@ struct FlightMetrics: Codable, Hashable {
                 currentSpeed = 0.0
             }
 
+            if timeDelta > 0.5 {
+                let acceleration = (currentSpeed - previousSpeed) / timeDelta
+                currentAcceleration = acceleration
+                if acceleration > 0 {
+                    maxAcceleration = max(maxAcceleration ?? acceleration, acceleration)
+                } else if acceleration < 0 {
+                    maxDeceleration = min(maxDeceleration ?? acceleration, acceleration)
+                }
+
+                var history = accelerationHistory ?? []
+                history.append(AccelerationSample(timestamp: location.timestamp, acceleration: acceleration))
+                accelerationHistory = history
+                averageAcceleration = history.map { abs($0.acceleration) }.reduce(0, +) / Double(history.count)
+
+                if totalPoints % 25 == 0 {
+                    print("🚀 Acceleration: \(String(format: "%+.2f", acceleration))m/s² | Peak: +\(String(format: "%.2f", maxAcceleration ?? 0))/\(String(format: "%.2f", maxDeceleration ?? 0))m/s²")
+                }
+            }
+
             // Apply Exponential Moving Average (EMA) for smooth speed
             // α = 0.3 provides good balance between responsiveness and smoothing
             // Based on research: https://makeabilitylab.github.io/physcomp/advancedio/smoothing-input.html
@@ -222,6 +385,7 @@ struct FlightMetrics: Codable, Hashable {
         } else {
             currentSpeed = 0.0
             smoothedSpeed = 0.0
+            currentAcceleration = 0.0
         }
 
         // Update max speed using ACTUAL instantaneous speed (not smoothed)
@@ -285,6 +449,198 @@ struct FlightMetrics: Codable, Hashable {
         if location.isValid {
             signalCoverage = (Double(validPoints) / Double(totalPoints)) * 100.0
         }
+
+        updateGPSQuality(with: location)
+    }
+
+    mutating func updateWithMotionAcceleration(
+        _ acceleration: Double,
+        x: Double? = nil,
+        y: Double? = nil,
+        z: Double? = nil,
+        pitch: Double? = nil,
+        roll: Double? = nil,
+        yaw: Double? = nil,
+        rotationRateX: Double? = nil,
+        rotationRateY: Double? = nil,
+        rotationRateZ: Double? = nil,
+        heading: Double? = nil,
+        timestamp: Date = Date()
+    ) {
+        currentMotionAcceleration = acceleration
+        maxMotionAcceleration = max(maxMotionAcceleration ?? acceleration, acceleration)
+        currentMotionAccelerationX = x
+        currentMotionAccelerationY = y
+        currentMotionAccelerationZ = z
+
+        var history = motionAccelerationHistory ?? []
+        history.append(MotionAccelerationSample(timestamp: timestamp, acceleration: acceleration, x: x, y: y, z: z))
+        motionAccelerationHistory = history
+        averageMotionAcceleration = history.map { $0.acceleration }.reduce(0, +) / Double(history.count)
+
+        if let pitch, let roll, let yaw {
+            currentPitch = pitch
+            currentRoll = roll
+            currentYaw = yaw
+            var attitude = attitudeHistory ?? []
+            attitude.append(AttitudeSample(timestamp: timestamp, pitch: pitch, roll: roll, yaw: yaw))
+            attitudeHistory = attitude
+        }
+
+        if let rotationRateX, let rotationRateY, let rotationRateZ {
+            let magnitude = sqrt(rotationRateX * rotationRateX + rotationRateY * rotationRateY + rotationRateZ * rotationRateZ)
+            currentRotationRate = magnitude
+            maxRotationRate = max(maxRotationRate ?? magnitude, magnitude)
+            currentRotationRateX = rotationRateX
+            currentRotationRateY = rotationRateY
+            currentRotationRateZ = rotationRateZ
+            var rotation = rotationRateHistory ?? []
+            rotation.append(RotationRateSample(timestamp: timestamp, x: rotationRateX, y: rotationRateY, z: rotationRateZ, magnitude: magnitude))
+            rotationRateHistory = rotation
+        }
+
+        if let heading {
+            updateWithCompassHeading(heading, timestamp: timestamp)
+        }
+    }
+
+    mutating func updateWithCompassHeading(_ heading: Double, timestamp: Date = Date()) {
+        currentCompassHeading = heading
+        var history = compassHeadingHistory ?? []
+        history.append(HeadingSample(timestamp: timestamp, heading: heading))
+        compassHeadingHistory = history
+    }
+
+    mutating func updateWithBarometricAltitude(relativeAltitude: Double, pressure: Double?, timestamp: Date = Date()) {
+        currentBarometricRelativeAltitude = relativeAltitude
+        currentPressure = pressure ?? currentPressure
+        maxBarometricRelativeAltitude = max(maxBarometricRelativeAltitude ?? relativeAltitude, relativeAltitude)
+        minBarometricRelativeAltitude = min(minBarometricRelativeAltitude ?? relativeAltitude, relativeAltitude)
+
+        var history = barometricAltitudeHistory ?? []
+        var verticalSpeed: Double?
+        if let previous = history.last {
+            let timeDelta = timestamp.timeIntervalSince(previous.timestamp)
+            if timeDelta > 0.2 {
+                let altitudeDelta = relativeAltitude - previous.relativeAltitude
+                verticalSpeed = altitudeDelta / timeDelta
+
+                // Ignore tiny barometer flutter when accumulating climb/descent.
+                if abs(altitudeDelta) >= 0.3 {
+                    if altitudeDelta > 0 {
+                        barometricAltitudeGain = (barometricAltitudeGain ?? 0) + altitudeDelta
+                    } else {
+                        barometricAltitudeLoss = (barometricAltitudeLoss ?? 0) + abs(altitudeDelta)
+                    }
+                }
+
+                currentVerticalSpeed = verticalSpeed
+                if let verticalSpeed {
+                    maxClimbRate = max(maxClimbRate ?? verticalSpeed, verticalSpeed)
+                    maxDescentRate = min(maxDescentRate ?? verticalSpeed, verticalSpeed)
+                }
+            }
+        }
+
+        history.append(BarometricAltitudeSample(
+            timestamp: timestamp,
+            relativeAltitude: relativeAltitude,
+            verticalSpeed: verticalSpeed
+        ))
+        barometricAltitudeHistory = history
+
+        let verticalSpeeds = history.compactMap { $0.verticalSpeed }.map(abs)
+        if !verticalSpeeds.isEmpty {
+            averageVerticalSpeed = verticalSpeeds.reduce(0, +) / Double(verticalSpeeds.count)
+        }
+    }
+
+    private mutating func updateGPSQuality(with location: FlightLocation) {
+        let history = gpsQualityHistory ?? []
+        let previousTimestamp = history.last?.timestamp
+        let score = gpsQualityScore(for: location, previousTimestamp: previousTimestamp)
+        currentGPSQualityScore = score
+        bestGPSQualityScore = max(bestGPSQualityScore ?? score, score)
+        worstGPSQualityScore = min(worstGPSQualityScore ?? score, score)
+
+        var updatedHistory = history
+        updatedHistory.append(GPSQualitySample(
+            timestamp: location.timestamp,
+            score: score,
+            horizontalAccuracy: location.horizontalAccuracy
+        ))
+        gpsQualityHistory = updatedHistory
+        averageGPSQualityScore = updatedHistory.map { $0.score }.reduce(0, +) / Double(updatedHistory.count)
+    }
+
+    private func gpsQualityScore(for location: FlightLocation, previousTimestamp: Date?) -> Double {
+        guard location.isValid, location.horizontalAccuracy >= 0 else { return 0 }
+
+        let accuracy = location.horizontalAccuracy
+        let accuracyScore: Double
+        switch accuracy {
+        case ...10:
+            accuracyScore = 100
+        case ...20:
+            accuracyScore = 90
+        case ...35:
+            accuracyScore = 75
+        case ...50:
+            accuracyScore = 60
+        case ...100:
+            accuracyScore = 35
+        case ...250:
+            accuracyScore = 15
+        default:
+            accuracyScore = 5
+        }
+
+        let gapPenalty: Double
+        if let previousTimestamp {
+            let gap = location.timestamp.timeIntervalSince(previousTimestamp)
+            switch gap {
+            case ...2.5:
+                gapPenalty = 0
+            case ...5:
+                gapPenalty = 8
+            case ...10:
+                gapPenalty = 25
+            case ...20:
+                gapPenalty = 45
+            default:
+                gapPenalty = 65
+            }
+        } else {
+            gapPenalty = 0
+        }
+
+        // Only score timestamp age for live-ish points. Old saved workouts may be
+        // reprocessed later, and wall-clock age should not make historical GPS bad.
+        let wallClockAge = Date().timeIntervalSince(location.timestamp)
+        let agePenalty: Double
+        if wallClockAge >= 0, wallClockAge <= 60 {
+            switch wallClockAge {
+            case ...2.5:
+                agePenalty = 0
+            case ...5:
+                agePenalty = 5
+            case ...10:
+                agePenalty = 15
+            default:
+                agePenalty = 35
+            }
+        } else {
+            agePenalty = 0
+        }
+
+        let filterPenalty = location.isFiltered ? 10.0 : 0.0
+        let baseScore = max(0, min(100, accuracyScore - gapPenalty - agePenalty - filterPenalty))
+
+        if location.isEstimated {
+            return min(baseScore, 25)
+        }
+
+        return baseScore
     }
 
     mutating func calculateAverages(duration: TimeInterval) {

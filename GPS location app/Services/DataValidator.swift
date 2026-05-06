@@ -13,12 +13,6 @@ class DataValidator {
     private var validLocationCount = 0
 
     func validateLocation(_ location: CLLocation) -> Bool {
-        // Check timestamp freshness
-        guard isTimestampValid(location) else {
-            print("Invalid: Timestamp too old")
-            return false
-        }
-
         // Check horizontal accuracy
         guard isAccuracyValid(location) else {
             print("Invalid: Poor horizontal accuracy: \(location.horizontalAccuracy)m")
@@ -29,22 +23,6 @@ class DataValidator {
         guard isCoordinateValid(location) else {
             print("Invalid: Coordinate out of bounds")
             return false
-        }
-
-        // Check speed if available
-        if location.speed >= 0 {
-            guard isSpeedValid(location) else {
-                print("Invalid: Unrealistic speed: \(location.speed)m/s")
-                return false
-            }
-        }
-
-        // Check altitude change rate if we have a previous location
-        if let lastLocation = lastValidLocation {
-            guard isAltitudeChangeValid(location, previous: lastLocation) else {
-                print("Invalid: Unrealistic altitude change")
-                return false
-            }
         }
 
         // Log successful validations (only first 5 to avoid spam)
@@ -71,14 +49,7 @@ class DataValidator {
             return false
         }
 
-        // Check if accuracy exceeds realistic upper bound
-        // Note: Very low accuracy (< 1m) is EXCELLENT, not invalid!
-        if accuracy > maxRealisticAccuracy {
-            return false
-        }
-
-        // Accept any reasonable accuracy
-        return accuracy <= maxHorizontalAccuracy
+        return true
     }
 
     private func isCoordinateValid(_ location: CLLocation) -> Bool {

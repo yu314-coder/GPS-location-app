@@ -16,11 +16,15 @@ class LocationManager: NSObject, ObservableObject {
     @Published var gpsSignalQuality: GPSSignalQuality = .unknown
     @Published var locationSource: LocationSource = .unknown
     @Published var currentPressure: Double? // in kilopascals (kPa)
+    @Published var currentRelativeAltitude: Double? // in meters from altimeter start
+    @Published var currentVerticalSpeed: Double? // in m/s
 
     var onLocationUpdate: ((FlightLocation) -> Void)?
+    var onBarometricAltitudeUpdate: ((Double, Double?, Date) -> Void)?
 
     // Pressure tracking
     private var latestPressure: Double?
+    private var lastRelativeAltitudeSample: (altitude: Double, timestamp: Date)?
 
     // GPS reconnection logic
     private var gpsTimeoutTimer: Timer?
@@ -119,6 +123,7 @@ class LocationManager: NSObject, ObservableObject {
     func stopTracking() {
         isTracking = false
         locationManager.stopUpdatingLocation()
+        locationManager.stopUpdatingHeading()
 
         // Clean up timers
         stopGPSTimeoutMonitoring()
@@ -473,11 +478,25 @@ class LocationManager: NSObject, ObservableObject {
             // Convert pressure from kPa to hPa (hectopascals/millibars) for display
             // CMAltitudeData.pressure is in kilopascals (kPa)
             let pressureKPa = data.pressure.doubleValue
+            let relativeAltitude = data.relativeAltitude.doubleValue
+            let timestamp = Date()
 
             self.latestPressure = pressureKPa
+            self.onBarometricAltitudeUpdate?(relativeAltitude, pressureKPa, timestamp)
+
+            var verticalSpeed: Double?
+            if let previous = self.lastRelativeAltitudeSample {
+                let timeDelta = timestamp.timeIntervalSince(previous.timestamp)
+                if timeDelta > 0.2 {
+                    verticalSpeed = (relativeAltitude - previous.altitude) / timeDelta
+                }
+            }
+            self.lastRelativeAltitudeSample = (relativeAltitude, timestamp)
 
             DispatchQueue.main.async {
                 self.currentPressure = pressureKPa
+                self.currentRelativeAltitude = relativeAltitude
+                self.currentVerticalSpeed = verticalSpeed
             }
         }
     }
@@ -485,8 +504,11 @@ class LocationManager: NSObject, ObservableObject {
     private func stopPressureTracking() {
         altimeter.stopRelativeAltitudeUpdates()
         latestPressure = nil
+        lastRelativeAltitudeSample = nil
         DispatchQueue.main.async { [weak self] in
             self?.currentPressure = nil
+            self?.currentRelativeAltitude = nil
+            self?.currentVerticalSpeed = nil
         }
         print("⌚ 🌡️ Stopped barometric pressure tracking")
     }

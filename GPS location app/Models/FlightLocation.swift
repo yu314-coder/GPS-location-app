@@ -22,8 +22,27 @@ struct FlightLocation: Identifiable, Codable, Hashable {
     // Validation flags
     var isFiltered: Bool
     var isValid: Bool
+    var isEstimated: Bool
 
-    init(from location: CLLocation, isFiltered: Bool = false, isValid: Bool = true, satelliteCount: Int? = nil, signalStrength: Double? = nil, pressure: Double? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case latitude
+        case longitude
+        case altitude
+        case horizontalAccuracy
+        case verticalAccuracy
+        case speed
+        case course
+        case pressure
+        case satelliteCount
+        case signalStrength
+        case isFiltered
+        case isValid
+        case isEstimated
+    }
+
+    init(from location: CLLocation, isFiltered: Bool = false, isValid: Bool = true, satelliteCount: Int? = nil, signalStrength: Double? = nil, pressure: Double? = nil, isEstimated: Bool = false) {
         self.id = UUID()
         self.timestamp = location.timestamp
         self.latitude = location.coordinate.latitude
@@ -38,6 +57,45 @@ struct FlightLocation: Identifiable, Codable, Hashable {
         self.signalStrength = signalStrength
         self.isFiltered = isFiltered
         self.isValid = isValid
+        self.isEstimated = isEstimated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        latitude = try container.decode(Double.self, forKey: .latitude)
+        longitude = try container.decode(Double.self, forKey: .longitude)
+        altitude = try container.decode(Double.self, forKey: .altitude)
+        horizontalAccuracy = try container.decode(Double.self, forKey: .horizontalAccuracy)
+        verticalAccuracy = try container.decode(Double.self, forKey: .verticalAccuracy)
+        speed = try container.decode(Double.self, forKey: .speed)
+        course = try container.decode(Double.self, forKey: .course)
+        pressure = try container.decodeIfPresent(Double.self, forKey: .pressure)
+        satelliteCount = try container.decodeIfPresent(Int.self, forKey: .satelliteCount)
+        signalStrength = try container.decodeIfPresent(Double.self, forKey: .signalStrength)
+        isFiltered = try container.decodeIfPresent(Bool.self, forKey: .isFiltered) ?? false
+        isValid = try container.decodeIfPresent(Bool.self, forKey: .isValid) ?? true
+        isEstimated = try container.decodeIfPresent(Bool.self, forKey: .isEstimated) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(latitude, forKey: .latitude)
+        try container.encode(longitude, forKey: .longitude)
+        try container.encode(altitude, forKey: .altitude)
+        try container.encode(horizontalAccuracy, forKey: .horizontalAccuracy)
+        try container.encode(verticalAccuracy, forKey: .verticalAccuracy)
+        try container.encode(speed, forKey: .speed)
+        try container.encode(course, forKey: .course)
+        try container.encodeIfPresent(pressure, forKey: .pressure)
+        try container.encodeIfPresent(satelliteCount, forKey: .satelliteCount)
+        try container.encodeIfPresent(signalStrength, forKey: .signalStrength)
+        try container.encode(isFiltered, forKey: .isFiltered)
+        try container.encode(isValid, forKey: .isValid)
+        try container.encode(isEstimated, forKey: .isEstimated)
     }
 
     // Convert back to CLLocation

@@ -93,6 +93,32 @@ class FlightDataStore: ObservableObject {
         print("✅ Incremental save completed successfully - \(updatedFlight.locations.count) locations")
     }
 
+    func mergeFlightCheckpoint(_ checkpoint: FlightCheckpointPayload) {
+        var mergedFlight = loadFlightDetails(id: checkpoint.flightID) ?? Flight(
+            id: checkpoint.flightID,
+            startDate: checkpoint.startDate
+        )
+
+        mergedFlight.startDate = checkpoint.startDate
+        mergedFlight.endDate = checkpoint.endDate
+        mergedFlight.metrics = checkpoint.metrics
+        mergedFlight.effort = checkpoint.effort
+        mergedFlight.workoutType = checkpoint.workoutType
+
+        if checkpoint.locationStartIndex <= mergedFlight.locations.count {
+            if checkpoint.locationStartIndex < mergedFlight.locations.count {
+                mergedFlight.locations.removeSubrange(checkpoint.locationStartIndex..<mergedFlight.locations.count)
+            }
+            mergedFlight.locations.append(contentsOf: checkpoint.locations)
+        } else {
+            print("⌚ ⚠️ Local checkpoint gap: local=\(mergedFlight.locations.count), incomingStart=\(checkpoint.locationStartIndex)")
+            mergedFlight.locations.append(contentsOf: checkpoint.locations)
+            mergedFlight.locations.sort { $0.timestamp < $1.timestamp }
+        }
+
+        saveFlightIncremental(mergedFlight, metrics: checkpoint.metrics)
+    }
+
     func deleteFlight(_ flight: Flight) {
         print("🗑️ Deleting flight: \(flight.id)")
         savedFlights.removeAll { $0.id == flight.id }

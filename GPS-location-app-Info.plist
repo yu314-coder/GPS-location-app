@@ -2,12 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
-	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
-	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>exmstc.GPS-location-app.deeplink</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>gpslocationapp</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -39,23 +44,12 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
-		<string>workout-processing</string>
-		<string>processing</string>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UIFilesharingEnabled</key>
 	<true/>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>exmstc.GPS-location-app.deeplink</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>gpslocationapp</string>
-			</array>
-		</dict>
-	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>

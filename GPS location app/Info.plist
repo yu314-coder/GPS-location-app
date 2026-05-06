@@ -33,8 +33,6 @@
     <key>UIBackgroundModes</key>
     <array>
         <string>location</string>
-        <string>processing</string>
-        <string>workout-processing</string>
     </array>
 
     <!-- Required Device Capabilities -->
@@ -90,6 +88,8 @@
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <true/>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
 
     <!-- CarPlay Configuration -->
     <key>UIApplicationSceneManifest</key>

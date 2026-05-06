@@ -69,6 +69,34 @@ struct AnalyticsMonthlyDistance: Identifiable {
     }
 }
 
+struct AnalyticsYearlyDistance: Identifiable {
+    let id = UUID()
+    let year: Int
+    let distance: Double
+    let cumulative: Double
+
+    var distanceKm: Double { distance / 1000.0 }
+    var cumulativeKm: Double { cumulative / 1000.0 }
+}
+
+struct AnalyticsAllTimeMonthlyDistance: Identifiable {
+    let id = UUID()
+    let monthStart: Date
+    let year: Int
+    let month: Int
+    let distance: Double
+    let cumulative: Double
+
+    var distanceKm: Double { distance / 1000.0 }
+    var cumulativeKm: Double { cumulative / 1000.0 }
+
+    var monthLabel: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM yyyy"
+        return formatter.string(from: monthStart)
+    }
+}
+
 // MARK: - WorkoutAnalyticsManager
 
 class WorkoutAnalyticsManager: ObservableObject {
@@ -81,15 +109,33 @@ class WorkoutAnalyticsManager: ObservableObject {
     @Published var twoYearsAgoTotal: Double = 0
     @Published var lastYearSameMonthTotal: Double = 0
     @Published var isLoading = false
+    @Published var isAllTimeSelected = false
+    @Published var allTimeYearFilter: Int? = nil
     @Published var selectedMonth: Int
     @Published var selectedYear: Int
     @Published var activityFilter: AnalyticsActivityFilter = .all
+    @Published var allTimeYearlyDistances: [AnalyticsYearlyDistance] = []
+    @Published var allTimeMonthlyDistances: [AnalyticsAllTimeMonthlyDistance] = []
+    @Published var allTimeTotal: Double = 0
+    @Published var allTimeWorkoutCount: Int = 0
 
     var monthTotal: Double { dailyDistances.last?.cumulative ?? 0 }
     var monthTotalKm: Double { monthTotal / 1000.0 }
     var yearTotalKm: Double { (yearlyDistances.last?.cumulative ?? 0) / 1000.0 }
     var lastYearTotalKm: Double { lastYearTotal / 1000.0 }
     var lastYearSameMonthTotalKm: Double { lastYearSameMonthTotal / 1000.0 }
+    var allTimeTotalKm: Double { allTimeTotal / 1000.0 }
+    var allTimeRangeTitle: String {
+        if let allTimeYearFilter {
+            return String(allTimeYearFilter)
+        }
+        return "All Time"
+    }
+    var allTimeBestYearKm: Double { allTimeYearlyDistances.map(\.distanceKm).max() ?? 0 }
+    var allTimeAverageYearKm: Double {
+        guard !allTimeYearlyDistances.isEmpty else { return 0 }
+        return allTimeYearlyDistances.map(\.distanceKm).reduce(0, +) / Double(allTimeYearlyDistances.count)
+    }
 
     /// Compare selected month vs same month last year
     var monthOverMonthChange: Double {
@@ -126,6 +172,12 @@ class WorkoutAnalyticsManager: ObservableObject {
 
     func fetchData() {
         isLoading = true
+
+        if isAllTimeSelected {
+            fetchAllTimeData()
+            return
+        }
+
         let calendar = Calendar.current
         let now = Date()
         let currentActualMonth = calendar.component(.month, from: now)
@@ -207,6 +259,142 @@ class WorkoutAnalyticsManager: ObservableObject {
     }
 
     // MARK: - HealthKit Queries
+
+    private func fetchAllTimeData() {
+        guard HKHealthStore.isHealthDataAvailable() else {
+            DispatchQueue.main.async {
+                self.allTimeYearlyDistances = []
+                self.allTimeMonthlyDistances = []
+                self.allTimeTotal = 0
+                self.allTimeWorkoutCount = 0
+                self.isLoading = false
+            }
+            return
+        }
+
+        let filter = activityFilter
+        let yearFilter = allTimeYearFilter
+        let calendar = Calendar.current
+
+        let predicate: NSPredicate?
+        if let yearFilter,
+           let yearStart = calendar.date(from: DateComponents(year: yearFilter, month: 1, day: 1)),
+           let nextYearStart = calendar.date(from: DateComponents(year: yearFilter + 1, month: 1, day: 1)) {
+            predicate = HKQuery.predicateForSamples(withStart: yearStart, end: nextYearStart, options: .strictStartDate)
+        } else {
+            predicate = nil
+        }
+
+        let query = HKSampleQuery(
+            sampleType: HKObjectType.workoutType(),
+            predicate: predicate,
+            limit: HKObjectQueryNoLimit,
+            sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
+        ) { _, samples, error in
+            guard let workouts = samples as? [HKWorkout], error == nil else {
+                DispatchQueue.main.async {
+                    self.allTimeYearlyDistances = []
+                    self.allTimeMonthlyDistances = []
+                    self.allTimeTotal = 0
+                    self.allTimeWorkoutCount = 0
+                    self.isLoading = false
+                }
+                return
+            }
+
+            let matchingWorkouts = workouts.filter { workout in
+                guard filter.matches(workout) else { return false }
+                if let yearFilter {
+                    return calendar.component(.year, from: workout.startDate) == yearFilter
+                }
+                return true
+            }
+            var yearlyDistances: [Int: Double] = [:]
+            var monthlyDistances: [Date: Double] = [:]
+            var totalDistance: Double = 0
+
+            for workout in matchingWorkouts {
+                guard let distance = workout.totalDistance?.doubleValue(for: .meter()) else { continue }
+                let year = calendar.component(.year, from: workout.startDate)
+                let month = calendar.component(.month, from: workout.startDate)
+                let monthStart = calendar.date(from: DateComponents(year: year, month: month, day: 1)) ?? calendar.startOfDay(for: workout.startDate)
+                yearlyDistances[year, default: 0] += distance
+                monthlyDistances[monthStart, default: 0] += distance
+                totalDistance += distance
+            }
+
+            let currentYear = calendar.component(.year, from: Date())
+            let currentMonth = calendar.component(.month, from: Date())
+            let firstWorkoutYear = matchingWorkouts
+                .map { calendar.component(.year, from: $0.startDate) }
+                .min()
+            let firstWorkoutMonth = matchingWorkouts
+                .compactMap { workout -> Date? in
+                    let year = calendar.component(.year, from: workout.startDate)
+                    let month = calendar.component(.month, from: workout.startDate)
+                    return calendar.date(from: DateComponents(year: year, month: month, day: 1))
+                }
+                .min()
+            let sortedYears: [Int]
+            if let yearFilter {
+                sortedYears = [yearFilter]
+            } else if let firstWorkoutYear {
+                sortedYears = Array(firstWorkoutYear...currentYear)
+            } else {
+                sortedYears = []
+            }
+            var cumulative: Double = 0
+            let result = sortedYears.map { year in
+                let distance = yearlyDistances[year] ?? 0
+                cumulative += distance
+                return AnalyticsYearlyDistance(year: year, distance: distance, cumulative: cumulative)
+            }
+
+            let sortedMonths: [Date]
+            if let yearFilter {
+                let lastMonth = yearFilter == currentYear ? currentMonth : 12
+                sortedMonths = (1...lastMonth).compactMap { month in
+                    calendar.date(from: DateComponents(year: yearFilter, month: month, day: 1))
+                }
+            } else if let firstWorkoutMonth,
+               let currentMonthStart = calendar.date(from: DateComponents(year: currentYear, month: currentMonth, day: 1)) {
+                var months: [Date] = []
+                var cursor = firstWorkoutMonth
+                while cursor <= currentMonthStart {
+                    months.append(cursor)
+                    guard let next = calendar.date(byAdding: .month, value: 1, to: cursor) else { break }
+                    cursor = next
+                }
+                sortedMonths = months
+            } else {
+                sortedMonths = []
+            }
+
+            var monthlyCumulative: Double = 0
+            let monthlyResult = sortedMonths.map { monthStart in
+                let components = calendar.dateComponents([.year, .month], from: monthStart)
+                let distance = monthlyDistances[monthStart] ?? 0
+                monthlyCumulative += distance
+                return AnalyticsAllTimeMonthlyDistance(
+                    monthStart: monthStart,
+                    year: components.year ?? currentYear,
+                    month: components.month ?? 1,
+                    distance: distance,
+                    cumulative: monthlyCumulative
+                )
+            }
+
+            DispatchQueue.main.async {
+                self.allTimeYearlyDistances = result
+                self.allTimeMonthlyDistances = monthlyResult
+                self.allTimeTotal = totalDistance
+                self.allTimeWorkoutCount = matchingWorkouts.count
+                self.isLoading = false
+            }
+        }
+
+        healthStore.execute(query)
+    }
 
     private func fetchDailyDistances(from startDate: Date, to endDate: Date, isCurrentMonth: Bool, completion: @escaping ([AnalyticsDailyDistance]) -> Void) {
         let calendar = Calendar.current

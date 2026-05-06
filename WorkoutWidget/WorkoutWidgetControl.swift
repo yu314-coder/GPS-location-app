@@ -12,7 +12,7 @@ import WidgetKit
 struct WorkoutWidgetControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(
-            kind: "exmstc.GPS-location-app.WorkoutWidget",
+            kind: "euleryu.gps.WorkoutWidget",
             provider: Provider()
         ) { value in
             ControlWidgetToggle(
