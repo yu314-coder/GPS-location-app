@@ -134,10 +134,11 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             let data = try encoder.encode(payload)
 
             if metadataType == "flightCheckpoint" {
+                // Allow a generous backlog; WCSession serialises file transfers itself.
+                // Dropping checkpoints causes silent GPS data loss on the iPhone side.
                 let pendingTransfers = session.outstandingFileTransfers.count
-                guard pendingTransfers < 3 else {
-                    print("⌚ ⚠️ Skipping checkpoint file transfer; \(pendingTransfers) file transfers already pending")
-                    return false
+                if pendingTransfers >= 20 {
+                    print("⌚ ⚠️ Checkpoint queue at \(pendingTransfers) — still queueing; consider relaunching iPhone app")
                 }
 
                 let fileURL = temporaryPayloadURL(metadataType: metadataType, flightID: flightID)
@@ -167,10 +168,10 @@ class WatchConnectivityManager: NSObject, ObservableObject {
                 return true
             }
 
+            // Always queue; WCSession handles backpressure. Dropping = data loss.
             let pendingTransfers = session.outstandingFileTransfers.count
-            guard metadataType == "flight" || pendingTransfers < 1 else {
-                print("⌚ ⚠️ Skipping checkpoint file transfer; \(pendingTransfers) file transfer already pending")
-                return false
+            if pendingTransfers >= 20 {
+                print("⌚ ⚠️ \(metadataType) queue at \(pendingTransfers) — still queueing")
             }
 
             let fileURL = temporaryPayloadURL(metadataType: metadataType, flightID: flightID)

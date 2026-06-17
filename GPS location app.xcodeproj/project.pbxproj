@@ -472,11 +472,11 @@
 				INFOPLIST_FILE = "GPS-location-app-Watch-App-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "GPS location app";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Allows saving workout events to your calendar.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "We need to read your health data to display your flight history from the Health app.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We need to save your flight workouts and routes to the Health app so they appear in your Fitness history.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Flight tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your flight.";
-				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Flight tracking requires continuous location access to track your complete flight path from ground operations through initial climb.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your flight path and altitude during takeoff and climb.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "We need to read your health data to display your workout history from the Health app.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We need to save your workouts and routes to the Health app so they appear in your Fitness history.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Workout tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your workout.";
+				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Workout tracking requires continuous location access to track your complete workout route.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your workout route, altitude, and speed.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Allows step counting and walking metrics on Apple Watch.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = euleryu.gps;
@@ -484,7 +484,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.gps.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -510,11 +510,11 @@
 				INFOPLIST_FILE = "GPS-location-app-Watch-App-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "GPS location app";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Allows saving workout events to your calendar.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "We need to read your health data to display your flight history from the Health app.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We need to save your flight workouts and routes to the Health app so they appear in your Fitness history.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Flight tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your flight.";
-				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Flight tracking requires continuous location access to track your complete flight path from ground operations through initial climb.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your flight path and altitude during takeoff and climb.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "We need to read your health data to display your workout history from the Health app.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We need to save your workouts and routes to the Health app so they appear in your Fitness history.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Workout tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your workout.";
+				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Workout tracking requires continuous location access to track your complete workout route.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your workout route, altitude, and speed.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Allows step counting and walking metrics on Apple Watch.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = euleryu.gps;
@@ -522,7 +522,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.gps.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -551,12 +551,12 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "GPS location app";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSFallDetectionUsageDescription = "Fall detection helps ensure your safety during outdoor activities.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "We need to read your health data to display your flight history from the Health app.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We need to save your flight workouts and routes to the Health app so they appear in your Fitness history.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Flight tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your flight.";
-				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Flight tracking requires continuous location access to track your complete flight path from ground operations through initial climb.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your flight path and altitude during takeoff and climb.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "We use motion data to improve altitude tracking and flight metrics accuracy.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "We need to read your health data to display your workout history from the Health app.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We need to save your workouts and routes to the Health app so they appear in your Fitness history.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Workout tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your workout.";
+				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Workout tracking requires continuous location access to track your complete workout route.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your workout route, altitude, and speed.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "We use motion data to improve workout metrics accuracy.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -569,7 +569,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.gps;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -596,12 +596,12 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "GPS location app";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSFallDetectionUsageDescription = "Fall detection helps ensure your safety during outdoor activities.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "We need to read your health data to display your flight history from the Health app.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We need to save your flight workouts and routes to the Health app so they appear in your Fitness history.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Flight tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your flight.";
-				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Flight tracking requires continuous location access to track your complete flight path from ground operations through initial climb.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your flight path and altitude during takeoff and climb.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "We use motion data to improve altitude tracking and flight metrics accuracy.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "We need to read your health data to display your workout history from the Health app.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We need to save your workouts and routes to the Health app so they appear in your Fitness history.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Workout tracking requires location access even when the app is in the background to ensure continuous GPS data collection throughout your workout.";
+				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Workout tracking requires continuous location access to track your complete workout route.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your workout route, altitude, and speed.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "We use motion data to improve workout metrics accuracy.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -614,7 +614,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.gps;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -646,7 +646,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.gps.WorkoutWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -680,7 +680,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.gps.WorkoutWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

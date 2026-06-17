@@ -1,5 +1,6 @@
 import Foundation
 import HealthKit
+import CoreLocation
 
 class FlightDataStore: ObservableObject {
     static let shared = FlightDataStore()
@@ -26,6 +27,69 @@ class FlightDataStore: ObservableObject {
 
     private func flightDetailsURL(for id: UUID) -> URL {
         documentsDirectory.appendingPathComponent("\(detailsFilePrefix)\(id.uuidString).json")
+    }
+
+    private func routeCacheURL(for id: UUID) -> URL {
+        documentsDirectory.appendingPathComponent("route_\(id.uuidString).json")
+    }
+
+    /// Compact route cache: just sampled [lat, lon] pairs. The Map tab reads these
+    /// tiny files instead of decoding the full flight detail (GPS points + every
+    /// metric history) into memory — the main cause of map lag/memory-crashes on
+    /// iPhone.
+    private struct RouteCacheEntry: Codable {
+        let coords: [[Double]]   // [[lat, lon], ...]
+    }
+
+    /// Returns sampled route coordinates for a flight (max ~400 points), reading
+    /// the lightweight cache and building it on first use. Runs file I/O on the
+    /// calling thread — call off the main thread.
+    func loadRouteCoordinates(id: UUID) -> [CLLocationCoordinate2D] {
+        // 1) Fast path: compact cache file.
+        let cacheURL = routeCacheURL(for: id)
+        if let data = try? Data(contentsOf: cacheURL, options: .mappedIfSafe),
+           let entry = try? JSONDecoder().decode(RouteCacheEntry.self, from: data) {
+            return entry.coords.compactMap { pair in
+                guard pair.count == 2 else { return nil }
+                return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
+            }
+        }
+
+        // 2) Build cache from the full detail (one-time cost per flight).
+        guard let flight = loadFlightDetails(id: id), flight.locations.count > 1 else {
+            return []
+        }
+        let sampled = Self.sampleLocations(flight.locations, maxPoints: 400)
+        let coords = sampled.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        writeRouteCache(id: id, coordinates: coords)
+        return coords
+    }
+
+    func writeRouteCache(id: UUID, coordinates: [CLLocationCoordinate2D]) {
+        let entry = RouteCacheEntry(coords: coordinates.map { [$0.latitude, $0.longitude] })
+        if let data = try? JSONEncoder().encode(entry) {
+            try? data.write(to: routeCacheURL(for: id), options: .atomic)
+        }
+    }
+
+    private func deleteRouteCache(for id: UUID) {
+        try? FileManager.default.removeItem(at: routeCacheURL(for: id))
+    }
+
+    static func sampleLocations(_ locations: [FlightLocation], maxPoints: Int) -> [FlightLocation] {
+        guard locations.count > maxPoints else { return locations }
+        let stride = max(1, locations.count / maxPoints)
+        var result: [FlightLocation] = []
+        result.reserveCapacity(maxPoints + 1)
+        var i = 0
+        while i < locations.count {
+            result.append(locations[i])
+            i += stride
+        }
+        if let last = locations.last, result.last?.id != last.id {
+            result.append(last)
+        }
+        return result
     }
 
     private init() {
@@ -76,6 +140,55 @@ class FlightDataStore: ObservableObject {
 
             self.persistFlights()
             print("   ✅ Persisted summaries to flights.json")
+        }
+    }
+
+    /// Bulk-save flights downloaded from HealthKit without blocking the main thread.
+    /// Writes per-flight details on a background queue and defers the summary file
+    /// write until all flights in the batch are processed.
+    /// Returns once all writes complete.
+    func saveDownloadedFlights(_ flights: [Flight]) async {
+        guard !flights.isEmpty else { return }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .utility).async {
+                // Write each flight's full details to disk off the main thread
+                let summaries = flights.compactMap { flight -> Flight? in
+                    guard !flight.id.uuidString.isEmpty else { return nil }
+                    self.persistFlightDetails(flight)
+                    return self.summarizedFlight(from: flight)
+                }
+
+                DispatchQueue.main.async {
+                    // Merge summaries into the in-memory array (single update)
+                    for summary in summaries {
+                        if let index = self.savedFlights.firstIndex(where: { $0.id == summary.id }) {
+                            self.savedFlights[index] = summary
+                        } else {
+                            self.savedFlights.insert(summary, at: 0)
+                        }
+                    }
+
+                    // Single disk write for the summaries file, off main thread
+                    let snapshot = self.savedFlights
+                    DispatchQueue.global(qos: .utility).async {
+                        self.persistFlightsSnapshot(snapshot)
+                        continuation.resume()
+                    }
+                }
+            }
+        }
+    }
+
+    private func persistFlightsSnapshot(_ snapshot: [Flight]) {
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = .prettyPrinted
+            let data = try encoder.encode(snapshot)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            print("❌ Failed to save flights snapshot: \(error.localizedDescription)")
         }
     }
 
@@ -256,7 +369,12 @@ class FlightDataStore: ObservableObject {
             for index in decodedFlights.indices {
                 let flight = decodedFlights[index]
                 if needsDetailMigration(for: flight) {
-                    persistFlightDetails(flight)
+                    // Only write the detail file when this record actually carries
+                    // location data — otherwise (history-only bloat) we'd clobber
+                    // the existing good detail file with an empty-locations flight.
+                    if !flight.locations.isEmpty {
+                        persistFlightDetails(flight)
+                    }
                     decodedFlights[index] = summarizedFlight(from: flight)
                     needsSummaryUpdate = true
                 }
@@ -352,6 +470,15 @@ class FlightDataStore: ObservableObject {
             }
         }
 
+        // Refresh the compact route cache so the Map tab never has to decode the
+        // full detail file.
+        if flight.locations.count > 1 {
+            let sampled = Self.sampleLocations(flight.locations, maxPoints: 400)
+            writeRouteCache(id: flight.id, coordinates: sampled.map {
+                CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+            })
+        }
+
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
@@ -392,6 +519,7 @@ class FlightDataStore: ObservableObject {
     }
 
     private func deleteFlightDetails(for id: UUID) {
+        deleteRouteCache(for: id)
         let detailsURL = flightDetailsURL(for: id)
         guard FileManager.default.fileExists(atPath: detailsURL.path) else { return }
 
@@ -407,8 +535,20 @@ class FlightDataStore: ObservableObject {
         var summary = flight
         summary.locations = []
         if var metrics = summary.metrics {
+            // Strip ALL time-series histories from the list summary. They live in
+            // the per-flight detail file. Keeping them here bloats flights.json,
+            // which is loaded/decoded into memory on the Workouts tab — a major
+            // lag and memory source on iPhone.
             metrics.speedHistory = []
             metrics.altitudeHistory = []
+            metrics.pressureHistory = []
+            metrics.accelerationHistory = nil
+            metrics.motionAccelerationHistory = nil
+            metrics.attitudeHistory = nil
+            metrics.rotationRateHistory = nil
+            metrics.compassHeadingHistory = nil
+            metrics.barometricAltitudeHistory = nil
+            metrics.gpsQualityHistory = nil
             summary.metrics = metrics
         }
         return summary
@@ -418,8 +558,18 @@ class FlightDataStore: ObservableObject {
         if !flight.locations.isEmpty {
             return true
         }
-        if let metrics = flight.metrics,
-           !metrics.speedHistory.isEmpty || !metrics.altitudeHistory.isEmpty {
+        guard let metrics = flight.metrics else { return false }
+        // Any leftover history in a summary means the on-disk summary is bloated
+        // and should be slimmed (histories belong only in the detail file).
+        if !metrics.speedHistory.isEmpty || !metrics.altitudeHistory.isEmpty
+            || !metrics.pressureHistory.isEmpty
+            || (metrics.accelerationHistory?.isEmpty == false)
+            || (metrics.motionAccelerationHistory?.isEmpty == false)
+            || (metrics.attitudeHistory?.isEmpty == false)
+            || (metrics.rotationRateHistory?.isEmpty == false)
+            || (metrics.compassHeadingHistory?.isEmpty == false)
+            || (metrics.barometricAltitudeHistory?.isEmpty == false)
+            || (metrics.gpsQualityHistory?.isEmpty == false) {
             return true
         }
         return false

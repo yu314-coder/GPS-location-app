@@ -381,6 +381,27 @@ class LocationManager: NSObject, ObservableObject {
         print("📍 Activity type set to \(activityType)")
     }
 
+    /// Adjust GPS power draw to relieve thermal pressure. When the device is hot,
+    /// drop from best/navigation accuracy to a coarser (but still route-usable)
+    /// accuracy and apply a small distance filter so fewer updates fire.
+    func applyThermalAccuracy(reduced: Bool) {
+        if reduced {
+            locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+            locationManager.distanceFilter = 5.0
+            print("🌡️ GPS throttled for heat: NearestTenMeters, distanceFilter=5m")
+        } else {
+            locationManager.desiredAccuracy = kCLLocationAccuracyBest
+            locationManager.distanceFilter = kCLDistanceFilterNone
+            print("🌡️ GPS restored to full accuracy")
+        }
+    }
+
+    /// Adjust device-motion update rate to relieve thermal pressure.
+    func applyThermalMotionInterval(hot: Bool) {
+        guard motionManager.isDeviceMotionActive else { return }
+        motionManager.deviceMotionUpdateInterval = hot ? 1.0 : 0.5
+    }
+
     // MARK: - GPS Timeout Monitoring
 
     private func startGPSTimeoutMonitoring() {

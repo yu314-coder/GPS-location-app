@@ -113,7 +113,7 @@ struct FlightRow: View {
                     )
                     .frame(width: 36, height: 36)
 
-                Image(systemName: "airplane")
+                Image(systemName: "figure.run")
                     .font(.system(size: 16))
                     .foregroundColor(.purple)
             }
@@ -125,7 +125,7 @@ struct FlightRow: View {
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                 } else {
-                    Text("Flight")
+                    Text("Workout")
                         .font(.system(size: 13, weight: .semibold))
                 }
 
@@ -177,15 +177,15 @@ struct FlightRow: View {
 struct EmptyFlightsView: View {
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "airplane")
+            Image(systemName: "figure.run")
                 .font(.system(size: 60))
                 .foregroundColor(.gray)
 
-            Text("No Flights Yet")
+            Text("No Workouts Yet")
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Start tracking your first flight to see it here")
+            Text("Start tracking your first workout to see it here")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

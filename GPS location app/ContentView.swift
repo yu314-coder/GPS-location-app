@@ -7,53 +7,59 @@
 
 import SwiftUI
 
+private enum AppTab: Int, CaseIterable, Identifiable {
+    case home
+    case flights
+    case map
+    case analysis
+    case test
+    case settings
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .home: return "Home"
+        case .flights: return "Workouts"
+        case .map: return "Map"
+        case .analysis: return "Analysis"
+        case .test: return "Test"
+        case .settings: return "Settings"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .home: return "house.fill"
+        case .flights: return "figure.run"
+        case .map: return "map.fill"
+        case .analysis: return "chart.xyaxis.line"
+        case .test: return "wrench.and.screwdriver"
+        case .settings: return "gear"
+        }
+    }
+
+    static var appStoreTabs: [AppTab] {
+        return allCases
+    }
+}
+
 struct ContentView: View {
-    @State private var selectedTab = 0
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var selectedTab: AppTab = .home
     @State private var showLiveSession = false
 
+    private var isIPadLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
     var body: some View {
-        TabView(selection: $selectedTab) {
-            // Home Tab
-            HomeView(showLiveSession: $showLiveSession)
-                .tabItem {
-                    Label("Home", systemImage: "house.fill")
-                }
-                .tag(0)
-
-            // History Tab
-            EnhancedFlightHistoryView()
-                .tabItem {
-                    Label("Flights", systemImage: "airplane")
-                }
-                .tag(1)
-
-            // Map Tab
-            WorkoutMapView()
-                .tabItem {
-                    Label("Map", systemImage: "map.fill")
-                }
-                .tag(2)
-
-            // Analysis Tab
-            AnalysisView()
-                .tabItem {
-                    Label("Analysis", systemImage: "chart.xyaxis.line")
-                }
-                .tag(3)
-
-            // Test Tab - FOR DEBUGGING PERMISSIONS
-            PermissionTestView()
-                .tabItem {
-                    Label("Test", systemImage: "wrench.and.screwdriver")
-                }
-                .tag(4)
-
-            // Settings Tab
-            SettingsView()
-                .tabItem {
-                    Label("Settings", systemImage: "gear")
-                }
-                .tag(5)
+        Group {
+            if isIPadLayout {
+                iPadRootView
+            } else {
+                iPhoneRootView
+            }
         }
         .sheet(isPresented: $showLiveSession) {
             LiveSessionView()
@@ -68,9 +74,102 @@ struct ContentView: View {
             handleDeepLink(url)
         }
         .onReceive(NotificationCenter.default.publisher(for: .openLiveSessionRequested)) { _ in
-            selectedTab = 0
+            selectedTab = .home
             showLiveSession = true
             print("✅ Opened Live Session from notification request")
+        }
+    }
+
+    private var iPhoneRootView: some View {
+        TabView(selection: $selectedTab) {
+            // Home Tab
+            HomeView(showLiveSession: $showLiveSession)
+                .tabItem {
+                    Label(AppTab.home.title, systemImage: AppTab.home.icon)
+                }
+                .tag(AppTab.home)
+
+            // History Tab
+            EnhancedFlightHistoryView()
+                .tabItem {
+                    Label(AppTab.flights.title, systemImage: AppTab.flights.icon)
+                }
+                .tag(AppTab.flights)
+
+            // Map Tab
+            WorkoutMapView()
+                .tabItem {
+                    Label(AppTab.map.title, systemImage: AppTab.map.icon)
+                }
+                .tag(AppTab.map)
+
+            // Analysis Tab
+            AnalysisView()
+                .tabItem {
+                    Label(AppTab.analysis.title, systemImage: AppTab.analysis.icon)
+                }
+                .tag(AppTab.analysis)
+
+            // Test Tab
+            PermissionTestView()
+                .tabItem {
+                    Label(AppTab.test.title, systemImage: AppTab.test.icon)
+                }
+                .tag(AppTab.test)
+
+            // Settings Tab
+            SettingsView()
+                .tabItem {
+                    Label(AppTab.settings.title, systemImage: AppTab.settings.icon)
+                }
+                .tag(AppTab.settings)
+        }
+    }
+
+    private var iPadRootView: some View {
+        NavigationSplitView {
+            List {
+                Section("GPS-location-app") {
+                    ForEach(AppTab.appStoreTabs) { tab in
+                        Button {
+                            selectedTab = tab
+                        } label: {
+                            Label(tab.title, systemImage: tab.icon)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(
+                            selectedTab == tab ? Color.accentColor.opacity(0.14) : Color.clear
+                        )
+                        .foregroundColor(selectedTab == tab ? .accentColor : .primary)
+                    }
+                }
+            }
+            .navigationTitle("GPS Tracker")
+        } detail: {
+            selectedTabContent
+        }
+    }
+
+    @ViewBuilder
+    private var selectedTabContent: some View {
+        switch selectedTab {
+        case .home:
+            NavigationStack {
+                HomeView(showLiveSession: $showLiveSession)
+                    .navigationTitle(AppTab.home.title)
+            }
+        case .flights:
+            EnhancedFlightHistoryView()
+        case .map:
+            WorkoutMapView()
+        case .analysis:
+            AnalysisView()
+        case .test:
+            PermissionTestView()
+        case .settings:
+            SettingsView()
         }
     }
 
@@ -80,7 +179,7 @@ struct ContentView: View {
         let host = url.host?.lowercased() ?? ""
         let path = url.path.lowercased()
         if host == "live" || path == "/live" {
-            selectedTab = 0
+            selectedTab = .home
             showLiveSession = true
             print("✅ Opened Live Session from deep link: \(url.absoluteString)")
         }
@@ -89,146 +188,201 @@ struct ContentView: View {
 
 struct HomeView: View {
     @Binding var showLiveSession: Bool
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var isAnimating = false
 
+    private var isIPadLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
     var body: some View {
-        NavigationView {
-            ZStack {
-                // Gradient background
-                LinearGradient(
-                    colors: [
-                        Color.blue.opacity(0.1),
-                        Color.purple.opacity(0.05),
-                        Color.clear
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
-
-                ScrollView {
-                    VStack(spacing: 40) {
-                        Spacer().frame(height: 20)
-
-                        // Hero Section
-                        VStack(spacing: 24) {
-                            // App Logo/Icon with animation
-                            ZStack {
-                                Circle()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [Color.blue, Color.purple],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    .frame(width: 120, height: 120)
-                                    .blur(radius: 20)
-                                    .opacity(0.6)
-                                    .scaleEffect(isAnimating ? 1.1 : 0.9)
-                                    .animation(
-                                        Animation.easeInOut(duration: 2.0)
-                                            .repeatForever(autoreverses: true),
-                                        value: isAnimating
-                                    )
-
-                                Image(systemName: "airplane.circle.fill")
-                                    .font(.system(size: 100))
-                                    .foregroundStyle(
-                                        LinearGradient(
-                                            colors: [.blue, .purple],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    .shadow(color: .blue.opacity(0.3), radius: 10, x: 0, y: 5)
-                            }
-
-                            VStack(spacing: 12) {
-                                Text("Flight GPS Tracker")
-                                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                                    .multilineTextAlignment(.center)
-
-                                Text("Track your flights with precision GPS technology")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                    .multilineTextAlignment(.center)
-                                    .padding(.horizontal)
-                            }
-                        }
-
-                        // Start Tracking Button with gradient
-                        Button(action: {
-                            showLiveSession = true
-                        }) {
-                            HStack(spacing: 12) {
-                                Image(systemName: "play.circle.fill")
-                                    .font(.title2)
-                                Text("Start Flight Tracking")
-                                    .font(.headline)
-                                    .fontWeight(.semibold)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 18)
-                            .background(
-                                LinearGradient(
-                                    colors: [Color.blue, Color.blue.opacity(0.8)],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .foregroundColor(.white)
-                            .cornerRadius(16)
-                            .shadow(color: .blue.opacity(0.4), radius: 15, x: 0, y: 8)
-                        }
-                        .padding(.horizontal)
-
-                        // Feature Cards
-                        VStack(spacing: 16) {
-                            HStack(spacing: 12) {
-                                ModernInfoCard(
-                                    icon: "location.fill",
-                                    title: "GPS Filtering",
-                                    description: "Kalman filtered coordinates",
-                                    color: .green
-                                )
-
-                                ModernInfoCard(
-                                    icon: "heart.text.square.fill",
-                                    title: "HealthKit",
-                                    description: "Auto-sync to Fitness",
-                                    color: .red
-                                )
-                            }
-
-                            HStack(spacing: 12) {
-                                ModernInfoCard(
-                                    icon: "waveform.path.ecg",
-                                    title: "Real-time",
-                                    description: "Live metrics tracking",
-                                    color: .orange
-                                )
-
-                                ModernInfoCard(
-                                    icon: "chart.xyaxis.line",
-                                    title: "Analytics",
-                                    description: "Detailed statistics",
-                                    color: .purple
-                                )
-                            }
-                        }
-                        .padding(.horizontal)
-
-                        Spacer().frame(height: 20)
-                    }
+        Group {
+            if isIPadLayout {
+                homeContent
+            } else {
+                NavigationStack {
+                    homeContent
+                        .navigationTitle("Home")
+                        .navigationBarTitleDisplayMode(.inline)
                 }
             }
-            .navigationTitle("Home")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                isAnimating = true
+        }
+        .onAppear {
+            isAnimating = true
+        }
+    }
+
+    private var homeContent: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color.blue.opacity(0.10),
+                    Color.purple.opacity(0.05),
+                    Color.clear
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            ScrollView {
+                VStack(spacing: isIPadLayout ? 32 : 40) {
+                    if isIPadLayout {
+                        iPadHeroLayout
+                    } else {
+                        phoneHeroLayout
+                        startTrackingButton
+                    }
+
+                    featureGrid
+                }
+                .frame(maxWidth: isIPadLayout ? 980 : .infinity)
+                .padding(.horizontal, isIPadLayout ? 32 : 0)
+                .padding(.vertical, isIPadLayout ? 40 : 20)
+                .frame(maxWidth: .infinity)
             }
         }
+    }
+
+    private var phoneHeroLayout: some View {
+        VStack(spacing: 24) {
+            heroIcon
+            heroText
+        }
+    }
+
+    private var iPadHeroLayout: some View {
+        HStack(alignment: .center, spacing: 36) {
+            heroIcon
+                .frame(width: 220)
+
+            VStack(alignment: .leading, spacing: 22) {
+                heroText
+                    .multilineTextAlignment(.leading)
+
+                startTrackingButton
+                    .frame(maxWidth: 420)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(28)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .shadow(color: Color.black.opacity(0.06), radius: 18, x: 0, y: 8)
+    }
+
+    private var heroIcon: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [Color.blue, Color.purple],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: isIPadLayout ? 150 : 120, height: isIPadLayout ? 150 : 120)
+                .blur(radius: 20)
+                .opacity(0.6)
+                .scaleEffect(isAnimating ? 1.1 : 0.9)
+                .animation(
+                    Animation.easeInOut(duration: 2.0)
+                        .repeatForever(autoreverses: true),
+                    value: isAnimating
+                )
+
+            Image(systemName: "figure.run.circle.fill")
+                .font(.system(size: isIPadLayout ? 120 : 100))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [.blue, .purple],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .shadow(color: .blue.opacity(0.3), radius: 10, x: 0, y: 5)
+        }
+    }
+
+    private var heroText: some View {
+        VStack(alignment: isIPadLayout ? .leading : .center, spacing: 12) {
+            Text("GPS Workout Tracker")
+                .font(.system(size: isIPadLayout ? 42 : 34, weight: .bold, design: .rounded))
+                .multilineTextAlignment(isIPadLayout ? .leading : .center)
+
+            Text("Track your workouts with precision GPS technology")
+                .font(isIPadLayout ? .title3 : .subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(isIPadLayout ? .leading : .center)
+                .padding(.horizontal, isIPadLayout ? 0 : 16)
+        }
+    }
+
+    private var startTrackingButton: some View {
+        Button(action: {
+            showLiveSession = true
+        }) {
+            HStack(spacing: 12) {
+                Image(systemName: "play.circle.fill")
+                    .font(.title2)
+                Text("Start Workout Tracking")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+            .background(
+                LinearGradient(
+                    colors: [Color.blue, Color.blue.opacity(0.8)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .foregroundColor(.white)
+            .cornerRadius(16)
+            .shadow(color: .blue.opacity(0.4), radius: 15, x: 0, y: 8)
+        }
+        .padding(.horizontal, isIPadLayout ? 0 : 16)
+    }
+
+    private var featureGrid: some View {
+        LazyVGrid(
+            columns: Array(
+                repeating: GridItem(.flexible(), spacing: 16),
+                count: isIPadLayout ? 4 : 2
+            ),
+            spacing: 16
+        ) {
+            ModernInfoCard(
+                icon: "location.fill",
+                title: "GPS Filtering",
+                description: "Kalman filtered coordinates",
+                color: .green
+            )
+
+            ModernInfoCard(
+                icon: "heart.text.square.fill",
+                title: "HealthKit",
+                description: "Auto-sync to Fitness",
+                color: .red
+            )
+
+            ModernInfoCard(
+                icon: "waveform.path.ecg",
+                title: "Real-time",
+                description: "Live metrics tracking",
+                color: .orange
+            )
+
+            ModernInfoCard(
+                icon: "chart.xyaxis.line",
+                title: "Analytics",
+                description: "Detailed statistics",
+                color: .purple
+            )
+        }
+        .padding(.horizontal, isIPadLayout ? 0 : 16)
     }
 }
 
@@ -392,16 +546,16 @@ struct PermissionsOnboardingView: View {
 struct WelcomePermissionPage: View {
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "airplane.circle.fill")
+            Image(systemName: "figure.run.circle.fill")
                 .font(.system(size: 100))
                 .foregroundColor(.blue)
 
-            Text("Welcome to Flight GPS Tracker")
+            Text("Welcome to GPS Workout Tracker")
                 .font(.title)
                 .fontWeight(.bold)
                 .multilineTextAlignment(.center)
 
-            Text("To track your flights accurately, we need a couple of permissions")
+            Text("To track your workouts accurately, we need a couple of permissions")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -411,7 +565,7 @@ struct WelcomePermissionPage: View {
                 PermissionRow(
                     icon: "location.fill",
                     title: "Location Access",
-                    description: "Track your flight path with GPS"
+                    description: "Track your workout route with GPS"
                 )
 
                 PermissionRow(
@@ -450,7 +604,7 @@ struct LocationPermissionPage: View {
                 .padding(.horizontal)
 
             VStack(alignment: .leading, spacing: 12) {
-                InfoRow(text: "Continuous GPS tracking during flight")
+                InfoRow(text: "Continuous GPS tracking during workouts")
                 InfoRow(text: "Background location updates")
                 InfoRow(text: "Accurate altitude and speed data")
             }
@@ -529,9 +683,9 @@ struct LocationPermissionPage: View {
         case .notDetermined:
             return "First, we'll request \"When In Use\" permission. Then you can upgrade to \"Always Allow\" for background tracking."
         case .authorizedWhenInUse:
-            return "Great! Now upgrade to \"Always Allow\" to enable background tracking during flights."
+            return "Great! Now upgrade to \"Always Allow\" to enable background tracking during workouts."
         default:
-            return "Location permission is required to track your complete flight path, even when the app is in the background."
+            return "Location permission is required to track your complete workout route, even when the app is in the background."
         }
     }
 
@@ -567,15 +721,15 @@ struct HealthKitPermissionPage: View {
                 .font(.title2)
                 .fontWeight(.bold)
 
-            Text("Save your flight data to Apple Health and track heart rate during flights.")
+            Text("Save your workout data to Apple Health and track heart rate during workouts.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
 
             VStack(alignment: .leading, spacing: 12) {
-                InfoRow(text: "Save flights as workouts")
-                InfoRow(text: "Track heart rate during flight")
+                InfoRow(text: "Save workouts to Apple Health")
+                InfoRow(text: "Track heart rate during workouts")
                 InfoRow(text: "View in Apple Fitness app")
                 InfoRow(text: "Sync with other health data")
             }

@@ -40,7 +40,7 @@ struct WorkoutDetailView: View {
         case .hiking:
             return "Hiking"
         case .other:
-            return "Flight"
+            return "Other"
         case .traditionalStrengthTraining:
             return "General"
         default:
@@ -887,7 +887,7 @@ struct WorkoutDetailView: View {
                     print("✅ Resync successful")
                     let signature = FlightDataStore.shared.resyncSignature(for: activeFlight)
                     FlightDataStore.shared.markResynced(flightID: activeFlight.id, signature: signature)
-                    self.resyncMessage = "Workout successfully resynced to HealthKit!\n\nDistance: \(String(format: "%.2f", metrics.totalDistance/1000))km\n\nGo back to the Flights tab and pull down to refresh, or reopen the app to see the updated distance."
+                    self.resyncMessage = "Workout successfully resynced to HealthKit!\n\nDistance: \(String(format: "%.2f", metrics.totalDistance/1000))km\n\nGo back to the Workouts tab and pull down to refresh, or reopen the app to see the updated distance."
                 } else {
                     print("❌ Resync failed: \(error?.localizedDescription ?? "Unknown error")")
                     self.resyncMessage = "Failed to resync workout: \(error?.localizedDescription ?? "Unknown error")"

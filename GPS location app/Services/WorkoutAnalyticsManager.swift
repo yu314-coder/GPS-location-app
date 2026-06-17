@@ -97,6 +97,25 @@ struct AnalyticsAllTimeMonthlyDistance: Identifiable {
     }
 }
 
+struct AnalyticsAllTimeDailyDistance: Identifiable {
+    let id = UUID()
+    let dayStart: Date
+    let year: Int
+    let month: Int
+    let day: Int
+    let distance: Double
+    let cumulative: Double
+
+    var distanceKm: Double { distance / 1000.0 }
+    var cumulativeKm: Double { cumulative / 1000.0 }
+
+    var dayLabel: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter.string(from: dayStart)
+    }
+}
+
 // MARK: - WorkoutAnalyticsManager
 
 class WorkoutAnalyticsManager: ObservableObject {
@@ -116,6 +135,7 @@ class WorkoutAnalyticsManager: ObservableObject {
     @Published var activityFilter: AnalyticsActivityFilter = .all
     @Published var allTimeYearlyDistances: [AnalyticsYearlyDistance] = []
     @Published var allTimeMonthlyDistances: [AnalyticsAllTimeMonthlyDistance] = []
+    @Published var allTimeDailyDistances: [AnalyticsAllTimeDailyDistance] = []
     @Published var allTimeTotal: Double = 0
     @Published var allTimeWorkoutCount: Int = 0
 
@@ -265,6 +285,7 @@ class WorkoutAnalyticsManager: ObservableObject {
             DispatchQueue.main.async {
                 self.allTimeYearlyDistances = []
                 self.allTimeMonthlyDistances = []
+                self.allTimeDailyDistances = []
                 self.allTimeTotal = 0
                 self.allTimeWorkoutCount = 0
                 self.isLoading = false
@@ -295,6 +316,7 @@ class WorkoutAnalyticsManager: ObservableObject {
                 DispatchQueue.main.async {
                     self.allTimeYearlyDistances = []
                     self.allTimeMonthlyDistances = []
+                    self.allTimeDailyDistances = []
                     self.allTimeTotal = 0
                     self.allTimeWorkoutCount = 0
                     self.isLoading = false
@@ -311,6 +333,7 @@ class WorkoutAnalyticsManager: ObservableObject {
             }
             var yearlyDistances: [Int: Double] = [:]
             var monthlyDistances: [Date: Double] = [:]
+            var dailyDistances: [Date: Double] = [:]
             var totalDistance: Double = 0
 
             for workout in matchingWorkouts {
@@ -318,8 +341,10 @@ class WorkoutAnalyticsManager: ObservableObject {
                 let year = calendar.component(.year, from: workout.startDate)
                 let month = calendar.component(.month, from: workout.startDate)
                 let monthStart = calendar.date(from: DateComponents(year: year, month: month, day: 1)) ?? calendar.startOfDay(for: workout.startDate)
+                let dayStart = calendar.startOfDay(for: workout.startDate)
                 yearlyDistances[year, default: 0] += distance
                 monthlyDistances[monthStart, default: 0] += distance
+                dailyDistances[dayStart, default: 0] += distance
                 totalDistance += distance
             }
 
@@ -384,9 +409,47 @@ class WorkoutAnalyticsManager: ObservableObject {
                 )
             }
 
+            let sortedDays: [Date]
+            if let yearFilter,
+               let firstDayStart = calendar.date(from: DateComponents(year: yearFilter, month: 1, day: 1)) {
+                let lastDayStart: Date
+                if yearFilter == currentYear {
+                    lastDayStart = calendar.startOfDay(for: Date())
+                } else {
+                    lastDayStart = calendar.date(from: DateComponents(year: yearFilter, month: 12, day: 31)) ?? firstDayStart
+                }
+
+                var days: [Date] = []
+                var cursor = firstDayStart
+                while cursor <= lastDayStart {
+                    days.append(cursor)
+                    guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
+                    cursor = next
+                }
+                sortedDays = days
+            } else {
+                sortedDays = []
+            }
+
+            var dailyCumulative: Double = 0
+            let dailyResult = sortedDays.map { dayStart in
+                let components = calendar.dateComponents([.year, .month, .day], from: dayStart)
+                let distance = dailyDistances[dayStart] ?? 0
+                dailyCumulative += distance
+                return AnalyticsAllTimeDailyDistance(
+                    dayStart: dayStart,
+                    year: components.year ?? currentYear,
+                    month: components.month ?? 1,
+                    day: components.day ?? 1,
+                    distance: distance,
+                    cumulative: dailyCumulative
+                )
+            }
+
             DispatchQueue.main.async {
                 self.allTimeYearlyDistances = result
                 self.allTimeMonthlyDistances = monthlyResult
+                self.allTimeDailyDistances = dailyResult
                 self.allTimeTotal = totalDistance
                 self.allTimeWorkoutCount = matchingWorkouts.count
                 self.isLoading = false

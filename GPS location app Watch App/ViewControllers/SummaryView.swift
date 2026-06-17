@@ -16,7 +16,7 @@ struct SummaryView: View {
             VStack(spacing: 20) {
                 // Header
                 VStack(spacing: 8) {
-                    Text("Flight Summary")
+                    Text("Workout Summary")
                         .font(.title)
                         .fontWeight(.bold)
 

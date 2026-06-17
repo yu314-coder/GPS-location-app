@@ -92,11 +92,11 @@ struct SettingsView: View {
                 }
 
                 // Tips Section
-                Section(header: Text("Flight Tracking Tips")) {
+                Section(header: Text("Workout Tracking Tips")) {
                     VStack(alignment: .leading, spacing: 12) {
                         TipRow(
-                            icon: "airplane.departure",
-                            text: "Request a window seat for better GPS reception"
+                            icon: "location.fill",
+                            text: "Start outdoors or near a clear sky for better GPS reception"
                         )
 
                         TipRow(
@@ -106,12 +106,12 @@ struct SettingsView: View {
 
                         TipRow(
                             icon: "battery.100",
-                            text: "Ensure your device is fully charged before flight"
+                            text: "Ensure your device is fully charged before long workouts"
                         )
 
                         TipRow(
                             icon: "wifi",
-                            text: "Airplane WiFi can improve GPS accuracy"
+                            text: "Wi-Fi and cellular can improve GPS accuracy"
                         )
                     }
                     .padding(.vertical, 8)

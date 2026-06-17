@@ -44,11 +44,31 @@ class WorkoutSession: ObservableObject {
 
     // Live Activity tracking
     private var lastLiveActivityUpdate: Date?
-    private let LIVE_ACTIVITY_UPDATE_INTERVAL: TimeInterval = 2.0 // Update every 2 seconds
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var didAttemptSnapshotRestore = false
     private var lastSnapshotSaveDate: Date?
-    private let ACTIVE_WORKOUT_AUTOSAVE_INTERVAL: TimeInterval = 5.0
+
+    // Thermal management — back off heavy work as the device heats up so iOS
+    // doesn't terminate the app for overheating during long workouts.
+    @Published var thermalState: ProcessInfo.ThermalState = .nominal
+    private var thermalObserver: NSObjectProtocol?
+
+    private var isHot: Bool { thermalState == .serious || thermalState == .critical }
+
+    private var LIVE_ACTIVITY_UPDATE_INTERVAL: TimeInterval {
+        switch thermalState {
+        case .critical: return 10.0
+        case .serious: return 5.0
+        default: return 2.0
+        }
+    }
+    private var ACTIVE_WORKOUT_AUTOSAVE_INTERVAL: TimeInterval {
+        switch thermalState {
+        case .critical: return 30.0
+        case .serious: return 15.0
+        default: return 5.0
+        }
+    }
     private let ACTIVE_WORKOUT_MAX_RESTORE_AGE: TimeInterval = 24 * 60 * 60
     private let activeWorkoutSnapshotQueue = DispatchQueue(
         label: "com.exmstc.gps.activeWorkoutSnapshot",
@@ -94,12 +114,12 @@ class WorkoutSession: ObservableObject {
     // fast GPS workouts do not lose most of their distance on the phone.
     private let MAX_HORIZONTAL_ACCURACY: Double = 100.0
     private let MAX_LOCATION_AGE: TimeInterval = 15.0
-    private let DEFAULT_MAX_SPEED_MPS: Double = 50.0
+    private let DEFAULT_MAX_SPEED_MPS: Double = .greatestFiniteMagnitude  // speed limit disabled
     private let DEFAULT_MAX_DISTANCE_JUMP: Double = 150.0
     private let DEFAULT_MAX_ACCELERATION_MPS2: Double = 10.0
 
     // ABSOLUTE SAFETY LIMITS - applied even in Raw GPS mode to prevent impossible physics
-    private let ABSOLUTE_MAX_SPEED_MPS: Double = 150.0  // 150 m/s = 540 km/h (no human activity exceeds this)
+    private let ABSOLUTE_MAX_SPEED_MPS: Double = .greatestFiniteMagnitude  // speed limit disabled
     private let ABSOLUTE_MAX_DISTANCE_JUMP: Double = 2000.0
 
     // Estimated-location fallback for GPS gaps. These points are explicitly marked
@@ -148,7 +168,7 @@ class WorkoutSession: ObservableObject {
         case .hiking:
             return "Hiking"
         case .other:
-            return "Flight"
+            return "Other"
         default:
             return "Workout"
         }
@@ -194,6 +214,43 @@ class WorkoutSession: ObservableObject {
         setupLocationUpdates()
         setupWatchConnectivity()
         setupAppLifecycleObservers()
+        setupThermalMonitoring()
+    }
+
+    private func setupThermalMonitoring() {
+        thermalState = ProcessInfo.processInfo.thermalState
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            let newState = ProcessInfo.processInfo.thermalState
+            self.thermalState = newState
+            self.applyThermalMitigation(for: newState)
+        }
+    }
+
+    /// Progressively reduce power draw as the device heats up. This keeps the
+    /// workout running instead of letting iOS terminate the app for overheating.
+    private func applyThermalMitigation(for state: ProcessInfo.ThermalState) {
+        let hot = (state == .serious || state == .critical)
+        let stateName: String
+        switch state {
+        case .nominal: stateName = "nominal"
+        case .fair: stateName = "fair"
+        case .serious: stateName = "serious"
+        case .critical: stateName = "critical"
+        @unknown default: stateName = "unknown"
+        }
+        print("🌡️ Thermal state: \(stateName) — \(hot ? "throttling to cool down" : "full performance")")
+
+        // Only throttle GPS/motion while a workout is active.
+        guard isActive else { return }
+        locationManager.applyThermalAccuracy(reduced: hot)
+        locationManager.applyThermalMotionInterval(hot: hot)
+        // Snapshot + Live Activity intervals adjust automatically via their
+        // thermal-aware computed properties.
     }
 
     private func setupLocationUpdates() {
@@ -288,13 +345,17 @@ class WorkoutSession: ObservableObject {
         guard let snapshot = loadActiveWorkoutSnapshot() else { return }
 
         if snapshot.flight.endDate != nil {
+            // Snapshot was finishing when the app died — make sure the track is saved.
+            recoverOrphanedWorkout(snapshot, endDate: snapshot.flight.endDate ?? snapshot.savedAt, reason: "snapshotAlreadyEnded")
             clearActiveWorkoutSnapshot(reason: "snapshotAlreadyEnded", shouldLog: true)
             return
         }
 
         let age = Date().timeIntervalSince(snapshot.savedAt)
         if age > ACTIVE_WORKOUT_MAX_RESTORE_AGE {
-            print("⚠️ Ignoring stale active workout snapshot (\(Int(age/3600))h old)")
+            print("⚠️ Active workout snapshot too old to resume (\(Int(age/3600))h old) — recovering track instead of discarding")
+            // Don't lose the trace: finalize and save it locally so the user keeps the route.
+            recoverOrphanedWorkout(snapshot, endDate: snapshot.savedAt, reason: "snapshotTooOld")
             clearActiveWorkoutSnapshot(reason: "snapshotTooOld", shouldLog: true)
             return
         }
@@ -343,6 +404,57 @@ class WorkoutSession: ObservableObject {
 
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
         persistActiveWorkoutSnapshot(force: true, reason: "restored", shouldLog: true)
+    }
+
+    /// Crash-recovery fallback: when an active-workout snapshot can't be resumed
+    /// (stale, or it was mid-finish when the process died), finalize the captured
+    /// track into a saved Flight and push it to HealthKit so the trace is never lost.
+    private func recoverOrphanedWorkout(_ snapshot: ActiveWorkoutSnapshot, endDate: Date, reason: String) {
+        var recovered = snapshot.flight
+        guard !recovered.locations.isEmpty else {
+            print("♻️ Orphaned workout (\(reason)) has no locations — nothing to recover")
+            return
+        }
+
+        // Skip if this flight was already saved (avoid duplicates).
+        if FlightDataStore.shared.getFlight(by: recovered.id) != nil
+            || FlightDataStore.shared.loadFlightDetails(id: recovered.id) != nil {
+            print("♻️ Orphaned workout \(recovered.id) already saved — skipping recovery")
+            return
+        }
+
+        recovered.endDate = endDate
+
+        var metrics = snapshot.currentMetrics
+        let duration = max(0, endDate.timeIntervalSince(recovered.startDate) - snapshot.totalPausedTime)
+        metrics.calculateAverages(duration: duration)
+        metrics.estimateCalories(duration: duration)
+        metrics.finalizeSplits()
+        metrics.sanitize()  // guard against NaN/Inf so the save can't crash
+        recovered.metrics = metrics
+        if recovered.effort == nil { recovered.effort = 10 }
+
+        // 1) Always persist locally first — this guarantees the trace survives.
+        FlightDataStore.shared.saveFlight(recovered)
+        print("♻️ Recovered orphaned workout (\(reason)): id=\(recovered.id), locations=\(recovered.locations.count), distance=\(String(format: "%.2f", metrics.totalDistance/1000))km — saved locally")
+
+        // 2) Best-effort export to HealthKit (non-fatal if it fails; track is already safe locally).
+        let recoveredFlight = recovered
+        let recoveredMetrics = metrics
+        healthKitManager.resyncFlightToHealthKit(
+            flight: recoveredFlight,
+            locations: recoveredFlight.locations,
+            metrics: recoveredMetrics
+        ) { success, error, workout in
+            if success {
+                if let workout = workout {
+                    FlightDataStore.shared.updateWorkoutUUID(for: recoveredFlight.id, workoutUUID: workout.uuid)
+                }
+                print("♻️ Recovered workout exported to HealthKit ✅")
+            } else {
+                print("♻️ Recovered workout HealthKit export failed (track safe locally): \(error?.localizedDescription ?? "unknown")")
+            }
+        }
     }
 
     private func loadActiveWorkoutSnapshot() -> ActiveWorkoutSnapshot? {
@@ -501,6 +613,10 @@ class WorkoutSession: ObservableObject {
         let activityType: CLActivityType = (workoutType == .other) ? .airborne : .fitness
         locationManager.updateActivityType(activityType)
 
+        // Apply current thermal state immediately (device may already be warm).
+        thermalState = ProcessInfo.processInfo.thermalState
+        applyThermalMitigation(for: thermalState)
+
         if workoutType != .other {
             let speedThresholdKmh = maxSpeedThresholdMps(for: workoutType) * 3.6
             let jumpThreshold = maxDistanceJumpThreshold(for: workoutType)
@@ -556,7 +672,7 @@ class WorkoutSession: ObservableObject {
         } else if locationStatus == .denied || locationStatus == .restricted {
             print("❌ Location permission denied!")
             print("👉 Please enable location access in:")
-            print("   Settings → Privacy & Security → Location Services → Flight GPS Tracker")
+            print("   Settings → Privacy & Security → Location Services → GPS Workout Tracker")
         } else {
             // Already have permission - start tracking immediately
             print("📍 Starting location tracking...")
@@ -658,6 +774,7 @@ class WorkoutSession: ObservableObject {
         currentMetrics.calculateAverages(duration: finalActiveDuration)
         currentMetrics.estimateCalories(duration: finalActiveDuration)
         currentMetrics.finalizeSplits()
+        currentMetrics.sanitize()  // guard against NaN/Inf before save (local + HealthKit)
         flight.metrics = currentMetrics
         if flight.effort == nil {
             flight.effort = 10
@@ -848,13 +965,13 @@ class WorkoutSession: ObservableObject {
         }
 
         if currentMetrics.totalAltitudeGain > 0 {
-            metadata[HKMetadataKeyElevationAscended] = HKQuantity(unit: .meter(), doubleValue: currentMetrics.totalAltitudeGain)
+            metadata[HKMetadataKeyElevationAscended] = HKQuantitySafe(unit: .meter(), doubleValue: currentMetrics.totalAltitudeGain)
         }
         if currentMetrics.totalAltitudeLoss > 0 {
-            metadata[HKMetadataKeyElevationDescended] = HKQuantity(unit: .meter(), doubleValue: currentMetrics.totalAltitudeLoss)
+            metadata[HKMetadataKeyElevationDescended] = HKQuantitySafe(unit: .meter(), doubleValue: currentMetrics.totalAltitudeLoss)
         }
 
-        builder.addMetadata(metadata) { metadataSuccess, metadataError in
+        builder.addMetadata(sanitizedHealthKitMetadata(metadata)) { metadataSuccess, metadataError in
             if !metadataSuccess {
                 print("⚠️ Failed to add metadata: \(metadataError?.localizedDescription ?? "Unknown")")
                 print("⚠️ Builder is in error state - switching to fallback save")
@@ -911,7 +1028,7 @@ class WorkoutSession: ObservableObject {
 
                         let distanceSample = HKCumulativeQuantitySample(
                             type: distanceType,
-                            quantity: HKQuantity(unit: .meter(), doubleValue: source.value),
+                            quantity: HKQuantitySafe(unit: .meter(), doubleValue: source.value),
                             start: self.flight.startDate,
                             end: endDate
                         )
@@ -949,7 +1066,7 @@ class WorkoutSession: ObservableObject {
                         return
                     }
 
-                    let energyQuantity = HKQuantity(unit: .kilocalorie(), doubleValue: activeEnergyValue)
+                    let energyQuantity = HKQuantitySafe(unit: .kilocalorie(), doubleValue: activeEnergyValue)
                     let energySample = HKCumulativeQuantitySample(
                         type: energyType,
                         quantity: energyQuantity,
@@ -961,7 +1078,7 @@ class WorkoutSession: ObservableObject {
                     samples.append(energySample)
 
                     if basalEnergyValue > 0, let basalType = HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned) {
-                        let basalQuantity = HKQuantity(unit: .kilocalorie(), doubleValue: basalEnergyValue)
+                        let basalQuantity = HKQuantitySafe(unit: .kilocalorie(), doubleValue: basalEnergyValue)
                         let basalSample = HKCumulativeQuantitySample(
                             type: basalType,
                             quantity: basalQuantity,
@@ -1316,10 +1433,9 @@ class WorkoutSession: ObservableObject {
     }
 
     private func estimatedFallbackMaxSpeed() -> Double {
-        if workoutType == .other {
-            return 35.0
-        }
-        return min(maxSpeedThresholdMps(for: workoutType), 35.0)
+        // Speed cap disabled per user request — fallback can integrate
+        // unconstrained, relying on ZUPT/decay to limit noise drift.
+        return .greatestFiniteMagnitude
     }
 
     private func validCourse(_ course: Double) -> Double? {

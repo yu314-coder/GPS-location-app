@@ -1,6 +1,7 @@
 import Foundation
 import HealthKit
 import CoreLocation
+import CoreMotion
 import Combine
 import Network
 
@@ -91,15 +92,29 @@ class WorkoutSession: NSObject, ObservableObject {
     private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
     private let ESTIMATED_LOCATION_VERTICAL_ACCURACY: Double = 250.0
 
+    // Motion (accelerometer) dead-reckoning fallback for non-step activities
+    // (cycling on a trainer, train, car). Activates when GPS is lost AND pedometer
+    // isn't applicable. Uses CMDeviceMotion's userAcceleration (gravity-removed).
+    private let motionManager = CMMotionManager()
+    private var isUsingMotionFallback = false
+    private var motionFallbackSpeed: Double = 0.0          // m/s
+    private var motionFallbackDistanceAdded: Double = 0.0   // meters this gap
+    private var lastMotionFallbackTick: Date?
+    private var lastMotionForwardAccel: Double = 0.0        // m/s², smoothed
+    private var lastMotionFallbackLogTime: Date = .distantPast
+    private let MOTION_FALLBACK_TICK: TimeInterval = 1.0
+    private let MOTION_FALLBACK_MAX_SPEED: Double = .greatestFiniteMagnitude // no cap
+    private let MOTION_ACCEL_DEADBAND: Double = 0.05        // m/s² — below = stationary (ZUPT)
+
     // GPS accuracy thresholds (Modern approach based on Google Maps & fitness apps research)
     private let MAX_HORIZONTAL_ACCURACY: Double = 100.0  // 100m maximum (more lenient to capture more distance points)
     private let MAX_LOCATION_AGE: TimeInterval = 15.0  // 15 seconds maximum age (more lenient for watch GPS)
-    private let MAX_SPEED_MPS: Double = 50.0  // 50 m/s = 180 km/h (realistic maximum for cycling/running)
+    private let MAX_SPEED_MPS: Double = .greatestFiniteMagnitude  // speed limit disabled per user request
     private let MAX_DISTANCE_JUMP: Double = 150.0  // 150m maximum jump between points (more lenient to avoid rejecting valid movement)
     private let MAX_ACCELERATION_MPS2: Double = 10.0  // Reject sudden GPS-derived speed changes that exceed workout movement
 
     // ABSOLUTE SAFETY LIMITS - applied even in Raw GPS mode to prevent impossible physics
-    private let ABSOLUTE_MAX_SPEED_MPS: Double = 150.0  // 150 m/s = 540 km/h (no human activity exceeds this)
+    private let ABSOLUTE_MAX_SPEED_MPS: Double = .greatestFiniteMagnitude  // speed limit disabled per user request
     private let ABSOLUTE_MAX_DISTANCE_JUMP: Double = 500.0  // 500m instant teleport = definitely GPS glitch
 
     private var healthKitExportType: HKWorkoutActivityType {
@@ -132,6 +147,44 @@ class WorkoutSession: NSObject, ObservableObject {
         setupLocationUpdates()
         setupConnectivityObservers()
         setupPedometerObserver()
+        recoverUnfinishedFlights()
+    }
+
+    /// Crash-recovery fallback: the watch persists each checkpoint to disk via
+    /// mergeFlightCheckpoint, so a partial track survives a crash. On launch,
+    /// finalize any unfinished flight (endDate == nil) and push it to iPhone so
+    /// the trace is never lost.
+    private func recoverUnfinishedFlights() {
+        FlightDataStore.shared.loadFlights()
+        let unfinished = FlightDataStore.shared.savedFlights.filter { $0.endDate == nil }
+        guard !unfinished.isEmpty else { return }
+
+        for summary in unfinished {
+            // Skip the one we may be about to resume as the live workout.
+            if isActive && summary.id == flight.id { continue }
+
+            guard var full = FlightDataStore.shared.loadFlightDetails(id: summary.id),
+                  !full.locations.isEmpty else {
+                continue
+            }
+
+            // Finalize using the last recorded location's timestamp as end time.
+            let endDate = full.locations.last?.timestamp ?? full.startDate
+            full.endDate = endDate
+
+            var metrics = full.metrics ?? FlightMetrics()
+            let duration = max(0, endDate.timeIntervalSince(full.startDate))
+            metrics.calculateAverages(duration: duration)
+            metrics.finalizeSplits()
+            metrics.sanitize()
+            full.metrics = metrics
+            if full.effort == nil { full.effort = 10 }
+
+            // Persist finalized version locally and push the full track to iPhone.
+            FlightDataStore.shared.saveFlight(full)
+            connectivityManager.transferFlightToPhone(full)
+            print("⌚ ♻️ Recovered unfinished flight after crash: id=\(full.id), locations=\(full.locations.count), distance=\(String(format: "%.2f", metrics.totalDistance/1000))km — saved + synced to iPhone")
+        }
     }
 
     deinit {
@@ -344,6 +397,9 @@ class WorkoutSession: NSObject, ObservableObject {
             // Start pedometer tracking for step counting
             pedometerManager.startTracking(from: startDate)
 
+            // Start motion updates for dead-reckoning fallback during GPS gaps
+            startMotionUpdates()
+
             // Notify iPhone
             connectivityManager.notifyWorkoutStarted()
             connectivityManager.setDualSourceAssistEnabled(true)
@@ -439,6 +495,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Stop pedometer and get final step count
         pedometerManager.stopTracking()
+        stopMotionUpdates()
         let pedometerDistance = pedometerManager.currentDistance
         nativePedometerStepCount = pedometerManager.currentStepCount
         nativePedometerDistanceMeters = max(0, pedometerDistance)
@@ -495,6 +552,7 @@ class WorkoutSession: NSObject, ObservableObject {
         currentMetrics.calculateAverages(duration: flight.duration)
         currentMetrics.estimateCalories(duration: flight.duration)
         currentMetrics.finalizeSplits()
+        currentMetrics.sanitize()  // guard against NaN/Inf before save (local + HealthKit)
         flight.metrics = currentMetrics
 
         // Prepare HealthKit metrics - ALWAYS use GPS distance (more accurate than pedometer)
@@ -603,13 +661,13 @@ class WorkoutSession: NSObject, ObservableObject {
         }
 
         if currentMetrics.totalAltitudeGain > 0 {
-            metadata[HKMetadataKeyElevationAscended] = HKQuantity(unit: .meter(), doubleValue: currentMetrics.totalAltitudeGain)
+            metadata[HKMetadataKeyElevationAscended] = HKQuantitySafe(unit: .meter(), doubleValue: currentMetrics.totalAltitudeGain)
         }
         if currentMetrics.totalAltitudeLoss > 0 {
-            metadata[HKMetadataKeyElevationDescended] = HKQuantity(unit: .meter(), doubleValue: currentMetrics.totalAltitudeLoss)
+            metadata[HKMetadataKeyElevationDescended] = HKQuantitySafe(unit: .meter(), doubleValue: currentMetrics.totalAltitudeLoss)
         }
 
-        builder.addMetadata(metadata) { metadataSuccess, metadataError in
+        builder.addMetadata(sanitizedHealthKitMetadata(metadata)) { metadataSuccess, metadataError in
             if !metadataSuccess {
                 print("⌚ ⚠️ Failed to add workout metadata: \(metadataError?.localizedDescription ?? "Unknown")")
             }
@@ -891,8 +949,12 @@ class WorkoutSession: NSObject, ObservableObject {
             // This is a legitimate watchOS technique to prevent app suspension during workouts
             self.objectWillChange.send()
 
-            // Pedometer fallback for GPS gaps (tunnels, underground)
+            // GPS-gap fallbacks (tunnels, underground, train, plane).
+            // Motion fallback runs FIRST — it's the primary fallback for all
+            // activity types. Pedometer is a secondary that only kicks in if
+            // motion fallback isn't adding distance.
             if !self.isPaused {
+                self.checkMotionFallback()
                 self.checkPedometerFallback()
             }
 
@@ -1026,6 +1088,14 @@ class WorkoutSession: NSObject, ObservableObject {
     // MARK: - Pedometer Fallback for GPS Gaps
 
     private func checkPedometerFallback() {
+        // Defer to motion fallback when it's actively adding distance to avoid
+        // double-counting (motion is the primary fallback).
+        if isUsingMotionFallback && motionFallbackDistanceAdded > 0 {
+            if isUsingPedometerFallback {
+                endPedometerFallback(reason: "motion fallback is primary")
+            }
+            return
+        }
         let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
         let isStepBasedActivity = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
 
@@ -1139,6 +1209,117 @@ class WorkoutSession: NSObject, ObservableObject {
         pedometerFallbackDistanceAdded = 0.0
         pedometerDistanceAtGapStart = 0.0
         gpsDistanceAtGapStart = 0.0
+    }
+
+    // MARK: - Motion (Accelerometer) Fallback for GPS Gaps
+    //
+    // For non-step activities (cycling, train, etc.) where the pedometer can't
+    // help, integrate device-motion accelerometer to estimate distance during
+    // GPS outages. Estimated coords are projected onto the route and counted
+    // toward currentMetrics.totalDistance (the same GPS-route distance the map
+    // and saved workout use).
+
+    private func startMotionUpdates() {
+        guard motionManager.isDeviceMotionAvailable else {
+            print("⌚ 🧭 Device motion unavailable — motion fallback disabled")
+            return
+        }
+        motionManager.deviceMotionUpdateInterval = 0.1
+        motionManager.startDeviceMotionUpdates(to: OperationQueue.main) { [weak self] motion, _ in
+            guard let self = self, let motion = motion else { return }
+            // Horizontal user-acceleration magnitude (gravity already removed).
+            // 1g = 9.81 m/s². userAcceleration is in g, so multiply.
+            let ax = motion.userAcceleration.x * 9.81
+            let ay = motion.userAcceleration.y * 9.81
+            let horizMag = sqrt(ax * ax + ay * ay)
+            // Smooth (low-pass) to suppress noise. Use signed forward magnitude.
+            self.lastMotionForwardAccel = self.lastMotionForwardAccel * 0.85 + horizMag * 0.15
+        }
+        print("⌚ 🧭 Device motion updates started (motion fallback armed)")
+    }
+
+    private func stopMotionUpdates() {
+        if motionManager.isDeviceMotionActive {
+            motionManager.stopDeviceMotionUpdates()
+        }
+        isUsingMotionFallback = false
+        motionFallbackSpeed = 0.0
+        motionFallbackDistanceAdded = 0.0
+        lastMotionFallbackTick = nil
+        lastMotionForwardAccel = 0.0
+    }
+
+    private func checkMotionFallback() {
+        guard motionManager.isDeviceMotionAvailable else { return }
+
+        let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
+
+        // Only kick in once GPS has been quiet long enough.
+        guard timeSinceLastGPS >= GPS_GAP_THRESHOLD else {
+            if isUsingMotionFallback {
+                endMotionFallback(reason: "GPS returned")
+            }
+            return
+        }
+
+        // Motion fallback is the primary — always run when GPS is silent.
+        // (Pedometer fallback defers to it via checkPedometerFallback.)
+
+        if !isUsingMotionFallback {
+            startMotionFallback()
+        }
+
+        let now = Date()
+        let previousTick = lastMotionFallbackTick ?? now.addingTimeInterval(-MOTION_FALLBACK_TICK)
+        let dt = min(max(now.timeIntervalSince(previousTick), 0.5), 2.0)
+        lastMotionFallbackTick = now
+
+        // ZUPT: when motion is below deadband, assume stationary → decay speed fast.
+        let accel = lastMotionForwardAccel
+        let nextSpeed: Double
+        if accel < MOTION_ACCEL_DEADBAND {
+            nextSpeed = max(motionFallbackSpeed * 0.85, 0.0)
+        } else {
+            // Integrate the smoothed magnitude. Apply a small damping so noise
+            // doesn't accumulate as runaway speed.
+            let raw = motionFallbackSpeed + (accel - MOTION_ACCEL_DEADBAND) * dt
+            nextSpeed = min(max(raw * 0.97, 0.0), MOTION_FALLBACK_MAX_SPEED)
+        }
+
+        let distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
+        motionFallbackSpeed = nextSpeed
+
+        guard distance >= 0.25 else { return }
+
+        appendEstimatedPedometerFallbackLocation(distanceMeters: distance, timestamp: now)
+        motionFallbackDistanceAdded += distance
+
+        let now2 = Date()
+        if now2.timeIntervalSince(lastMotionFallbackLogTime) >= 5.0 {
+            print("⌚ 🧭 MOTION FALLBACK: +\(String(format: "%.1f", motionFallbackDistanceAdded))m (speed ≈ \(String(format: "%.1f", motionFallbackSpeed * 3.6))km/h, GPS gap: \(Int(timeSinceLastGPS))s, total: \(String(format: "%.2f", currentMetrics.totalDistance/1000))km)")
+            lastMotionFallbackLogTime = now2
+        }
+    }
+
+    private func startMotionFallback() {
+        isUsingMotionFallback = true
+        motionFallbackDistanceAdded = 0.0
+        // Seed speed estimate from last known smoothed speed for continuity.
+        motionFallbackSpeed = min(max(currentMetrics.smoothedSpeed, 0.0), MOTION_FALLBACK_MAX_SPEED)
+        lastMotionFallbackTick = nil
+        lastMotionFallbackLogTime = Date()
+        let gap = Date().timeIntervalSince(lastLocationTime)
+        print("⌚ 🧭 MOTION FALLBACK STARTED: GPS lost for \(Int(gap))s, seed speed=\(String(format: "%.1f", motionFallbackSpeed * 3.6))km/h")
+    }
+
+    private func endMotionFallback(reason: String) {
+        guard isUsingMotionFallback else { return }
+        print("⌚ 🧭 MOTION FALLBACK ENDED: \(reason)")
+        print("⌚ 🧭 Motion distance added during gap: +\(String(format: "%.1f", motionFallbackDistanceAdded))m")
+        isUsingMotionFallback = false
+        motionFallbackSpeed = 0.0
+        motionFallbackDistanceAdded = 0.0
+        lastMotionFallbackTick = nil
     }
 
     private func preventiveGPSRestart() {
@@ -1746,12 +1927,32 @@ class WorkoutSession: NSObject, ObservableObject {
 
     private func pruneWatchMemoryIfNeeded(reason: String) {
         guard flight.locations.count > maxRetainedLocationsOnWatch else { return }
-        let removeCount = flight.locations.count - minRetainedLocationsOnWatch
+
+        // CRITICAL: never silently discard locations that haven't been sent to iPhone yet.
+        // If there are unsent locations, flush a checkpoint first so the data has a chance
+        // to reach the phone (and is also persisted to watch disk via mergeFlightCheckpoint).
+        let totalLocations = retainedLocationOffset + flight.locations.count
+        let unsentCount = max(0, totalLocations - lastPhoneCheckpointLocationCount)
+        if unsentCount > 0 {
+            print("⌚ 🚨 Emergency prune triggered with \(unsentCount) unsent locations — flushing checkpoint first")
+            transferWorkoutCheckpointToPhone(isFinal: false)
+        }
+
+        // Only prune locations that have already been sent to phone.
+        // This may leave the watch above its memory target if the phone is unreachable,
+        // but losing GPS data is worse than memory pressure.
+        let sentInMemory = max(0, lastPhoneCheckpointLocationCount - retainedLocationOffset)
+        let desiredRemove = flight.locations.count - minRetainedLocationsOnWatch
+        let removeCount = max(0, min(desiredRemove, sentInMemory))
+        guard removeCount > 0 else {
+            print("⌚ 🛑 Emergency prune (\(reason)) skipped — \(flight.locations.count) locations all still unsent")
+            return
+        }
         flight.locations.removeFirst(removeCount)
         retainedLocationOffset += removeCount
-        lastPhoneCheckpointLocationCount = max(lastPhoneCheckpointLocationCount, retainedLocationOffset)
+        // DO NOT advance lastPhoneCheckpointLocationCount here — it already reflects sent data.
         currentMetrics.clearCheckpointedHistories()
-        print("⌚ 🧹 Emergency memory prune (\(reason)): removed=\(removeCount), retained=\(flight.locations.count), offset=\(retainedLocationOffset)")
+        print("⌚ 🧹 Emergency memory prune (\(reason)): removed=\(removeCount) sent locations, retained=\(flight.locations.count), offset=\(retainedLocationOffset)")
     }
 
     private func sendWorkoutUpdateToPhone() {

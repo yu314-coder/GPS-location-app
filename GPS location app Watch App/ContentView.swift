@@ -86,7 +86,7 @@ struct WatchHomeView: View {
                         .frame(width: 70, height: 70)
                         .blur(radius: 15)
 
-                    Image(systemName: "airplane.circle.fill")
+                    Image(systemName: "figure.run.circle.fill")
                         .font(.system(size: 55))
                         .foregroundStyle(
                             LinearGradient(
@@ -98,7 +98,7 @@ struct WatchHomeView: View {
                 }
                 .padding(.top, 8)
 
-                Text("Flight Tracker")
+                Text("Workout Tracker")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
 
                 // Modern Start Button

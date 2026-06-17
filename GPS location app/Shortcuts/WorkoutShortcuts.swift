@@ -16,7 +16,7 @@ enum WorkoutTypeOption: String, CaseIterable, AppEnum {
     case running = "Running"
     case cycling = "Cycling"
     case hiking = "Hiking"
-    case flight = "Flight"
+    case flight = "Workout"
     case general = "General"
 
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Workout Type")
@@ -27,7 +27,7 @@ enum WorkoutTypeOption: String, CaseIterable, AppEnum {
             .running: DisplayRepresentation(title: "Running", image: .init(systemName: "figure.run")),
             .cycling: DisplayRepresentation(title: "Cycling", image: .init(systemName: "bicycle")),
             .hiking: DisplayRepresentation(title: "Hiking", image: .init(systemName: "mountain.2.fill")),
-            .flight: DisplayRepresentation(title: "Flight", image: .init(systemName: "airplane")),
+            .flight: DisplayRepresentation(title: "Workout", image: .init(systemName: "figure.run")),
             .general: DisplayRepresentation(title: "General", image: .init(systemName: "figure.mixed.cardio"))
         ]
     }
@@ -49,7 +49,7 @@ enum WorkoutTypeOption: String, CaseIterable, AppEnum {
         case .running: return "figure.run"
         case .cycling: return "bicycle"
         case .hiking: return "mountain.2.fill"
-        case .flight: return "airplane"
+        case .flight: return "figure.run"
         case .general: return "figure.mixed.cardio"
         }
     }

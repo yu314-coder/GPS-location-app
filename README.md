@@ -91,7 +91,7 @@ After stopping a session, a full summary is presented:
 
 - Daily distance chart for any selected month
 - Yearly distance chart showing monthly totals
-- All Time mode shows month-by-month distance from the first workout month through the current month, with optional year filters such as 2026, 2025, and 2024
+- All Time mode uses a Plotly-style monthly/cumulative chart from the first workout month through the current month, with optional year filters such as 2026, 2025, and 2024 that switch the graph to day-by-day values with a cumulative toggle
 - Filter by workout type
 - Month-over-month and year-over-year comparisons
 

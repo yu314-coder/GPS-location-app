@@ -14,6 +14,7 @@ struct WorkoutWidgetBundle: WidgetBundle {
     var body: some Widget {
         WorkoutWidget()
         WorkoutWidgetLiveActivity()
+        DownloadWidgetLiveActivity()
     }
 }
 #endif

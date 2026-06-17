@@ -61,6 +61,17 @@ struct EnhancedFlightHistoryView: View {
     @State private var cachedWorkouts: [WorkoutSummary] = []
     @State private var jumpDate = Date()
 
+    // Download all from HealthKit
+    @State private var isDownloadingAll = false
+    @State private var downloadAllProgress = 0
+    @State private var downloadAllTotal = 0
+    @State private var downloadAllMessage: String?
+    @State private var showDownloadAllAlert = false
+    @State private var downloadAllTask: Task<Void, Never>?
+
+    // Search
+    @State private var searchText = ""
+
     private var linkedWorkoutIDs: Set<UUID> {
         let workoutIDs = Set(workouts.map { $0.id })
         var linked: Set<UUID> = []
@@ -100,6 +111,7 @@ struct EnhancedFlightHistoryView: View {
         }
         .navigationTitle("Activity History")
         .navigationBarTitleDisplayMode(.large)
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search by date, type, or distance")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
@@ -109,6 +121,11 @@ struct EnhancedFlightHistoryView: View {
                     }) {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
+
+                    Button(action: downloadAllFromHealthKit) {
+                        Label("Download All from HealthKit", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(isDownloadingAll)
 
                     Button(role: .destructive, action: clearAllCache) {
                         Label("Clear Cache & Reload", systemImage: "trash")
@@ -150,6 +167,11 @@ struct EnhancedFlightHistoryView: View {
         } message: {
             Text(recalculateMessage)
         }
+        .alert("Download Workouts", isPresented: $showDownloadAllAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(downloadAllMessage ?? "")
+        }
         .navigationDestination(item: $selectedFlight) { flight in
             WorkoutDetailView(flight: flight)
                 .onDisappear {
@@ -160,24 +182,30 @@ struct EnhancedFlightHistoryView: View {
                 }
         }
         .onAppear {
-            // CRITICAL: Only load local flights automatically
-            // Do NOT auto-load HealthKit workouts to prevent memory crash
+            // CRITICAL: decode JSON OFF the main thread so opening the tab never
+            // freezes. Show the loading state while it works.
             if !hasLoadedInitialData {
-                flightDataStore.loadFlights() // Load local flights only
-                let cached = WorkoutCacheStore.shared.loadWorkouts()
-                if !cached.isEmpty {
-                    cachedWorkouts = cached
-                    let initialCount = min(workoutPageSize, cachedWorkouts.count)
-                    workouts = Array(cachedWorkouts.prefix(initialCount))
-                    loadedWorkoutIDs = Set(workouts.map { $0.id })
-                    lastWorkoutDate = cachedWorkouts.last?.startDate
-                    manualLoadEnabled = true
-                    hasMoreWorkouts = cachedWorkouts.count > workouts.count
-                    autoResyncIfNeeded()
-                    print("✅ Loaded \(cachedWorkouts.count) workouts from cache (showing \(workouts.count))")
-                }
                 hasLoadedInitialData = true
-                print("✅ Loaded local flights only - HealthKit workouts NOT loaded to save memory")
+                isLoading = true
+                DispatchQueue.global(qos: .userInitiated).async {
+                    flightDataStore.loadFlights()                       // decode off main
+                    let cached = WorkoutCacheStore.shared.loadWorkouts() // decode off main
+                    DispatchQueue.main.async {
+                        if !cached.isEmpty {
+                            cachedWorkouts = cached
+                            let initialCount = min(workoutPageSize, cachedWorkouts.count)
+                            workouts = Array(cachedWorkouts.prefix(initialCount))
+                            loadedWorkoutIDs = Set(workouts.map { $0.id })
+                            lastWorkoutDate = cachedWorkouts.last?.startDate
+                            manualLoadEnabled = true
+                            hasMoreWorkouts = cachedWorkouts.count > workouts.count
+                            autoResyncIfNeeded()
+                            print("✅ Loaded \(cachedWorkouts.count) workouts from cache (showing \(workouts.count))")
+                        }
+                        isLoading = false
+                        print("✅ Loaded local flights (off main thread)")
+                    }
+                }
             }
         }
         .refreshable {
@@ -282,11 +310,64 @@ struct EnhancedFlightHistoryView: View {
                 .padding(.horizontal)
             }
 
+            // Download all workouts with routes from HealthKit
+            if isDownloadingAll {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.and.arrow.down")
+                            .foregroundColor(.green)
+                        Text(downloadAllTotal > 0 ? "Downloading \(downloadAllProgress)/\(downloadAllTotal)" : (downloadAllMessage ?? "Preparing..."))
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        Spacer()
+                        if downloadAllTotal > 0 {
+                            Text("\(Int((Double(downloadAllProgress) / Double(max(downloadAllTotal, 1))) * 100))%")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .monospacedDigit()
+                        }
+                        Button(action: cancelDownloadAll) {
+                            Image(systemName: "stop.circle.fill")
+                                .font(.title3)
+                                .foregroundColor(.red)
+                        }
+                    }
+
+                    if downloadAllTotal > 0 {
+                        ProgressView(value: Double(downloadAllProgress), total: Double(downloadAllTotal))
+                            .progressViewStyle(.linear)
+                            .tint(.green)
+                    } else {
+                        ProgressView()
+                            .progressViewStyle(.linear)
+                    }
+                }
+                .padding()
+                .background(Color.green.opacity(0.08))
+                .cornerRadius(12)
+                .padding(.horizontal)
+            } else {
+                Button(action: downloadAllFromHealthKit) {
+                    HStack {
+                        Image(systemName: "square.and.arrow.down")
+                        Text("Download All Routes from HealthKit")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .padding()
+                    .background(Color.green.opacity(0.1))
+                    .foregroundColor(.green)
+                    .cornerRadius(12)
+                }
+                .padding(.horizontal)
+            }
+
             // Enhanced Statistics Section
             EnhancedStatsSection(
                 flights: flightDataStore.savedFlights,
                 healthKitWorkouts: statsWorkouts
             )
+            .equatable()
 
             // Activity Type Filter
             ActivityTypeFilter(selectedType: $selectedActivityType)
@@ -427,19 +508,29 @@ struct EnhancedFlightHistoryView: View {
                     recalculateFlight(flight)
                 }
             )
+            .equatable()
 
-            // Info message about loaded workouts
-            if !visibleWorkouts.isEmpty {
+            // No results from search
+            if !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+                && filteredFlights.isEmpty && filteredWorkouts.isEmpty {
                 VStack(spacing: 8) {
-                    Text("Loaded \(visibleWorkouts.count) workouts")
-                        .font(.caption)
+                    Image(systemName: "magnifyingglass")
+                        .font(.title)
                         .foregroundColor(.secondary)
-
-                    Text("Tap ⋯ to clear cache if experiencing issues")
-                        .font(.caption2)
+                    Text("No activities match \"\(searchText)\"")
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
-                .padding(.top, 8)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+            }
+
+            // Subtle loaded-count footer
+            if !visibleWorkouts.isEmpty {
+                Text("\(visibleWorkouts.count) workouts loaded")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 8)
             }
 
             if manualLoadEnabled && hasMoreWorkouts {
@@ -469,22 +560,61 @@ struct EnhancedFlightHistoryView: View {
     // MARK: - Filtered & Sorted Data
 
     private var filteredFlights: [Flight] {
-        guard selectedActivityType != .all else { return flightDataStore.savedFlights }
-
-        // Filter flights based on workout type
-        return flightDataStore.savedFlights.filter { flight in
-            guard let workoutTypeRaw = flight.workoutType else { return false }
-            guard let workoutType = HKWorkoutActivityType(rawValue: workoutTypeRaw) else { return false }
-            return selectedActivityType.matches(workoutType)
+        var result = flightDataStore.savedFlights
+        if selectedActivityType != .all {
+            result = result.filter { flight in
+                guard let workoutTypeRaw = flight.workoutType,
+                      let workoutType = HKWorkoutActivityType(rawValue: workoutTypeRaw) else { return false }
+                return selectedActivityType.matches(workoutType)
+            }
+        }
+        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return result }
+        return result.filter { flight in
+            let typeName = flight.workoutType
+                .flatMap { HKWorkoutActivityType(rawValue: $0) }
+                .map { activityDisplayName($0) } ?? "workout"
+            let distanceKm = String(format: "%.1f", (flight.metrics?.totalDistance ?? 0) / 1000)
+            return matchesSearch(query: query, date: flight.startDate, typeName: typeName, distanceKm: distanceKm)
         }
     }
 
     private var filteredWorkouts: [WorkoutSummary] {
-        guard selectedActivityType != .all else { return visibleWorkouts }
-        return visibleWorkouts.filter { workout in
-            guard let type = workout.activityType else { return false }
-            return selectedActivityType.matches(type)
+        var result = visibleWorkouts
+        if selectedActivityType != .all {
+            result = result.filter { workout in
+                guard let type = workout.activityType else { return false }
+                return selectedActivityType.matches(type)
+            }
         }
+        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return result }
+        return result.filter { workout in
+            let typeName = workout.activityType.map { activityDisplayName($0) } ?? "workout"
+            let distanceKm = String(format: "%.1f", workout.totalDistance / 1000)
+            return matchesSearch(query: query, date: workout.startDate, typeName: typeName, distanceKm: distanceKm)
+        }
+    }
+
+    private func activityDisplayName(_ type: HKWorkoutActivityType) -> String {
+        switch type {
+        case .running: return "Running"
+        case .walking: return "Walking"
+        case .cycling: return "Cycling"
+        case .hiking: return "Hiking"
+        default: return "Workout"
+        }
+    }
+
+    private func matchesSearch(query: String, date: Date, typeName: String, distanceKm: String) -> Bool {
+        if typeName.lowercased().contains(query) { return true }
+        if distanceKm.contains(query) { return true }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE MMMM d yyyy"
+        if formatter.string(from: date).lowercased().contains(query) { return true }
+        formatter.dateFormat = "M/d/yyyy"
+        if formatter.string(from: date).lowercased().contains(query) { return true }
+        return false
     }
 
     private var statsWorkouts: [WorkoutSummary] {
@@ -945,7 +1075,7 @@ struct EnhancedFlightHistoryView: View {
                     let signature = self.flightDataStore.resyncSignature(for: fullFlight)
                     FlightDataStore.shared.markResynced(flightID: fullFlight.id, signature: signature)
                     if showAlert {
-                        self.resyncMessage = "Workout successfully resynced to HealthKit!\n\nDistance: \(String(format: "%.2f", metrics.totalDistance/1000))km\n\nThe Flights tab will refresh automatically to show the updated distance."
+                        self.resyncMessage = "Workout successfully resynced to HealthKit!\n\nDistance: \(String(format: "%.2f", metrics.totalDistance/1000))km\n\nThe Workouts tab will refresh automatically to show the updated distance."
                     }
 
                     // Automatically refresh the flights list to show updated distance
@@ -1105,6 +1235,184 @@ struct EnhancedFlightHistoryView: View {
             return
         }
         loadHealthKitWorkouts(reset: false)
+    }
+
+    // MARK: - Download All from HealthKit
+
+    private func downloadAllFromHealthKit() {
+        guard !isDownloadingAll else { return }
+
+        guard healthKitManager.isAuthorized else {
+            healthKitManager.requestAuthorization { success, _ in
+                if success {
+                    self.downloadAllFromHealthKit()
+                } else {
+                    DispatchQueue.main.async {
+                        self.downloadAllMessage = "Please authorize HealthKit access."
+                        self.showDownloadAllAlert = true
+                    }
+                }
+            }
+            return
+        }
+
+        isDownloadingAll = true
+        downloadAllProgress = 0
+        downloadAllTotal = 0
+        downloadAllMessage = "Finding workouts..."
+
+        if #available(iOS 16.1, *) {
+            DownloadLiveActivityManager.shared.beginBackgroundTask(name: "WorkoutsDownload")
+            DownloadLiveActivityManager.shared.start(title: "Downloading Workouts", total: 0, message: "Finding workouts...")
+        }
+
+        downloadAllTask = Task {
+            do {
+                // Fetch all workouts in pages
+                let pageSize = 200
+                var allWorkouts: [HKWorkout] = []
+                var beforeDate: Date? = nil
+
+                while true {
+                    let page: [HKWorkout] = try await withCheckedThrowingContinuation { continuation in
+                        healthKitManager.fetchWorkouts(limit: pageSize, beforeDate: beforeDate) { result, error in
+                            if let result {
+                                continuation.resume(returning: result)
+                            } else {
+                                continuation.resume(throwing: error ?? NSError(domain: "HealthKit", code: -1))
+                            }
+                        }
+                    }
+                    allWorkouts.append(contentsOf: page)
+                    if page.count < pageSize { break }
+                    beforeDate = page.last?.startDate.addingTimeInterval(-1)
+                }
+
+                // Filter to candidates that have routes and aren't already saved
+                let existingIDs = await MainActor.run {
+                    Set(flightDataStore.savedFlights.map(\.id))
+                        .union(Set(flightDataStore.savedFlights.compactMap(\.workoutUUID)))
+                }
+
+                let candidates = allWorkouts.filter { workout in
+                    guard !existingIDs.contains(workout.uuid) else { return false }
+                    switch workout.workoutActivityType {
+                    case .running, .walking, .hiking, .cycling, .other: return true
+                    default: return false
+                    }
+                }
+
+                await MainActor.run {
+                    downloadAllTotal = candidates.count
+                    downloadAllProgress = 0
+                    if #available(iOS 16.1, *) {
+                        DownloadLiveActivityManager.shared.update(progress: 0, total: candidates.count, message: candidates.isEmpty ? "No new workouts" : "Downloading routes...")
+                    }
+                }
+
+                guard !candidates.isEmpty else {
+                    await MainActor.run {
+                        isDownloadingAll = false
+                        downloadAllMessage = "No new workouts to download."
+                        if #available(iOS 16.1, *) {
+                            DownloadLiveActivityManager.shared.end(finalMessage: "No new workouts")
+                        }
+                        showDownloadAllAlert = true
+                    }
+                    return
+                }
+
+                // Thermal-aware batching: concurrency shrinks and cooldowns grow
+                // as the device heats up so the download can't overheat-crash.
+                var imported = 0
+                var skipped = 0
+                var index = 0
+
+                while index < candidates.count {
+                    if Task.isCancelled { break }
+                    await ThermalDownloadPacing.waitWhileCritical()
+                    if Task.isCancelled { break }
+
+                    let batchSize = ThermalDownloadPacing.concurrency
+                    let batchEnd = min(index + batchSize, candidates.count)
+                    let batch = Array(candidates[index..<batchEnd])
+
+                    let results = await withTaskGroup(of: Flight?.self, returning: [Flight?].self) { group in
+                        for workout in batch {
+                            group.addTask {
+                                let locations: [FlightLocation]? = await withCheckedContinuation { continuation in
+                                    self.healthKitManager.fetchRoute(for: workout) { locs, _ in
+                                        continuation.resume(returning: locs)
+                                    }
+                                }
+                                guard let locs = locations, locs.count > 1 else { return nil }
+                                return self.convertWorkoutToFlight(workout, locations: locs, includeSpeedHistory: true)
+                            }
+                        }
+                        var collected: [Flight?] = []
+                        for await result in group {
+                            collected.append(result)
+                        }
+                        return collected
+                    }
+
+                    let validFlights: [Flight] = results.compactMap { result in
+                        guard var flight = result else { return nil }
+                        flight.workoutUUID = flight.id
+                        return flight
+                    }
+                    skipped += results.count - validFlights.count
+                    imported += validFlights.count
+
+                    // Off-main batched save
+                    await FlightDataStore.shared.saveDownloadedFlights(validFlights)
+
+                    index = batchEnd
+                    await MainActor.run {
+                        downloadAllProgress = index
+                        if #available(iOS 16.1, *) {
+                            DownloadLiveActivityManager.shared.update(progress: index, total: candidates.count, message: "Downloading routes...")
+                        }
+                    }
+
+                    await ThermalDownloadPacing.cooldown()
+                }
+
+                let wasCancelled = Task.isCancelled
+                await MainActor.run {
+                    isDownloadingAll = false
+                    downloadAllTask = nil
+                    if wasCancelled {
+                        downloadAllMessage = "Stopped: \(imported) downloaded, \(skipped) skipped."
+                        if #available(iOS 16.1, *) {
+                            DownloadLiveActivityManager.shared.end(finalMessage: "Stopped after \(imported) downloads")
+                        }
+                    } else {
+                        downloadAllMessage = "Done: \(imported) downloaded, \(skipped) skipped (no route)."
+                        if #available(iOS 16.1, *) {
+                            DownloadLiveActivityManager.shared.end(finalMessage: "\(imported) downloaded, \(skipped) skipped")
+                        }
+                    }
+                    showDownloadAllAlert = true
+                    loadFlights(includeHealthKit: manualLoadEnabled)
+                }
+            } catch {
+                await MainActor.run {
+                    isDownloadingAll = false
+                    downloadAllTask = nil
+                    downloadAllMessage = "Failed: \(error.localizedDescription)"
+                    if #available(iOS 16.1, *) {
+                        DownloadLiveActivityManager.shared.end(finalMessage: "Failed")
+                    }
+                    showDownloadAllAlert = true
+                }
+            }
+        }
+    }
+
+    private func cancelDownloadAll() {
+        print("🛑 User requested download cancel")
+        downloadAllTask?.cancel()
     }
 
     private func mergeWorkouts(_ fetched: [HKWorkout]) -> Int {
@@ -1645,9 +1953,16 @@ struct EnhancedFlightHistoryView: View {
 }
 // MARK: - Enhanced Stats Section
 
-struct EnhancedStatsSection: View {
+struct EnhancedStatsSection: View, Equatable {
     let flights: [Flight]
     let healthKitWorkouts: [WorkoutSummary]
+
+    // Skip recomputing the totals (iterates every flight + workout) unless the
+    // counts actually change — avoids redundant CPU work (heat) on every render.
+    static func == (lhs: EnhancedStatsSection, rhs: EnhancedStatsSection) -> Bool {
+        lhs.flights.count == rhs.flights.count
+            && lhs.healthKitWorkouts.count == rhs.healthKitWorkouts.count
+    }
 
     // Pre-compute stats to avoid holding references during rendering
     private var stats: (count: Int, distance: Double, duration: TimeInterval, calories: Double) {
@@ -1794,7 +2109,7 @@ struct EnhancedStatCard: View {
 
 enum WorkoutActivityType: String, CaseIterable {
     case all = "All"
-    case flight = "Flight"
+    case flight = "Workout"
     case running = "Running"
     case walking = "Walking"
     case cycling = "Cycling"
@@ -1804,7 +2119,7 @@ enum WorkoutActivityType: String, CaseIterable {
     var icon: String {
         switch self {
         case .all: return "list.bullet"
-        case .flight: return "airplane"
+        case .flight: return "figure.run"
         case .running: return "figure.run"
         case .walking: return "figure.walk"
         case .cycling: return "bicycle"
@@ -1947,7 +2262,7 @@ struct CompactLineChart: View {
 
 // MARK: - Grouped Workouts Section
 
-struct GroupedWorkoutsSection: View {
+struct GroupedWorkoutsSection: View, Equatable {
     let flights: [Flight]
     let workouts: [WorkoutSummary]
     let sortOption: SortOption
@@ -1956,6 +2271,24 @@ struct GroupedWorkoutsSection: View {
     let onFlightTap: (Flight) -> Void
     let onFlightResync: ((Flight) -> Void)?
     let onFlightRecalculate: ((Flight) -> Void)?
+
+    // Skip re-rendering this heavy list (sorts + builds every row) unless the
+    // activity set or sort order actually changes. Ignores the closures, which
+    // are recreated on every parent render (e.g. download progress ticks).
+    static func == (lhs: GroupedWorkoutsSection, rhs: GroupedWorkoutsSection) -> Bool {
+        lhs.sortOption == rhs.sortOption
+            && lhs.flights.count == rhs.flights.count
+            && lhs.workouts.count == rhs.workouts.count
+            && lhs.flightSignature == rhs.flightSignature
+            && lhs.workoutSignature == rhs.workoutSignature
+    }
+
+    private var flightSignature: String {
+        flights.map { "\($0.id.uuidString):\(Int(($0.metrics?.totalDistance ?? 0)))" }.joined(separator: ",")
+    }
+    private var workoutSignature: String {
+        workouts.map { "\($0.id.uuidString):\(Int($0.totalDistance))" }.joined(separator: ",")
+    }
 
     // Combine and sort all activities by date
     private var allActivities: [(date: Date, isWorkout: Bool, workout: WorkoutSummary?, flight: Flight?)] {
@@ -2204,11 +2537,11 @@ struct EnhancedFlightCard: View {
         case .hiking:
             return "Hiking"
         case .other:
-            return "Flight"
+            return "Other"
         case .traditionalStrengthTraining:
             return "General"
         case .none:
-            return "Flight"
+            return "Workout"
         default:
             return "Workout"
         }
@@ -2225,11 +2558,11 @@ struct EnhancedFlightCard: View {
         case .hiking:
             return "mountain.2.fill"
         case .other:
-            return "airplane"
+            return "figure.mixed.cardio"
         case .traditionalStrengthTraining:
             return "figure.mixed.cardio"
         case .none:
-            return "airplane"
+            return "figure.run"
         default:
             return "figure.mixed.cardio"
         }

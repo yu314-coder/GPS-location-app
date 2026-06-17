@@ -154,14 +154,24 @@ struct AllTimeDistanceChartView: View {
     @ObservedObject var analytics: WorkoutAnalyticsManager
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var selectedMonth: Date? = nil
+    @State private var selectedYearChartMode: SelectedYearChartMode = .daily
+    @State private var fullAllTimeChartMode: FullAllTimeChartMode = .monthly
 
     private var isIPad: Bool { sizeClass == .regular }
     private var chartHeight: CGFloat { isIPad ? 360 : 240 }
+    private var isYearFiltered: Bool { analytics.allTimeYearFilter != nil }
 
     private var selectedData: AnalyticsAllTimeMonthlyDistance? {
         guard let selectedMonth else { return nil }
         return analytics.allTimeMonthlyDistances.first {
             Calendar.current.isDate($0.monthStart, equalTo: selectedMonth, toGranularity: .month)
+        }
+    }
+
+    private var selectedDailyData: AnalyticsAllTimeDailyDistance? {
+        guard let selectedMonth else { return nil }
+        return analytics.allTimeDailyDistances.first {
+            Calendar.current.isDate($0.dayStart, equalTo: selectedMonth, toGranularity: .day)
         }
     }
 
@@ -173,20 +183,80 @@ struct AllTimeDistanceChartView: View {
         analytics.allTimeMonthlyDistances.last?.monthStart ?? Date()
     }
 
-    private var visibleBarData: [AnalyticsAllTimeMonthlyDistance] {
-        let nonZero = analytics.allTimeMonthlyDistances.filter { $0.distance > 0 }
-        guard nonZero.count > 90 else { return analytics.allTimeMonthlyDistances }
+    private var firstDay: Date {
+        analytics.allTimeDailyDistances.first?.dayStart ?? Date()
+    }
 
-        let strideSize = max(1, analytics.allTimeMonthlyDistances.count / 90)
-        var sampled = analytics.allTimeMonthlyDistances.enumerated().compactMap { index, data in
-            data.distance > 0 || index % strideSize == 0 ? data : nil
+    private var currentDay: Date {
+        analytics.allTimeDailyDistances.last?.dayStart ?? Date()
+    }
+
+    private var nonZeroDays: [AnalyticsAllTimeDailyDistance] {
+        analytics.allTimeDailyDistances.filter { $0.distance > 0 }
+    }
+
+    private var bestDay: AnalyticsAllTimeDailyDistance? {
+        nonZeroDays.max { $0.distanceKm < $1.distanceKm }
+    }
+
+    private var averageActiveDayKm: Double {
+        guard !nonZeroDays.isEmpty else { return 0 }
+        return nonZeroDays.map(\.distanceKm).reduce(0, +) / Double(nonZeroDays.count)
+    }
+
+    private var nonZeroMonths: [AnalyticsAllTimeMonthlyDistance] {
+        analytics.allTimeMonthlyDistances.filter { $0.distance > 0 }
+    }
+
+    private var bestMonth: AnalyticsAllTimeMonthlyDistance? {
+        nonZeroMonths.max { $0.distanceKm < $1.distanceKm }
+    }
+
+    private var averageActiveMonthKm: Double {
+        guard !nonZeroMonths.isEmpty else { return 0 }
+        return nonZeroMonths.map(\.distanceKm).reduce(0, +) / Double(nonZeroMonths.count)
+    }
+
+    private enum SelectedYearChartMode: String, CaseIterable, Identifiable {
+        case daily = "Daily"
+        case cumulative = "Cumulative"
+
+        var id: String { rawValue }
+
+        var legendTitle: String {
+            switch self {
+            case .daily: return "Daily distance"
+            case .cumulative: return "Cumulative distance"
+            }
         }
 
-        if let last = analytics.allTimeMonthlyDistances.last,
-           sampled.last?.monthStart != last.monthStart {
-            sampled.append(last)
+        var color: Color {
+            switch self {
+            case .daily: return .blue
+            case .cumulative: return .orange
+            }
         }
-        return sampled
+    }
+
+    private enum FullAllTimeChartMode: String, CaseIterable, Identifiable {
+        case monthly = "Monthly"
+        case cumulative = "Cumulative"
+
+        var id: String { rawValue }
+
+        var legendTitle: String {
+            switch self {
+            case .monthly: return "Monthly distance"
+            case .cumulative: return "Cumulative distance"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .monthly: return .blue
+            case .cumulative: return .orange
+            }
+        }
     }
 
     var body: some View {
@@ -200,88 +270,265 @@ struct AllTimeDistanceChartView: View {
                     .foregroundColor(.secondary)
             }
 
-            if analytics.allTimeMonthlyDistances.isEmpty {
+            if isYearFiltered {
+                HStack(spacing: 10) {
+                    selectedYearStat("Best Day", value: bestDay.map { String(format: "%.1f km", $0.distanceKm) } ?? "0 km")
+                    selectedYearStat("Avg Active", value: String(format: "%.1f km", averageActiveDayKm))
+                    selectedYearStat("Days", value: "\(nonZeroDays.count)")
+                }
+
+                Picker("Chart Mode", selection: $selectedYearChartMode) {
+                    ForEach(SelectedYearChartMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if let selectedDailyData {
+                    selectedDayPanel(for: selectedDailyData)
+                }
+            } else {
+                HStack(spacing: 10) {
+                    selectedYearStat("Best Month", value: bestMonth.map { String(format: "%.0f km", $0.distanceKm) } ?? "0 km")
+                    selectedYearStat("Avg Active", value: String(format: "%.0f km", averageActiveMonthKm))
+                    selectedYearStat("Months", value: "\(nonZeroMonths.count)")
+                }
+
+                Picker("Chart Mode", selection: $fullAllTimeChartMode) {
+                    ForEach(FullAllTimeChartMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if let selectedData {
+                    selectedMonthPanel(for: selectedData)
+                }
+            }
+
+            if (isYearFiltered && analytics.allTimeDailyDistances.isEmpty) ||
+                (!isYearFiltered && analytics.allTimeMonthlyDistances.isEmpty) {
                 Text("No data for \(analytics.allTimeRangeTitle)")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: chartHeight)
-            } else {
-                let maxMonthly = analytics.allTimeMonthlyDistances.map(\.distanceKm).max() ?? 1
-                let maxCumulative = analytics.allTimeMonthlyDistances.last?.cumulativeKm ?? 1
-                let maxY = max(maxMonthly * 1.15, maxCumulative * 1.15, 1)
+            } else if isYearFiltered {
+                let maxSelectedValue = analytics.allTimeDailyDistances.map { selectedYearValueKm(for: $0) }.max() ?? 0
+                let maxY = max(maxSelectedValue * 1.25, 1)
+                let chartColor = selectedYearChartMode.color
 
                 Chart {
-                    ForEach(visibleBarData) { data in
-                        BarMark(
-                            x: .value("Month", data.monthStart, unit: .month),
-                            y: .value("Distance", data.distanceKm)
+                    ForEach(analytics.allTimeDailyDistances) { data in
+                        AreaMark(
+                            x: .value("Day", data.dayStart, unit: .day),
+                            y: .value(selectedYearChartMode.rawValue, selectedYearValueKm(for: data))
                         )
-                        .foregroundStyle(
-                            selectedMonth.map { Calendar.current.isDate(data.monthStart, equalTo: $0, toGranularity: .month) } == true
-                            ? Color.blue.opacity(0.85)
-                            : Color.blue.opacity(0.4)
-                        )
-                        .cornerRadius(3)
-                    }
-
-                    ForEach(analytics.allTimeMonthlyDistances) { data in
-                        LineMark(
-                            x: .value("Month", data.monthStart, unit: .month),
-                            y: .value("Cumulative", data.cumulativeKm)
-                        )
-                        .foregroundStyle(.orange)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
                         .interpolationMethod(.catmullRom)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [chartColor.opacity(0.28), chartColor.opacity(0.03)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+
+                        LineMark(
+                            x: .value("Day", data.dayStart, unit: .day),
+                            y: .value(selectedYearChartMode.rawValue, selectedYearValueKm(for: data))
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(chartColor)
+                        .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+
+                        if data.distance > 0 ||
+                            selectedMonth.map({ Calendar.current.isDate(data.dayStart, equalTo: $0, toGranularity: .day) }) == true {
+                            PointMark(
+                                x: .value("Day", data.dayStart, unit: .day),
+                                y: .value(selectedYearChartMode.rawValue, selectedYearValueKm(for: data))
+                            )
+                            .foregroundStyle(
+                                selectedMonth.map { Calendar.current.isDate(data.dayStart, equalTo: $0, toGranularity: .day) } == true
+                                ? Color.orange
+                                : chartColor
+                            )
+                            .symbolSize(
+                                selectedMonth.map { Calendar.current.isDate(data.dayStart, equalTo: $0, toGranularity: .day) } == true
+                                ? 90
+                                : 18
+                            )
+                        }
                     }
 
-                    if let selectedMonth, let data = selectedData {
+                    if let selectedMonth, selectedDailyData != nil {
                         RuleMark(x: .value("Selected", selectedMonth))
-                            .foregroundStyle(.gray.opacity(0.4))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
-                            .annotation(position: .top, alignment: .center, spacing: 4) {
-                                VStack(spacing: 4) {
-                                    Text(data.monthLabel)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                    Text(String(format: "%.0f km / %.0f km", data.distanceKm, data.cumulativeKm))
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.primary)
-                                }
-                                .padding(8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color(.systemBackground))
-                                        .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 2)
-                                )
-                            }
+                            .foregroundStyle(Color(.label).opacity(0.24))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 4]))
                     }
                 }
-                .chartXScale(domain: firstMonth...currentMonth)
+                .chartXScale(domain: firstDay...currentDay)
                 .chartYScale(domain: 0...maxY)
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: analytics.allTimeYearFilter == nil ? min(max(analytics.allTimeYearlyDistances.count, 2), 8) : 6)) { value in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3]))
-                            .foregroundStyle(.gray.opacity(0.3))
+                    AxisMarks(values: .stride(by: .month, count: 1)) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                            .foregroundStyle(Color(.separator).opacity(0.16))
                         AxisValueLabel {
                             if let date = value.as(Date.self) {
-                                Text(date, format: analytics.allTimeYearFilter == nil ? .dateTime.year() : .dateTime.month(.abbreviated))
+                                Text(date, format: .dateTime.month(.abbreviated))
                                     .font(.caption2)
+                                    .foregroundColor(.secondary)
                             }
                         }
                     }
                 }
                 .chartYAxis {
                     AxisMarks(position: .leading) { value in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3]))
-                            .foregroundStyle(.gray.opacity(0.3))
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6))
+                            .foregroundStyle(Color(.separator).opacity(0.22))
+                        AxisTick(stroke: StrokeStyle(lineWidth: 0.6))
+                            .foregroundStyle(Color(.separator).opacity(0.45))
                         AxisValueLabel {
                             if let km = value.as(Double.self) {
                                 Text(String(format: "%.0f", km))
                                     .font(.caption2)
+                                    .foregroundColor(.secondary)
                             }
                         }
                     }
+                }
+                .chartPlotStyle { plotArea in
+                    plotArea
+                        .background(Color(.systemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color(.separator).opacity(0.18), lineWidth: 1)
+                        )
+                }
+                .chartOverlay { proxy in
+                    GeometryReader { _ in
+                        Rectangle()
+                            .fill(.clear)
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onChanged { value in
+                                        if let date: Date = proxy.value(atX: value.location.x) {
+                                            selectedMonth = nearestDay(to: date)
+                                        }
+                                    }
+                                    .onEnded { _ in
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                            withAnimation { selectedMonth = nil }
+                                        }
+                                    }
+                            )
+                    }
+                }
+                .frame(height: chartHeight)
+
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(selectedYearChartMode.color)
+                        .frame(width: isIPad ? 10 : 8, height: isIPad ? 10 : 8)
+                    Text(selectedYearChartMode.legendTitle)
+                        .font(isIPad ? .caption : .caption2)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("km")
+                        .font(isIPad ? .caption : .caption2)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                let maxSelectedValue = analytics.allTimeMonthlyDistances.map { fullAllTimeValueKm(for: $0) }.max() ?? 1
+                let maxY = max(maxSelectedValue * 1.15, 1)
+                let chartColor = fullAllTimeChartMode.color
+
+                Chart {
+                    ForEach(analytics.allTimeMonthlyDistances) { data in
+                        AreaMark(
+                            x: .value("Month", data.monthStart, unit: .month),
+                            y: .value(fullAllTimeChartMode.rawValue, fullAllTimeValueKm(for: data))
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [chartColor.opacity(0.26), chartColor.opacity(0.03)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+
+                        LineMark(
+                            x: .value("Month", data.monthStart, unit: .month),
+                            y: .value(fullAllTimeChartMode.rawValue, fullAllTimeValueKm(for: data))
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(chartColor)
+                        .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+
+                        if data.distance > 0 ||
+                            selectedMonth.map({ Calendar.current.isDate(data.monthStart, equalTo: $0, toGranularity: .month) }) == true {
+                            PointMark(
+                                x: .value("Month", data.monthStart, unit: .month),
+                                y: .value(fullAllTimeChartMode.rawValue, fullAllTimeValueKm(for: data))
+                            )
+                            .foregroundStyle(
+                                selectedMonth.map { Calendar.current.isDate(data.monthStart, equalTo: $0, toGranularity: .month) } == true
+                                ? Color.orange
+                                : chartColor
+                            )
+                            .symbolSize(
+                                selectedMonth.map { Calendar.current.isDate(data.monthStart, equalTo: $0, toGranularity: .month) } == true
+                                ? 90
+                                : 18
+                            )
+                        }
+                    }
+
+                    if let selectedMonth, selectedData != nil {
+                        RuleMark(x: .value("Selected", selectedMonth))
+                            .foregroundStyle(Color(.label).opacity(0.24))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                    }
+                }
+                .chartXScale(domain: firstMonth...currentMonth)
+                .chartYScale(domain: 0...maxY)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: analytics.allTimeYearFilter == nil ? min(max(analytics.allTimeYearlyDistances.count, 2), 8) : 6)) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                            .foregroundStyle(Color(.separator).opacity(0.16))
+                        AxisValueLabel {
+                            if let date = value.as(Date.self) {
+                                Text(date, format: .dateTime.year())
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6))
+                            .foregroundStyle(Color(.separator).opacity(0.22))
+                        AxisTick(stroke: StrokeStyle(lineWidth: 0.6))
+                            .foregroundStyle(Color(.separator).opacity(0.45))
+                        AxisValueLabel {
+                            if let km = value.as(Double.self) {
+                                Text(String(format: "%.0f", km))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                .chartPlotStyle { plotArea in
+                    plotArea
+                        .background(Color(.systemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color(.separator).opacity(0.18), lineWidth: 1)
+                        )
                 }
                 .chartOverlay { proxy in
                     GeometryReader { _ in
@@ -305,23 +552,13 @@ struct AllTimeDistanceChartView: View {
                 }
                 .frame(height: chartHeight)
 
-                HStack(spacing: 16) {
-                    HStack(spacing: 4) {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.blue.opacity(0.5))
-                            .frame(width: isIPad ? 14 : 12, height: isIPad ? 14 : 12)
-                        Text("Monthly")
-                            .font(isIPad ? .caption : .caption2)
-                            .foregroundColor(.secondary)
-                    }
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.orange)
-                            .frame(width: isIPad ? 10 : 8, height: isIPad ? 10 : 8)
-                        Text("Cumulative")
-                            .font(isIPad ? .caption : .caption2)
-                            .foregroundColor(.secondary)
-                    }
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(fullAllTimeChartMode.color)
+                        .frame(width: isIPad ? 10 : 8, height: isIPad ? 10 : 8)
+                    Text(fullAllTimeChartMode.legendTitle)
+                        .font(isIPad ? .caption : .caption2)
+                        .foregroundColor(.secondary)
                     Spacer()
                     Text("km")
                         .font(isIPad ? .caption : .caption2)
@@ -338,5 +575,128 @@ struct AllTimeDistanceChartView: View {
         analytics.allTimeMonthlyDistances.min {
             abs($0.monthStart.timeIntervalSince(date)) < abs($1.monthStart.timeIntervalSince(date))
         }?.monthStart
+    }
+
+    private func nearestDay(to date: Date) -> Date? {
+        analytics.allTimeDailyDistances.min {
+            abs($0.dayStart.timeIntervalSince(date)) < abs($1.dayStart.timeIntervalSince(date))
+        }?.dayStart
+    }
+
+    private func selectedYearValueKm(for data: AnalyticsAllTimeDailyDistance) -> Double {
+        switch selectedYearChartMode {
+        case .daily:
+            return data.distanceKm
+        case .cumulative:
+            return data.cumulativeKm
+        }
+    }
+
+    private func fullAllTimeValueKm(for data: AnalyticsAllTimeMonthlyDistance) -> Double {
+        switch fullAllTimeChartMode {
+        case .monthly:
+            return data.distanceKm
+        case .cumulative:
+            return data.cumulativeKm
+        }
+    }
+
+    private func selectedDayPanel(for data: AnalyticsAllTimeDailyDistance) -> some View {
+        let primaryValue = String(format: "%.1f km", selectedYearValueKm(for: data))
+        let secondaryValue: String
+        switch selectedYearChartMode {
+        case .daily:
+            secondaryValue = String(format: "%.1f km total", data.cumulativeKm)
+        case .cumulative:
+            secondaryValue = String(format: "%.1f km on day", data.distanceKm)
+        }
+
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(data.dayLabel)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+                Text(secondaryValue)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 8)
+            Text(primaryValue)
+                .font(isIPad ? .headline : .subheadline)
+                .fontWeight(.bold)
+                .foregroundColor(selectedYearChartMode.color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(selectedYearChartMode.color.opacity(0.24), lineWidth: 1)
+        )
+    }
+
+    private func selectedMonthPanel(for data: AnalyticsAllTimeMonthlyDistance) -> some View {
+        let primaryValue = String(format: "%.0f km", fullAllTimeValueKm(for: data))
+        let secondaryValue: String
+        switch fullAllTimeChartMode {
+        case .monthly:
+            secondaryValue = String(format: "%.0f km total", data.cumulativeKm)
+        case .cumulative:
+            secondaryValue = String(format: "%.0f km in month", data.distanceKm)
+        }
+
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(data.monthLabel)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+                Text(secondaryValue)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 8)
+            Text(primaryValue)
+                .font(isIPad ? .headline : .subheadline)
+                .fontWeight(.bold)
+                .foregroundColor(fullAllTimeChartMode.color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(fullAllTimeChartMode.color.opacity(0.24), lineWidth: 1)
+        )
+    }
+
+    private func selectedYearStat(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(isIPad ? .subheadline : .caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(.separator).opacity(0.18), lineWidth: 1)
+        )
     }
 }

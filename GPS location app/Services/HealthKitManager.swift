@@ -227,7 +227,7 @@ class HealthKitManager: ObservableObject {
                 totalEnergyBurned: nil,
                 totalDistance: nil,
                 device: .local(),
-                metadata: metadata
+                metadata: sanitizedHealthKitMetadata(metadata)
             )
 
             self.healthStore.save(workout) { success, error in
@@ -257,7 +257,7 @@ class HealthKitManager: ObservableObject {
                 let stepSamples: [HKSample] = [
                     HKQuantitySample(
                         type: stepType,
-                        quantity: HKQuantity(unit: .count(), doubleValue: stepsCount),
+                        quantity: HKQuantitySafe(unit: .count(), doubleValue: stepsCount),
                         start: startDate,
                         end: endDate,
                         metadata: [
@@ -550,25 +550,25 @@ class HealthKitManager: ObservableObject {
 
             // Add average speed metadata (HealthKit standard key)
             if metrics.averageSpeed > 0 {
-                let avgSpeedQuantity = HKQuantity(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.averageSpeed)
+                let avgSpeedQuantity = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.averageSpeed)
                 metadata[HKMetadataKeyAverageSpeed] = avgSpeedQuantity
             }
 
             // Add max speed metadata
             if metrics.maxSpeed > 0 {
-                let maxSpeedQuantity = HKQuantity(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.maxSpeed)
+                let maxSpeedQuantity = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.maxSpeed)
                 metadata[HKMetadataKeyMaximumSpeed] = maxSpeedQuantity
             }
 
             // Add HealthKit standard elevation metadata (required for Fitness app)
             if metrics.totalAltitudeGain > 0 {
-                metadata[HKMetadataKeyElevationAscended] = HKQuantity(unit: .meter(), doubleValue: metrics.totalAltitudeGain)
+                metadata[HKMetadataKeyElevationAscended] = HKQuantitySafe(unit: .meter(), doubleValue: metrics.totalAltitudeGain)
             }
             if metrics.totalAltitudeLoss > 0 {
-                metadata[HKMetadataKeyElevationDescended] = HKQuantity(unit: .meter(), doubleValue: metrics.totalAltitudeLoss)
+                metadata[HKMetadataKeyElevationDescended] = HKQuantitySafe(unit: .meter(), doubleValue: metrics.totalAltitudeLoss)
             }
 
-            builder.addMetadata(metadata) { [weak self] success, error in
+            builder.addMetadata(sanitizedHealthKitMetadata(metadata)) { [weak self] success, error in
                 guard let self = self else { return }
                 guard success else {
                     self.handleSaveFailure(
@@ -746,10 +746,10 @@ class HealthKitManager: ObservableObject {
         }
 
         let totalDistance = metrics.totalDistance > 0
-            ? HKQuantity(unit: .meter(), doubleValue: metrics.totalDistance)
+            ? HKQuantitySafe(unit: .meter(), doubleValue: metrics.totalDistance)
             : nil
         let totalEnergy = metrics.caloriesBurned > 0
-            ? HKQuantity(unit: .kilocalorie(), doubleValue: metrics.caloriesBurned)
+            ? HKQuantitySafe(unit: .kilocalorie(), doubleValue: metrics.caloriesBurned)
             : nil
 
         let workout = HKWorkout(
@@ -760,7 +760,7 @@ class HealthKitManager: ObservableObject {
             totalEnergyBurned: totalEnergy,
             totalDistance: totalDistance,
             device: .local(),
-            metadata: metadata
+            metadata: sanitizedHealthKitMetadata(metadata)
         )
 
         healthStore.save(workout) { success, error in
@@ -1154,7 +1154,7 @@ class HealthKitManager: ObservableObject {
         var speedSamples: [HKQuantitySample] = []
 
         for (index, speedSample) in metrics.speedHistory.enumerated() where index % samplingInterval == 0 {
-            let speedQuantity = HKQuantity(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: speedSample.speed)
+            let speedQuantity = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: speedSample.speed)
 
             let sample = HKQuantitySample(
                 type: speedType,
@@ -1262,7 +1262,7 @@ class HealthKitManager: ObservableObject {
             if distributedSamples.isEmpty {
                 let stepSample = HKQuantitySample(
                     type: stepType,
-                    quantity: HKQuantity(unit: .count(), doubleValue: stepSource.count),
+                    quantity: HKQuantitySafe(unit: .count(), doubleValue: stepSource.count),
                     start: startDate,
                     end: endDate
                 )
@@ -1311,7 +1311,7 @@ class HealthKitManager: ObservableObject {
             samples.append(
                 HKQuantitySample(
                     type: stepType,
-                    quantity: HKQuantity(unit: .count(), doubleValue: stepsForBucket),
+                    quantity: HKQuantitySafe(unit: .count(), doubleValue: stepsForBucket),
                     start: bucketStart,
                     end: bucketEnd
                 )
@@ -1327,7 +1327,7 @@ class HealthKitManager: ObservableObject {
             return []
         }
 
-        let energyQuantity = HKQuantity(unit: .kilocalorie(), doubleValue: metrics.caloriesBurned)
+        let energyQuantity = HKQuantitySafe(unit: .kilocalorie(), doubleValue: metrics.caloriesBurned)
         let sample = HKQuantitySample(type: energyType, quantity: energyQuantity, start: startDate, end: endDate)
         return [sample]
     }
@@ -1338,7 +1338,7 @@ class HealthKitManager: ObservableObject {
             return []
         }
 
-        let energyQuantity = HKQuantity(unit: .kilocalorie(), doubleValue: metrics.restingEnergyBurned)
+        let energyQuantity = HKQuantitySafe(unit: .kilocalorie(), doubleValue: metrics.restingEnergyBurned)
         let sample = HKQuantitySample(type: energyType, quantity: energyQuantity, start: startDate, end: endDate)
         return [sample]
     }
@@ -1370,7 +1370,7 @@ class HealthKitManager: ObservableObject {
 
         var samples: [HKQuantitySample] = []
         for source in sourceDistances {
-            let distanceQuantity = HKQuantity(unit: .meter(), doubleValue: source.value)
+            let distanceQuantity = HKQuantitySafe(unit: .meter(), doubleValue: source.value)
             for identifier in identifiers {
                 guard let distanceType = HKQuantityType.quantityType(forIdentifier: identifier) else { continue }
                 let sample = HKQuantitySample(
@@ -1416,7 +1416,7 @@ class HealthKitManager: ObservableObject {
             return []
         }
 
-        let quantity = HKQuantity(unit: HKUnit.count().unitDivided(by: .minute()), doubleValue: heartRateValue)
+        let quantity = HKQuantitySafe(unit: HKUnit.count().unitDivided(by: .minute()), doubleValue: heartRateValue)
         let sample = HKQuantitySample(type: heartRateType, quantity: quantity, start: startDate, end: endDate)
         return [sample]
     }
@@ -1440,7 +1440,7 @@ class HealthKitManager: ObservableObject {
                 // Average: 60-90 RPM
                 let cadence = estimateCyclingCadence(speed: speedSample.speed)
 
-                let quantity = HKQuantity(unit: HKUnit.count().unitDivided(by: .minute()), doubleValue: cadence)
+                let quantity = HKQuantitySafe(unit: HKUnit.count().unitDivided(by: .minute()), doubleValue: cadence)
                 let sample = HKQuantitySample(
                     type: cadenceType,
                     quantity: quantity,
@@ -1478,7 +1478,7 @@ class HealthKitManager: ObservableObject {
             // Calculate stride length from speed
             let strideLength = calculateStrideLength(speed: speedSample.speed)
 
-            let quantity = HKQuantity(unit: .meter(), doubleValue: strideLength)
+            let quantity = HKQuantitySafe(unit: .meter(), doubleValue: strideLength)
             let sample = HKQuantitySample(
                 type: strideType,
                 quantity: quantity,
@@ -1506,7 +1506,7 @@ class HealthKitManager: ObservableObject {
             // Estimate running power (watts)
             let power = estimateRunningPower(speed: speedSample.speed, altitude: altitude)
 
-            let quantity = HKQuantity(unit: .watt(), doubleValue: power)
+            let quantity = HKQuantitySafe(unit: .watt(), doubleValue: power)
             let sample = HKQuantitySample(
                 type: powerType,
                 quantity: quantity,
@@ -1529,7 +1529,7 @@ class HealthKitManager: ObservableObject {
             // Typical: 6-13 cm, increases with speed
             let vertOsc = estimateVerticalOscillation(speed: speedSample.speed)
 
-            let quantity = HKQuantity(unit: HKUnit.meterUnit(with: .centi), doubleValue: vertOsc)
+            let quantity = HKQuantitySafe(unit: HKUnit.meterUnit(with: .centi), doubleValue: vertOsc)
             let sample = HKQuantitySample(
                 type: vertOscType,
                 quantity: quantity,
@@ -1552,7 +1552,7 @@ class HealthKitManager: ObservableObject {
             // Typical: 200-300ms, decreases with speed
             let gct = estimateGroundContactTime(speed: speedSample.speed)
 
-            let quantity = HKQuantity(unit: HKUnit.secondUnit(with: .milli), doubleValue: gct)
+            let quantity = HKQuantitySafe(unit: HKUnit.secondUnit(with: .milli), doubleValue: gct)
             let sample = HKQuantitySample(
                 type: gctType,
                 quantity: quantity,

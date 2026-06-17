@@ -20,6 +20,7 @@ private struct WorkoutMapTrack: Identifiable {
     let coordinates: [CLLocationCoordinate2D]
     let transportType: MKDirectionsTransportType
     let canRoadAlign: Bool
+    let costing: MapMatchingService.Costing
 
     var coordinateCount: Int { coordinates.count }
 }
@@ -31,6 +32,142 @@ private struct RoadAlignmentSegment {
     var end: CLLocationCoordinate2D? { original.last }
 }
 
+/// MKMapView-backed layer. Renders ALL routes as a single MKMultiPolyline overlay
+/// (via MKMultiPolylineRenderer) instead of thousands of SwiftUI overlays — this
+/// is what lets the map show every route smoothly without lag/heat. SwiftUI's
+/// MapPolyline can't take an MKMultiPolyline, hence the UIViewRepresentable.
+private struct TracksMapLayer: UIViewRepresentable {
+    let tracks: [WorkoutMapTrack]
+    let selectedTrackID: UUID?
+    let roadAlignedCoordinates: [UUID: [CLLocationCoordinate2D]]
+    let multiPolyline: MKMultiPolyline?
+    let satellite: Bool
+    let dataVersion: Int                    // bumps when the track set changes
+    let fitRegion: MKCoordinateRegion?
+    let fitGeneration: Int                  // bumps when a fit/focus is requested
+    let onTapCoordinate: (CLLocationCoordinate2D) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onTapCoordinate: onTapCoordinate) }
+
+    func makeUIView(context: Context) -> MKMapView {
+        let map = MKMapView()
+        map.delegate = context.coordinator
+        map.showsUserLocation = true
+        map.showsCompass = true
+        map.showsScale = true
+        map.pointOfInterestFilter = .excludingAll
+        let tap = UITapGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.handleTap(_:)))
+        map.addGestureRecognizer(tap)
+        context.coordinator.mapView = map
+        return map
+    }
+
+    func updateUIView(_ map: MKMapView, context: Context) {
+        let coord = context.coordinator
+        coord.onTapCoordinate = onTapCoordinate
+        coord.tracks = tracks
+
+        let desiredType: MKMapType = satellite ? .hybrid : .standard
+        if map.mapType != desiredType { map.mapType = desiredType }
+
+        // Rebuild overlays only when the data set / selection actually changed.
+        let signature = "\(dataVersion)|sel:\(selectedTrackID?.uuidString ?? "none")|al:\(roadAlignedCoordinates.count)"
+        if signature != coord.lastSignature {
+            coord.lastSignature = signature
+            rebuildOverlays(on: map)
+        }
+
+        // Apply a requested camera fit when the generation changes.
+        if coord.lastFitGeneration != fitGeneration, let region = fitRegion {
+            coord.lastFitGeneration = fitGeneration
+            map.setRegion(map.regionThatFits(region), animated: true)
+        }
+    }
+
+    private func displayCoordinates(for track: WorkoutMapTrack) -> [CLLocationCoordinate2D] {
+        roadAlignedCoordinates[track.id] ?? track.coordinates
+    }
+
+    private func rebuildOverlays(on map: MKMapView) {
+        map.removeOverlays(map.overlays)
+        map.removeAnnotations(map.annotations.filter { !($0 is MKUserLocation) })
+
+        // Always one multi-polyline overlay (raw or corrected — the parent rebuilds
+        // it when smoothing/matching changes the geometry). Keeps rendering fast
+        // no matter how many routes are shown.
+        if let multiPolyline { map.addOverlay(multiPolyline, level: .aboveRoads) }
+
+        // Highlight + endpoint pins for the selected route.
+        if let id = selectedTrackID, let track = tracks.first(where: { $0.id == id }) {
+            let coords = displayCoordinates(for: track)
+            if coords.count > 1 {
+                let pl = MKPolyline(coordinates: coords, count: coords.count)
+                pl.title = "selected"
+                map.addOverlay(pl, level: .aboveLabels)
+                if let first = coords.first {
+                    let a = MKPointAnnotation(); a.coordinate = first; a.title = "Start"; map.addAnnotation(a)
+                }
+                if let last = coords.last {
+                    let a = MKPointAnnotation(); a.coordinate = last; a.title = "End"; map.addAnnotation(a)
+                }
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        weak var mapView: MKMapView?
+        var onTapCoordinate: (CLLocationCoordinate2D) -> Void
+        var tracks: [WorkoutMapTrack] = []
+        var lastSignature = ""
+        var lastFitGeneration = Int.min
+
+        init(onTapCoordinate: @escaping (CLLocationCoordinate2D) -> Void) {
+            self.onTapCoordinate = onTapCoordinate
+        }
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let map = mapView else { return }
+            let point = gesture.location(in: map)
+            let coordinate = map.convert(point, toCoordinateFrom: map)
+            onTapCoordinate(coordinate)
+        }
+
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let multi = overlay as? MKMultiPolyline {
+                let r = MKMultiPolylineRenderer(multiPolyline: multi)
+                r.strokeColor = UIColor.systemBlue.withAlphaComponent(0.55)
+                r.lineWidth = 2.5
+                return r
+            }
+            if let pl = overlay as? MKPolyline {
+                let r = MKPolylineRenderer(polyline: pl)
+                if pl.title == "selected" {
+                    r.strokeColor = UIColor.systemOrange
+                    r.lineWidth = 5
+                } else {
+                    r.strokeColor = UIColor.systemBlue.withAlphaComponent(0.55)
+                    r.lineWidth = 2.5
+                }
+                return r
+            }
+            return MKOverlayRenderer(overlay: overlay)
+        }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if annotation is MKUserLocation { return nil }
+            let id = "endpoint"
+            let view = (mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView)
+                ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
+            view.annotation = annotation
+            view.markerTintColor = (annotation.title ?? "") == "Start" ? .systemGreen : .systemRed
+            view.glyphImage = nil
+            view.displayPriority = .required
+            return view
+        }
+    }
+}
+
 struct WorkoutMapView: View {
     @StateObject private var flightDataStore = FlightDataStore.shared
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -40,7 +177,9 @@ struct WorkoutMapView: View {
     @State private var customEndDate = Date()
     @State private var tracks: [WorkoutMapTrack] = []
     @State private var selectedTrackID: UUID?
-    @State private var position: MapCameraPosition = .automatic
+    @State private var fitRegion: MKCoordinateRegion?
+    @State private var fitGeneration = 0
+    @State private var dataVersion = 0
     @State private var isLoading = false
     @State private var roadAlignedCoordinates: [UUID: [CLLocationCoordinate2D]] = [:]
     @State private var isRoadAligning = false
@@ -52,11 +191,63 @@ struct WorkoutMapView: View {
     @State private var downloadTotal = 0
     @State private var downloadMessage: String?
     @State private var showDownloadAlert = false
+    @State private var downloadTask: Task<Void, Never>?
+    @State private var detailFlight: Flight?
+    @State private var mapStyleSelection: MapStyleOption = .standard
+    @State private var allTracksBounds: MapBounds?
+    @State private var allRoutesMultiPolyline: MKMultiPolyline?
+
+    private struct MapBounds {
+        let minLat: Double, maxLat: Double, minLon: Double, maxLon: Double
+
+        init?(_ coordinates: [CLLocationCoordinate2D]) {
+            guard !coordinates.isEmpty else { return nil }
+            var nLat = coordinates[0].latitude, xLat = coordinates[0].latitude
+            var nLon = coordinates[0].longitude, xLon = coordinates[0].longitude
+            for c in coordinates {
+                if c.latitude < nLat { nLat = c.latitude }
+                if c.latitude > xLat { xLat = c.latitude }
+                if c.longitude < nLon { nLon = c.longitude }
+                if c.longitude > xLon { xLon = c.longitude }
+            }
+            minLat = nLat; maxLat = xLat; minLon = nLon; maxLon = xLon
+        }
+
+        init(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double) {
+            self.minLat = minLat; self.maxLat = maxLat; self.minLon = minLon; self.maxLon = maxLon
+        }
+
+        func union(_ other: MapBounds) -> MapBounds {
+            MapBounds(minLat: min(minLat, other.minLat), maxLat: max(maxLat, other.maxLat),
+                      minLon: min(minLon, other.minLon), maxLon: max(maxLon, other.maxLon))
+        }
+
+        var region: MKCoordinateRegion {
+            MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2),
+                span: MKCoordinateSpan(latitudeDelta: max((maxLat - minLat) * 1.25, 0.01),
+                                       longitudeDelta: max((maxLon - minLon) * 1.25, 0.01))
+            )
+        }
+    }
+
+    private enum MapStyleOption: String, CaseIterable, Identifiable {
+        case standard = "Standard"
+        case hybrid = "Satellite"
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .standard: return "map"
+            case .hybrid: return "globe.americas.fill"
+            }
+        }
+    }
 
     private let routePalette: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .indigo, .mint]
     private let healthKitManager = HealthKitManager.shared
     private let roadAlignmentRequestBudget = 40
     private let roadAlignmentRequestSpacingNanoseconds: UInt64 = 1_500_000_000
+    private let roadAlignmentMaxTracks = 60
 
     private var isIPad: Bool { sizeClass == .regular }
 
@@ -68,51 +259,21 @@ struct WorkoutMapView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                MapReader { proxy in
-                    Map(position: $position) {
-                        ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                            MapPolyline(coordinates: displayCoordinates(for: track))
-                                .stroke(
-                                    routeColor(for: index).opacity(track.id == selectedTrackID ? 1.0 : 0.55),
-                                    lineWidth: track.id == selectedTrackID ? 5 : 3
-                                )
-                        }
-
-                        if let selectedTrack {
-                            let coordinates = displayCoordinates(for: selectedTrack)
-                            if let labelCoordinate = labelCoordinate(for: selectedTrack) {
-                                Annotation("", coordinate: labelCoordinate, anchor: .bottom) {
-                                    selectedTrackMapLabel(selectedTrack)
-                                }
-                            }
-
-                            if let first = coordinates.first {
-                                Marker("Start", coordinate: first)
-                                    .tint(.green)
-                            }
-
-                            if let last = coordinates.last {
-                                Marker("End", coordinate: last)
-                                    .tint(.red)
-                            }
-                        }
-                    }
-                    .mapStyle(.standard(elevation: .realistic))
-                    .mapControls {
-                        MapUserLocationButton()
-                        MapCompass()
-                        MapScaleView()
-                    }
-                    .simultaneousGesture(
-                        SpatialTapGesture()
-                            .onEnded { value in
-                                if let coordinate = proxy.convert(value.location, from: .local) {
-                                    selectNearestTrack(to: coordinate)
-                                }
-                            }
-                    )
-                    .ignoresSafeArea(edges: .bottom)
-                }
+                // Extracted, Equatable map layer — it only re-renders when the
+                // track data / selection / style actually change. Download progress
+                // updates re-render the panels below but NOT this heavy map.
+                TracksMapLayer(
+                    tracks: tracks,
+                    selectedTrackID: selectedTrackID,
+                    roadAlignedCoordinates: roadAlignedCoordinates,
+                    multiPolyline: allRoutesMultiPolyline,
+                    satellite: mapStyleSelection == .hybrid,
+                    dataVersion: dataVersion,
+                    fitRegion: fitRegion,
+                    fitGeneration: fitGeneration,
+                    onTapCoordinate: { coordinate in selectNearestTrack(to: coordinate) }
+                )
+                .ignoresSafeArea(edges: .bottom)
 
                 VStack(spacing: 0) {
                     controlPanel
@@ -137,11 +298,23 @@ struct WorkoutMapView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
+                    Picker("Style", selection: $mapStyleSelection) {
+                        ForEach(MapStyleOption.allCases) { style in
+                            Image(systemName: style.icon).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: fitAllTracks) {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                     }
                     .disabled(tracks.isEmpty)
                 }
+            }
+            .navigationDestination(item: $detailFlight) { flight in
+                WorkoutDetailView(flight: flight)
             }
             .onAppear(perform: loadTracks)
             .onChange(of: selectedPeriod) { loadTracks() }
@@ -155,7 +328,14 @@ struct WorkoutMapView: View {
                     loadTracks()
                 }
             }
-            .onChange(of: flightDataStore.savedFlights.count) { loadTracks() }
+            .onChange(of: flightDataStore.savedFlights.count) {
+                // CRITICAL: during a bulk download each saved workout bumps this
+                // count. Reloading every track from disk on each one is O(n²) disk
+                // I/O + a full map re-render — the main cause of lag/heat/crash.
+                // Skip reloads while downloading; loadTracks() runs once at the end.
+                guard !isDownloadingWorkouts else { return }
+                loadTracks()
+            }
         }
     }
 
@@ -191,18 +371,27 @@ struct WorkoutMapView: View {
                 .buttonStyle(.bordered)
                 .disabled(isLoading || isRoadAligning || isDownloadingWorkouts)
 
-                Button(action: downloadAllWorkoutsFromHealthKit) {
-                    Label(
-                        isDownloadingWorkouts ? "Downloading \(downloadProgress)/\(downloadTotal)" : "Download All",
-                        systemImage: isDownloadingWorkouts ? "hourglass" : "square.and.arrow.down"
-                    )
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                if isDownloadingWorkouts {
+                    Button(action: cancelDownload) {
+                        Label("Stop \(downloadProgress)/\(downloadTotal)", systemImage: "stop.circle.fill")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                } else {
+                    Button(action: downloadAllWorkoutsFromHealthKit) {
+                        Label("Download All", systemImage: "square.and.arrow.down")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isRoadAligning)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(isDownloadingWorkouts || isRoadAligning)
             }
 
             HStack(spacing: 10) {
@@ -237,6 +426,24 @@ struct WorkoutMapView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if isDownloadingWorkouts && downloadTotal > 0 {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("\(downloadProgress) / \(downloadTotal)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(Int((Double(downloadProgress) / Double(max(downloadTotal, 1))) * 100))%")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .monospacedDigit()
+                    }
+                    ProgressView(value: Double(downloadProgress), total: Double(downloadTotal))
+                        .progressViewStyle(.linear)
+                        .tint(.blue)
+                }
             }
 
             if let downloadMessage {
@@ -347,30 +554,96 @@ struct WorkoutMapView: View {
     }
 
     private func selectedTrackInfo(_ track: WorkoutMapTrack) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "calendar")
-                .foregroundColor(.blue)
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "calendar")
+                    .foregroundColor(.blue)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                Text(track.startDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().year().hour().minute())
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.title)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    Text(track.startDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().year().hour().minute())
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(String(format: "%.2f km", track.distance / 1000))
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.blue)
+                    Text(formatTrackDuration(track.duration))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
 
-            Spacer()
+            // Quick stats row
+            HStack(spacing: 0) {
+                trackStat(icon: "speedometer", value: averageSpeedText(track), tint: .orange)
+                Divider().frame(height: 26)
+                trackStat(icon: "point.topleft.down.curvedto.point.bottomright.up", value: "\(track.coordinateCount) pts", tint: .green)
+                Divider().frame(height: 26)
+                trackStat(icon: "clock", value: formatTrackDuration(track.duration), tint: .blue)
+            }
 
-            Text(String(format: "%.1f km", track.distance / 1000))
+            Button(action: { openDetails(for: track) }) {
+                HStack {
+                    Image(systemName: "chart.xyaxis.line")
+                    Text("View Full Details")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                }
                 .font(.caption)
-                .fontWeight(.semibold)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity)
+                .background(Color.blue.opacity(0.12))
                 .foregroundColor(.blue)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
         }
         .padding(10)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func trackStat(icon: String, value: String, tint: Color) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundColor(tint)
+            Text(value)
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundColor(.primary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func averageSpeedText(_ track: WorkoutMapTrack) -> String {
+        guard track.duration > 0 else { return "--" }
+        return String(format: "%.1f km/h", (track.distance / track.duration) * 3.6)
+    }
+
+    private func formatTrackDuration(_ duration: TimeInterval) -> String {
+        let hours = Int(duration) / 3600
+        let minutes = Int(duration) / 60 % 60
+        if hours > 0 { return String(format: "%dh %dm", hours, minutes) }
+        return String(format: "%dm", minutes)
+    }
+
+    private func openDetails(for track: WorkoutMapTrack) {
+        if let flight = FlightDataStore.shared.loadFlightDetails(id: track.id) {
+            detailFlight = flight
+        } else if let summary = flightDataStore.savedFlights.first(where: { $0.id == track.id }) {
+            detailFlight = summary
+        }
     }
 
     private var periodSubtitle: String {
@@ -392,32 +665,81 @@ struct WorkoutMapView: View {
 
     private func loadTracks() {
         isLoading = true
-        let summaries = filteredSummaries()
+        let summaries = filteredSummaries().sorted { $0.startDate > $1.startDate }
+        let interval = selectedInterval()
+        let savedIDs = Set(flightDataStore.savedFlights.map(\.id))
+            .union(Set(flightDataStore.savedFlights.compactMap(\.workoutUUID)))
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let loaded = summaries.compactMap { summary -> WorkoutMapTrack? in
-                let fullFlight = FlightDataStore.shared.loadFlightDetails(id: summary.id) ?? summary
-                guard fullFlight.locations.count > 1 else { return nil }
+            // Decode the HealthKit summary cache OFF the main thread (it was a
+            // freeze source when opening the Map tab).
+            let cachedHKWorkouts = WorkoutCacheStore.shared.loadWorkouts()
+            let pendingHKWorkouts = cachedHKWorkouts.filter { workout in
+                guard !savedIDs.contains(workout.id) else { return false }
+                if let interval, !interval.contains(workout.startDate) { return false }
+                return true
+            }
 
-                let sampledLocations = sampled(fullFlight.locations)
-                let coordinates = sampledLocations.map { $0.toCLLocation().coordinate }
+            // Adaptive per-track detail: fewer vertices per route when there are
+            // many, keeping the total vertex count (and GPU load) bounded even
+            // when showing ALL routes.
+            let trackCount = summaries.count
+            let perTrackMaxPoints: Int
+            switch trackCount {
+            case 0...10: perTrackMaxPoints = 600
+            case 11...50: perTrackMaxPoints = 250
+            case 51...200: perTrackMaxPoints = 120
+            case 201...800: perTrackMaxPoints = 60
+            default: perTrackMaxPoints = 30
+            }
+
+            // Accumulate the global bounding box here, off the main thread, so we
+            // never have to flat-map + scan ~1M coordinates on the main thread in
+            // fitAllTracks() (the ~3s spike after each load).
+            var globalBounds: MapBounds?
+
+            let loaded = summaries.compactMap { summary -> WorkoutMapTrack? in
+                // CRITICAL: read the compact route cache (tiny lat/lon file) instead
+                // of decoding the full flight detail (all GPS points + every metric
+                // history). This is the key fix for iPhone map lag / memory crashes.
+                let cachedCoords = FlightDataStore.shared.loadRouteCoordinates(id: summary.id)
+                guard cachedCoords.count > 1 else { return nil }
+
+                // Down-sample further for rendering based on how many tracks are shown.
+                let coordinates = downsampleCoordinates(cachedCoords, maxPoints: perTrackMaxPoints)
                 guard coordinates.count > 1 else { return nil }
 
+                if let b = MapBounds(coordinates) {
+                    globalBounds = globalBounds?.union(b) ?? b
+                }
+
+                let activityType = summary.workoutType.flatMap { HKWorkoutActivityType(rawValue: $0) }
                 return WorkoutMapTrack(
-                    id: fullFlight.id,
-                    title: workoutTitle(for: fullFlight),
-                    startDate: fullFlight.startDate,
-                    distance: fullFlight.metrics?.totalDistance ?? 0,
-                    duration: fullFlight.metrics?.duration ?? fullFlight.duration,
+                    id: summary.id,
+                    title: workoutTitle(for: summary),
+                    startDate: summary.startDate,
+                    distance: summary.metrics?.totalDistance ?? 0,
+                    duration: summary.metrics?.duration ?? summary.duration,
                     coordinates: coordinates,
-                    transportType: mapTransportType(for: fullFlight),
-                    canRoadAlign: canRoadAlign(flight: fullFlight)
+                    transportType: mapTransportType(for: summary),
+                    canRoadAlign: canRoadAlign(flight: summary),
+                    costing: MapMatchingService.costing(for: activityType)
                 )
             }
             .sorted { $0.startDate > $1.startDate }
 
+            // Collapse ALL routes into ONE MKMultiPolyline overlay. MapKit renders
+            // a single multi-polyline far faster than thousands of separate
+            // overlays — this is what lets the map show every route smoothly.
+            let multi = MKMultiPolyline(loaded.map { track in
+                MKPolyline(coordinates: track.coordinates, count: track.coordinates.count)
+            })
+
             DispatchQueue.main.async {
                 tracks = loaded
+                allRoutesMultiPolyline = loaded.isEmpty ? nil : multi
+                allTracksBounds = globalBounds
+                dataVersion += 1
                 roadAlignedCoordinates = [:]
                 roadAlignMessage = nil
                 if let selectedTrackID, !loaded.contains(where: { $0.id == selectedTrackID }) {
@@ -425,6 +747,121 @@ struct WorkoutMapView: View {
                 }
                 isLoading = false
                 fitAllTracks()
+
+                // Auto-fetch routes for any HealthKit workouts in this period that
+                // haven't been downloaded yet, so the Map tab matches the Workouts
+                // tab. Skip auto-starting when the device is already warm — don't
+                // surprise the user with heat just for opening the tab. They can
+                // still trigger it manually with "Download All".
+                let thermalOK = ProcessInfo.processInfo.thermalState == .nominal
+                    || ProcessInfo.processInfo.thermalState == .fair
+                if !pendingHKWorkouts.isEmpty && !isDownloadingWorkouts && thermalOK {
+                    autoDownloadPendingWorkouts(pendingHKWorkouts)
+                }
+            }
+        }
+    }
+
+    private func autoDownloadPendingWorkouts(_ summaries: [WorkoutSummary]) {
+        guard healthKitManager.isAuthorized else { return }
+        guard !isDownloadingWorkouts else { return }
+
+        isDownloadingWorkouts = true
+        downloadProgress = 0
+        downloadTotal = summaries.count
+        downloadMessage = "Syncing \(summaries.count) workouts from HealthKit..."
+
+        if #available(iOS 16.1, *) {
+            DownloadLiveActivityManager.shared.beginBackgroundTask(name: "MapAutoSync")
+            DownloadLiveActivityManager.shared.start(
+                title: "Syncing Map Workouts",
+                total: summaries.count,
+                message: "Downloading routes..."
+            )
+        }
+
+        downloadTask = Task {
+            var imported = 0
+            var skipped = 0
+
+            // Thermal-aware batching: concurrency shrinks and cooldowns grow as
+            // the device heats up so the sync can't overheat-crash the app.
+            var index = 0
+            while index < summaries.count {
+                if Task.isCancelled { break }
+                await ThermalDownloadPacing.waitWhileCritical()
+                if Task.isCancelled { break }
+
+                let batchSize = ThermalDownloadPacing.concurrency
+                let batchEnd = min(index + batchSize, summaries.count)
+                let batch = Array(summaries[index..<batchEnd])
+
+                let workouts: [HKWorkout?] = await withTaskGroup(of: HKWorkout?.self, returning: [HKWorkout?].self) { group in
+                    for summary in batch {
+                        group.addTask {
+                            await withCheckedContinuation { continuation in
+                                self.healthKitManager.fetchWorkout(uuid: summary.id) { workout, _ in
+                                    continuation.resume(returning: workout)
+                                }
+                            }
+                        }
+                    }
+                    var collected: [HKWorkout?] = []
+                    for await result in group {
+                        collected.append(result)
+                    }
+                    return collected
+                }
+
+                let flights: [Flight?] = await withTaskGroup(of: Flight?.self, returning: [Flight?].self) { group in
+                    for workout in workouts.compactMap({ $0 }) {
+                        group.addTask {
+                            await self.fetchAndConvertWorkout(workout)
+                        }
+                    }
+                    var collected: [Flight?] = []
+                    for await result in group {
+                        collected.append(result)
+                    }
+                    return collected
+                }
+
+                let valid = flights.compactMap { $0 }
+                skipped += batch.count - valid.count
+                imported += valid.count
+
+                await FlightDataStore.shared.saveDownloadedFlights(valid)
+
+                index = batchEnd
+                await MainActor.run {
+                    downloadProgress = index
+                    if #available(iOS 16.1, *) {
+                        DownloadLiveActivityManager.shared.update(
+                            progress: index,
+                            total: summaries.count,
+                            message: "Syncing routes..."
+                        )
+                    }
+                }
+
+                await ThermalDownloadPacing.cooldown()
+            }
+
+            let wasCancelled = Task.isCancelled
+            await MainActor.run {
+                isDownloadingWorkouts = false
+                downloadTask = nil
+                downloadMessage = wasCancelled
+                    ? "Sync stopped: \(imported) added"
+                    : "Synced \(imported) workouts (\(skipped) without route)"
+                if #available(iOS 16.1, *) {
+                    DownloadLiveActivityManager.shared.end(
+                        finalMessage: wasCancelled ? "Stopped after \(imported)" : "\(imported) synced"
+                    )
+                }
+                if imported > 0 {
+                    loadTracks()
+                }
             }
         }
     }
@@ -467,13 +904,31 @@ struct WorkoutMapView: View {
         roadAlignedCoordinates[track.id] ?? track.coordinates
     }
 
+    private func applyFit(_ region: MKCoordinateRegion?) {
+        guard let region else { return }
+        fitRegion = region
+        fitGeneration += 1
+    }
+
     private func fitAllTracks() {
-        let coordinates = tracks.flatMap { displayCoordinates(for: $0) }
-        setMapRegion(for: coordinates)
+        // Use the bounding box precomputed off-main during loadTracks — avoids
+        // flat-mapping and scanning ~1M coordinates on the main thread.
+        if roadAlignedCoordinates.isEmpty, let bounds = allTracksBounds {
+            applyFit(bounds.region)
+            return
+        }
+        // Fallback (e.g. after road-alignment changed the geometry): compute now.
+        var bounds: MapBounds?
+        for track in tracks {
+            if let b = MapBounds(displayCoordinates(for: track)) {
+                bounds = bounds?.union(b) ?? b
+            }
+        }
+        applyFit(bounds?.region)
     }
 
     private func focus(_ track: WorkoutMapTrack) {
-        setMapRegion(for: displayCoordinates(for: track))
+        applyFit(MapBounds(displayCoordinates(for: track))?.region)
     }
 
     private func labelCoordinate(for track: WorkoutMapTrack) -> CLLocationCoordinate2D? {
@@ -497,68 +952,81 @@ struct WorkoutMapView: View {
         selectedTrackID = nearest.track.id
     }
 
-    private func setMapRegion(for coordinates: [CLLocationCoordinate2D]) {
-        guard !coordinates.isEmpty else {
-            position = .automatic
-            return
-        }
-
-        let minLat = coordinates.map(\.latitude).min() ?? 0
-        let maxLat = coordinates.map(\.latitude).max() ?? 0
-        let minLon = coordinates.map(\.longitude).min() ?? 0
-        let maxLon = coordinates.map(\.longitude).max() ?? 0
-
-        let center = CLLocationCoordinate2D(
-            latitude: (minLat + maxLat) / 2,
-            longitude: (minLon + maxLon) / 2
-        )
-
-        let span = MKCoordinateSpan(
-            latitudeDelta: max((maxLat - minLat) * 1.25, 0.01),
-            longitudeDelta: max((maxLon - minLon) * 1.25, 0.01)
-        )
-
-        withAnimation {
-            position = .region(MKCoordinateRegion(center: center, span: span))
-        }
-    }
 
     private func alignVisibleTracksToRoads() {
         guard !tracks.isEmpty, !isRoadAligning else { return }
 
+        // Only align what's reasonable in one pass to respect API rate limits.
+        let tracksToAlign = Array(tracks.prefix(roadAlignmentMaxTracks))
+        let useValhalla = MapMatchingService.isConfigured
+
         isRoadAligning = true
         roadAlignProgress = 0
-        roadAlignTotal = tracks.count
-        roadAlignMessage = "Building rate-limited Apple Maps routes for visible tracks. Saved workout data will not be changed."
+        roadAlignTotal = tracksToAlign.count
+        roadAlignMessage = useValhalla
+            ? "Map-matching \(tracksToAlign.count) routes to roads (Valhalla HMM)…"
+            : "Aligning \(tracksToAlign.count) routes to roads using Apple Maps data…"
         roadAlignedCoordinates = [:]
 
-        let tracksToAlign = tracks
         Task {
             var aligned: [UUID: [CLLocationCoordinate2D]] = [:]
+            // For the MKDirections fallback only — distribute a request budget.
             let segmentLimits = alignmentSegmentLimits(for: tracksToAlign, requestBudget: roadAlignmentRequestBudget)
 
             for track in tracksToAlign {
-                let maxSegments = segmentLimits[track.id] ?? 1
-                if let corrected = await roadAlignedRoute(
-                    for: track,
-                    maxSegments: maxSegments,
-                    requestDelayNanoseconds: roadAlignmentRequestSpacingNanoseconds
-                ) {
-                    aligned[track.id] = corrected
+                guard track.canRoadAlign else {
+                    await MainActor.run { roadAlignProgress += 1 }
+                    continue
                 }
+
+                // Always match on the full-resolution route (up to ~400 pts from the
+                // cache), not the down-sampled render coords.
+                let fullCoords = FlightDataStore.shared.loadRouteCoordinates(id: track.id)
+                let coordsToAlign = fullCoords.count > track.coordinates.count ? fullCoords : track.coordinates
+
+                // Cascade: Valhalla (only if a key is set) → Apple Maps road data
+                // (no key, needs network) → offline smoother (always works).
+                var corrected: [CLLocationCoordinate2D]?
+                var usedNetwork = false
+                if useValhalla {
+                    corrected = await MapMatchingService.matchRoute(coordinates: coordsToAlign, costing: track.costing)
+                    usedNetwork = true
+                }
+                if corrected == nil {
+                    let maxSegments = segmentLimits[track.id] ?? 1
+                    corrected = await roadAlignedRoute(
+                        coordinates: coordsToAlign,
+                        canRoadAlign: track.canRoadAlign,
+                        transportType: track.transportType,
+                        maxSegments: maxSegments,
+                        requestDelayNanoseconds: roadAlignmentRequestSpacingNanoseconds
+                    )
+                    if corrected != nil { usedNetwork = true }
+                }
+                if corrected == nil {
+                    // No network / throttled → at least clean the trace offline.
+                    corrected = RouteSmoother.smooth(coordsToAlign)
+                }
+
+                if let corrected { aligned[track.id] = corrected }
 
                 await MainActor.run {
                     roadAlignProgress += 1
                     roadAlignedCoordinates = aligned
+                }
+
+                // Only pace when we actually hit the network.
+                if usedNetwork {
+                    try? await Task.sleep(nanoseconds: useValhalla ? 250_000_000 : roadAlignmentRequestSpacingNanoseconds)
                 }
             }
 
             await MainActor.run {
                 isRoadAligning = false
                 let correctedCount = aligned.count
-                roadAlignMessage = correctedCount == tracksToAlign.count
-                    ? "Road alignment is shown on this map only. Requests are spaced to avoid Apple Maps throttling."
-                    : "Aligned \(correctedCount) of \(tracksToAlign.count) tracks. Some tracks still use original GPS to avoid Apple Maps throttling."
+                let engine = useValhalla ? "Valhalla map matching" : "Apple Maps road data"
+                roadAlignMessage = "Aligned \(correctedCount) of \(tracksToAlign.count) routes (\(engine)). Shown on this map only."
+                rebuildMultiPolylineFromDisplay()   // reflect aligned geometry in the overlay
                 if let selectedTrack {
                     focus(selectedTrack)
                 } else {
@@ -568,9 +1036,22 @@ struct WorkoutMapView: View {
         }
     }
 
+    /// Rebuild the single overlay from the current display coordinates (aligned
+    /// where available, raw otherwise) so corrected geometry is shown.
+    private func rebuildMultiPolylineFromDisplay() {
+        let polylines = tracks.compactMap { track -> MKPolyline? in
+            let coords = displayCoordinates(for: track)
+            guard coords.count > 1 else { return nil }
+            return MKPolyline(coordinates: coords, count: coords.count)
+        }
+        allRoutesMultiPolyline = polylines.isEmpty ? nil : MKMultiPolyline(polylines)
+        dataVersion += 1
+    }
+
     private func resetRoadAlignment() {
         roadAlignedCoordinates = [:]
         roadAlignMessage = nil
+        rebuildMultiPolylineFromDisplay()
         if let selectedTrack {
             focus(selectedTrack)
         } else {
@@ -617,103 +1098,191 @@ struct WorkoutMapView: View {
     private func downloadAllWorkoutsFromHealthKit() {
         guard !isDownloadingWorkouts else { return }
 
-        let startDownload = {
-            isDownloadingWorkouts = true
-            downloadProgress = 0
-            downloadTotal = 0
-            downloadMessage = "Loading HealthKit workouts and routes..."
-
-            healthKitManager.fetchWorkouts { workouts, error in
-                guard let workouts else {
+        guard healthKitManager.isAuthorized else {
+            healthKitManager.requestAuthorization { success, error in
+                if success {
+                    self.downloadAllWorkoutsFromHealthKit()
+                } else {
                     DispatchQueue.main.async {
-                        isDownloadingWorkouts = false
-                        downloadMessage = "Failed to load HealthKit workouts: \(error?.localizedDescription ?? "Unknown error")"
-                        showDownloadAlert = true
+                        self.downloadMessage = "Please authorize HealthKit access to download workouts. \(error?.localizedDescription ?? "")"
+                        self.showDownloadAlert = true
                     }
-                    return
                 }
+            }
+            return
+        }
 
-                let existingIDs = Set(flightDataStore.savedFlights.map(\.id))
-                let existingWorkoutIDs = Set(flightDataStore.savedFlights.compactMap(\.workoutUUID))
-                let candidates = workouts
-                    .filter { shouldDownloadWorkout($0) }
-                    .filter { !existingIDs.contains($0.uuid) && !existingWorkoutIDs.contains($0.uuid) }
+        isDownloadingWorkouts = true
+        downloadProgress = 0
+        downloadTotal = 0
+        downloadMessage = "Finding workouts..."
 
-                DispatchQueue.main.async {
+        if #available(iOS 16.1, *) {
+            DownloadLiveActivityManager.shared.beginBackgroundTask(name: "MapDownload")
+            DownloadLiveActivityManager.shared.start(title: "Downloading Workouts", total: 0, message: "Finding workouts...")
+        }
+
+        downloadTask = Task {
+            do {
+                let candidates = try await fetchDownloadCandidates()
+
+                await MainActor.run {
                     downloadTotal = candidates.count
                     downloadProgress = 0
-                    downloadMessage = candidates.isEmpty
-                        ? "No new HealthKit route workouts to download."
-                        : "Downloading route data from HealthKit..."
+                    if #available(iOS 16.1, *) {
+                        DownloadLiveActivityManager.shared.update(progress: 0, total: candidates.count, message: candidates.isEmpty ? "No new workouts" : "Downloading routes...")
+                    }
                 }
 
                 guard !candidates.isEmpty else {
-                    DispatchQueue.main.async {
+                    await MainActor.run {
                         isDownloadingWorkouts = false
+                        downloadMessage = "No new HealthKit route workouts to download."
+                        if #available(iOS 16.1, *) {
+                            DownloadLiveActivityManager.shared.end(finalMessage: "No new workouts")
+                        }
                         loadTracks()
                     }
                     return
                 }
 
-                downloadNextWorkout(candidates, index: 0, imported: 0, skipped: 0, failed: 0)
-            }
-        }
+                await MainActor.run {
+                    downloadMessage = "Downloading 0/\(candidates.count)..."
+                }
 
-        if healthKitManager.isAuthorized {
-            startDownload()
-        } else {
-            healthKitManager.requestAuthorization { success, error in
-                if success {
-                    startDownload()
-                } else {
-                    downloadMessage = "Please authorize HealthKit access to download workouts. \(error?.localizedDescription ?? "")"
+                var imported = 0
+                var skipped = 0
+
+                // Thermal-aware batching: concurrency shrinks and cooldowns grow
+                // as the device heats up so the download can't overheat-crash.
+                var index = 0
+                while index < candidates.count {
+                    if Task.isCancelled { break }
+                    await ThermalDownloadPacing.waitWhileCritical()
+                    if Task.isCancelled { break }
+
+                    let batchSize = ThermalDownloadPacing.concurrency
+                    let batchEnd = min(index + batchSize, candidates.count)
+                    let batch = Array(candidates[index..<batchEnd])
+
+                    let results = await withTaskGroup(of: Flight?.self, returning: [Flight?].self) { group in
+                        for workout in batch {
+                            group.addTask {
+                                await self.fetchAndConvertWorkout(workout)
+                            }
+                        }
+                        var collected: [Flight?] = []
+                        for await result in group {
+                            collected.append(result)
+                        }
+                        return collected
+                    }
+
+                    let validFlights: [Flight] = results.compactMap { $0 }
+                    skipped += results.count - validFlights.count
+                    imported += validFlights.count
+
+                    // Off-main batched save
+                    await FlightDataStore.shared.saveDownloadedFlights(validFlights)
+
+                    index = batchEnd
+                    await MainActor.run {
+                        downloadProgress = index
+                        downloadMessage = "Downloaded \(index)/\(candidates.count)..."
+                        if #available(iOS 16.1, *) {
+                            DownloadLiveActivityManager.shared.update(progress: index, total: candidates.count, message: "Downloading routes...")
+                        }
+                    }
+
+                    await ThermalDownloadPacing.cooldown()
+                }
+
+                let wasCancelled = Task.isCancelled
+                await MainActor.run {
+                    isDownloadingWorkouts = false
+                    downloadTask = nil
+                    if wasCancelled {
+                        downloadMessage = "Stopped: \(imported) imported, \(skipped) skipped."
+                        if #available(iOS 16.1, *) {
+                            DownloadLiveActivityManager.shared.end(finalMessage: "Stopped after \(imported) downloads")
+                        }
+                    } else {
+                        downloadMessage = "Done: \(imported) imported, \(skipped) skipped (no route)."
+                        if #available(iOS 16.1, *) {
+                            DownloadLiveActivityManager.shared.end(finalMessage: "\(imported) imported, \(skipped) skipped")
+                        }
+                    }
+                    showDownloadAlert = true
+                    loadTracks()
+                }
+            } catch {
+                await MainActor.run {
+                    isDownloadingWorkouts = false
+                    downloadTask = nil
+                    downloadMessage = "Failed: \(error.localizedDescription)"
+                    if #available(iOS 16.1, *) {
+                        DownloadLiveActivityManager.shared.end(finalMessage: "Failed")
+                    }
                     showDownloadAlert = true
                 }
             }
         }
     }
 
-    private func downloadNextWorkout(
-        _ workouts: [HKWorkout],
-        index: Int,
-        imported: Int,
-        skipped: Int,
-        failed: Int
-    ) {
-        guard index < workouts.count else {
-            DispatchQueue.main.async {
-                isDownloadingWorkouts = false
-                downloadMessage = "Downloaded \(imported) workouts. Skipped \(skipped). Failed \(failed)."
-                showDownloadAlert = true
-                loadTracks()
-            }
-            return
+    private func cancelDownload() {
+        print("🛑 User requested map download cancel")
+        downloadTask?.cancel()
+    }
+
+    private func fetchDownloadCandidates() async throws -> [HKWorkout] {
+        let pageSize = 200
+        var allCandidates: [HKWorkout] = []
+        var beforeDate: Date? = nil
+        let existingIDs = await MainActor.run {
+            Set(flightDataStore.savedFlights.map(\.id))
+                .union(Set(flightDataStore.savedFlights.compactMap(\.workoutUUID)))
         }
 
-        let workout = workouts[index]
-        healthKitManager.fetchRoute(for: workout) { locations, _ in
-            let routeLocations = locations ?? []
-
-            if routeLocations.count > 1 {
-                let flight = convertWorkoutToMapFlight(workout, locations: routeLocations)
-                DispatchQueue.main.async {
-                    FlightDataStore.shared.saveFlight(flight)
-                    downloadProgress = index + 1
-                    downloadMessage = "Downloaded \(downloadProgress)/\(downloadTotal)"
-                }
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) {
-                    downloadNextWorkout(workouts, index: index + 1, imported: imported + 1, skipped: skipped, failed: failed)
-                }
-            } else {
-                DispatchQueue.main.async {
-                    downloadProgress = index + 1
-                    downloadMessage = "Downloaded \(downloadProgress)/\(downloadTotal)"
-                }
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) {
-                    downloadNextWorkout(workouts, index: index + 1, imported: imported, skipped: skipped + 1, failed: failed)
+        while true {
+            let workouts: [HKWorkout] = try await withCheckedThrowingContinuation { continuation in
+                healthKitManager.fetchWorkouts(limit: pageSize, beforeDate: beforeDate) { result, error in
+                    if let result {
+                        continuation.resume(returning: result)
+                    } else {
+                        continuation.resume(throwing: error ?? NSError(domain: "HealthKit", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unknown error"]))
+                    }
                 }
             }
+
+            let newCandidates = workouts
+                .filter { shouldDownloadWorkout($0) }
+                .filter { !existingIDs.contains($0.uuid) }
+
+            allCandidates.append(contentsOf: newCandidates)
+
+            await MainActor.run {
+                downloadMessage = "Finding workouts... (\(allCandidates.count) candidates)"
+            }
+
+            if workouts.count < pageSize { break }
+            beforeDate = workouts.last?.startDate.addingTimeInterval(-1)
         }
+
+        return allCandidates
+    }
+
+    private func fetchAndConvertWorkout(_ workout: HKWorkout) async -> Flight? {
+        let locations: [FlightLocation]? = await withCheckedContinuation { continuation in
+            healthKitManager.fetchRoute(for: workout) { locs, _ in
+                continuation.resume(returning: locs)
+            }
+        }
+
+        guard let routeLocations = locations, routeLocations.count > 1 else {
+            return nil
+        }
+
+        return convertWorkoutToMapFlight(workout, locations: routeLocations)
     }
 
     private func shouldDownloadWorkout(_ workout: HKWorkout) -> Bool {
@@ -727,13 +1296,15 @@ struct WorkoutMapView: View {
 }
 
 private func roadAlignedRoute(
-    for track: WorkoutMapTrack,
+    coordinates: [CLLocationCoordinate2D],
+    canRoadAlign: Bool,
+    transportType: MKDirectionsTransportType,
     maxSegments: Int,
     requestDelayNanoseconds: UInt64
 ) async -> [CLLocationCoordinate2D]? {
-    guard maxSegments > 0, track.canRoadAlign else { return nil }
+    guard maxSegments > 0, canRoadAlign else { return nil }
 
-    let segments = roadAlignmentSegments(from: track.coordinates, maxSegments: maxSegments)
+    let segments = roadAlignmentSegments(from: coordinates, maxSegments: maxSegments)
     guard !segments.isEmpty else { return nil }
 
     var corrected: [CLLocationCoordinate2D] = []
@@ -749,15 +1320,18 @@ private func roadAlignedRoute(
             continue
         }
 
-        let route = await appleRouteCoordinates(from: start, to: end, transportType: track.transportType)
+        // Ask Apple for ALL candidate routes (alternates) for this segment and
+        // pick the one that best fits the actual GPS sub-track — a lightweight
+        // emission-probability style match instead of blindly taking route #1.
+        let candidates = await appleRouteCandidates(from: start, to: end, transportType: transportType)
+        let best = bestMatchingRoute(candidates, original: segment.original)
 
-        if let route,
-           isPlausibleRoadRoute(route, forOriginalSegment: segment.original) {
+        if let best {
             acceptedRouteSegments += 1
             if corrected.isEmpty {
-                corrected.append(contentsOf: route)
+                corrected.append(contentsOf: best)
             } else {
-                corrected.append(contentsOf: route.dropFirst())
+                corrected.append(contentsOf: best.dropFirst())
             }
         } else {
             if corrected.isEmpty {
@@ -769,6 +1343,25 @@ private func roadAlignedRoute(
     }
 
     return corrected.count > 1 && acceptedRouteSegments > 0 ? corrected : nil
+}
+
+/// Among candidate road routes, pick the one closest to the original GPS segment
+/// (lowest average deviation) that still passes the plausibility check.
+private func bestMatchingRoute(
+    _ candidates: [[CLLocationCoordinate2D]],
+    original: [CLLocationCoordinate2D]
+) -> [CLLocationCoordinate2D]? {
+    var best: [CLLocationCoordinate2D]?
+    var bestScore = Double.greatestFiniteMagnitude
+    for route in candidates {
+        guard isPlausibleRoadRoute(route, forOriginalSegment: original) else { continue }
+        let score = averageDistance(from: route, toPolyline: original)
+        if score < bestScore {
+            bestScore = score
+            best = route
+        }
+    }
+    return best
 }
 
 private func roadAlignmentSegments(from coordinates: [CLLocationCoordinate2D], maxSegments: Int) -> [RoadAlignmentSegment] {
@@ -949,17 +1542,17 @@ private func bearingDelta(_ lhs: Double, _ rhs: Double) -> Double {
     return delta > 180 ? 360 - delta : delta
 }
 
-private func appleRouteCoordinates(
+private func appleRouteCandidates(
     from start: CLLocationCoordinate2D,
     to end: CLLocationCoordinate2D,
     transportType: MKDirectionsTransportType
-) async -> [CLLocationCoordinate2D]? {
+) async -> [[CLLocationCoordinate2D]] {
     await withCheckedContinuation { continuation in
         let request = MKDirections.Request()
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: end))
         request.transportType = transportType
-        request.requestsAlternateRoutes = false
+        request.requestsAlternateRoutes = true   // get all candidates to pick the best match
 
         MKDirections(request: request).calculate { response, error in
             if let error,
@@ -970,14 +1563,16 @@ private func appleRouteCoordinates(
                     retryRequest.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
                     retryRequest.destination = MKMapItem(placemark: MKPlacemark(coordinate: end))
                     retryRequest.transportType = transportType
-                    retryRequest.requestsAlternateRoutes = false
+                    retryRequest.requestsAlternateRoutes = true
 
                     MKDirections(request: retryRequest).calculate { retryResponse, _ in
-                        continuation.resume(returning: retryResponse?.routes.first?.polyline.routeCoordinates)
+                        let routes = retryResponse?.routes.map { $0.polyline.routeCoordinates } ?? []
+                        continuation.resume(returning: routes)
                     }
                 }
             } else {
-                continuation.resume(returning: response?.routes.first?.polyline.routeCoordinates)
+                let routes = response?.routes.map { $0.polyline.routeCoordinates } ?? []
+                continuation.resume(returning: routes)
             }
         }
     }
@@ -1010,6 +1605,23 @@ private func sampled(_ locations: [FlightLocation], maximumPoints: Int = 600) ->
         result.append(last)
     }
 
+    return result
+}
+
+private func downsampleCoordinates(_ coordinates: [CLLocationCoordinate2D], maxPoints: Int) -> [CLLocationCoordinate2D] {
+    guard coordinates.count > maxPoints else { return coordinates }
+    let strideSize = max(1, coordinates.count / maxPoints)
+    var result: [CLLocationCoordinate2D] = []
+    result.reserveCapacity(maxPoints + 1)
+    var i = 0
+    while i < coordinates.count {
+        result.append(coordinates[i])
+        i += strideSize
+    }
+    if let last = coordinates.last,
+       result.last?.latitude != last.latitude || result.last?.longitude != last.longitude {
+        result.append(last)
+    }
     return result
 }
 
@@ -1089,7 +1701,7 @@ private func workoutTitle(for flight: Flight) -> String {
     case .hiking:
         return "Hiking"
     case .other:
-        return "Flight"
+        return "Other"
     default:
         return "Workout"
     }

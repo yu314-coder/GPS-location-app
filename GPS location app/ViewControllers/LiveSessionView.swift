@@ -23,7 +23,7 @@ struct LiveSessionView: View {
         (.running, "Running", "figure.run"),
         (.walking, "Walking", "figure.walk"),
         (.hiking, "Hiking", "mountain.2.fill"),
-        (.other, "Flight", "airplane"),
+        (.other, "Other", "figure.mixed.cardio"),
         (.traditionalStrengthTraining, "General", "figure.mixed.cardio")
     ]
 
@@ -32,7 +32,7 @@ struct LiveSessionView: View {
             VStack(spacing: 0) {
                 // Header
                 VStack(spacing: 8) {
-                    Text("Flight Tracking")
+                    Text("Workout Tracking")
                         .font(.headline)
                         .foregroundColor(.white)
 
@@ -782,7 +782,7 @@ struct WorkoutTypeSelectorView: View {
         (.running, "Running", "figure.run"),
         (.walking, "Walking", "figure.walk"),
         (.hiking, "Hiking", "mountain.2.fill"),
-        (.other, "Flight", "airplane"),
+        (.other, "Other", "figure.mixed.cardio"),
         (.traditionalStrengthTraining, "General", "figure.mixed.cardio")
     ]
 

@@ -38,9 +38,32 @@ struct PermissionTestView: View {
     @State private var debugWorkoutStatus: String?
     @FocusState private var isDebugStepCountFieldFocused: Bool
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     var body: some View {
-        NavigationView {
-            ZStack {
+        Group {
+            if horizontalSizeClass == .regular {
+                mainContent
+                    .navigationTitle("Testing & Debug")
+                    .navigationBarTitleDisplayMode(.inline)
+            } else {
+                NavigationStack {
+                    mainContent
+                        .navigationTitle("Testing & Debug")
+                        .navigationBarTitleDisplayMode(.inline)
+                }
+            }
+        }
+        .onAppear {
+            checkPermissions()
+            startPerformanceMonitoring()
+            runHealthKitWriteTestOnce()
+        }
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        ZStack {
                 // Gradient background
                 LinearGradient(
                     colors: [
@@ -91,15 +114,8 @@ struct PermissionTestView: View {
                     }
                 }
             }
-            .navigationTitle("Testing & Debug")
-            .navigationBarTitleDisplayMode(.inline)
         }
-        .onAppear {
-            checkPermissions()
-            startPerformanceMonitoring()
-            runHealthKitWriteTestOnce()
-        }
-    }
+
 
     // MARK: - Category Icon Helper
 

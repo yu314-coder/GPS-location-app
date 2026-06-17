@@ -29,7 +29,7 @@ struct SummaryView: View {
         case .hiking:
             return "Hiking"
         case .other:
-            return "Flight"
+            return "Other"
         case .traditionalStrengthTraining:
             return "General"
         default:

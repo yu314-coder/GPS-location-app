@@ -60,7 +60,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "4B5B76152EEC5D4D004907CC"
             BuildableName = "GPS location app Watch App.app"
-            BlueprintName = "GPS location app Watch App"
             ReferencedContainer = "container:GPS location app.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -77,7 +76,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "4B5B76152EEC5D4D004907CC"
             BuildableName = "GPS location app Watch App.app"
-            BlueprintName = "GPS location app Watch App"
             ReferencedContainer = "container:GPS location app.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

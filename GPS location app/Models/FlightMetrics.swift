@@ -474,17 +474,21 @@ struct FlightMetrics: Codable, Hashable {
         currentMotionAccelerationZ = z
 
         var history = motionAccelerationHistory ?? []
+        let previousCount = history.count
         history.append(MotionAccelerationSample(timestamp: timestamp, acceleration: acceleration, x: x, y: y, z: z))
         motionAccelerationHistory = history
-        averageMotionAcceleration = history.map { $0.acceleration }.reduce(0, +) / Double(history.count)
+        // Incremental running average — O(1) instead of O(n) reduce per sample.
+        // (The old reduce made this O(n²) over a workout, a major CPU/heat sink.)
+        let prevAvg = averageMotionAcceleration ?? 0
+        averageMotionAcceleration = prevAvg + (acceleration - prevAvg) / Double(previousCount + 1)
 
+        // Keep current attitude/rotation for the live display, but DO NOT record
+        // pitch/roll/yaw or rotation-rate histories — accumulating these arrays
+        // every 0.5s bloats the snapshot and overheats the device.
         if let pitch, let roll, let yaw {
             currentPitch = pitch
             currentRoll = roll
             currentYaw = yaw
-            var attitude = attitudeHistory ?? []
-            attitude.append(AttitudeSample(timestamp: timestamp, pitch: pitch, roll: roll, yaw: yaw))
-            attitudeHistory = attitude
         }
 
         if let rotationRateX, let rotationRateY, let rotationRateZ {
@@ -494,9 +498,6 @@ struct FlightMetrics: Codable, Hashable {
             currentRotationRateX = rotationRateX
             currentRotationRateY = rotationRateY
             currentRotationRateZ = rotationRateZ
-            var rotation = rotationRateHistory ?? []
-            rotation.append(RotationRateSample(timestamp: timestamp, x: rotationRateX, y: rotationRateY, z: rotationRateZ, magnitude: magnitude))
-            rotationRateHistory = rotation
         }
 
         if let heading {
@@ -648,6 +649,35 @@ struct FlightMetrics: Codable, Hashable {
         if duration > 0 {
             averageSpeed = totalDistance / duration
         }
+    }
+
+    /// Replaces any NaN/Infinity scalar values with safe finite numbers so the
+    /// metrics can be persisted to disk and saved to HealthKit without crashing.
+    mutating func sanitize() {
+        func fix(_ v: Double) -> Double { v.isFinite ? v : 0.0 }
+        func fixOpt(_ v: Double?) -> Double? {
+            guard let v = v else { return nil }
+            return v.isFinite ? v : 0.0
+        }
+
+        totalDistance = fix(totalDistance)
+        averageSpeed = fix(averageSpeed)
+        maxSpeed = fix(maxSpeed)
+        currentSpeed = fix(currentSpeed)
+        smoothedSpeed = fix(smoothedSpeed)
+        maxAcceleration = fixOpt(maxAcceleration)
+        maxDeceleration = fixOpt(maxDeceleration)
+        averageAcceleration = fixOpt(averageAcceleration)
+        maxMotionAcceleration = fixOpt(maxMotionAcceleration)
+        averageMotionAcceleration = fixOpt(averageMotionAcceleration)
+        maxAltitude = fix(maxAltitude)
+        minAltitude = fix(minAltitude)
+        currentAltitude = fix(currentAltitude)
+        totalAltitudeGain = fix(totalAltitudeGain)
+        totalAltitudeLoss = fix(totalAltitudeLoss)
+        averageAccuracy = fix(averageAccuracy)
+        caloriesBurned = fix(caloriesBurned)
+        restingEnergyBurned = fix(restingEnergyBurned)
     }
 
     mutating func estimateCalories(duration: TimeInterval, userWeight: Double = 70.0) {

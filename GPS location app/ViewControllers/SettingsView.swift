@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("trackHeartRate") private var trackHeartRate = true
     @AppStorage("useRawGPS") private var useRawGPS = false
     @AppStorage("healthKitExportType") private var healthKitExportType = "auto"
+    @AppStorage("mapMatchingAPIKey") private var mapMatchingAPIKey = ""
 
     @StateObject private var locationManager = LocationManager()
     @ObservedObject private var healthKitManager = HealthKitManager.shared
@@ -20,8 +21,10 @@ struct SettingsView: View {
     // Timer to refresh permission status when view is active
     let refreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     var body: some View {
-        NavigationView {
+        navigationWrapper {
             ScrollView {
                 VStack(spacing: 20) {
                     // Permissions Section with Cards
@@ -210,21 +213,65 @@ struct SettingsView: View {
                             Image(systemName: "lightbulb.fill")
                                 .foregroundColor(.yellow)
                                 .font(.title2)
-                            Text("Flight Tracking Tips")
+                            Text("Workout Tracking Tips")
                                 .font(.headline)
                         }
 
                         VStack(alignment: .leading, spacing: 12) {
-                            TipRow(icon: "airplane.departure", text: "Request a window seat for better GPS reception")
+                            TipRow(icon: "location.fill", text: "Start outdoors or near a clear sky for better GPS reception")
                             TipRow(icon: "antenna.radiowaves.left.and.right", text: "Keep GPS enabled even in Airplane Mode")
-                            TipRow(icon: "battery.100", text: "Ensure your device is fully charged before flight")
-                            TipRow(icon: "wifi", text: "Airplane WiFi can improve GPS accuracy")
+                            TipRow(icon: "battery.100", text: "Ensure your device is fully charged before long workouts")
+                            TipRow(icon: "wifi", text: "Wi-Fi and cellular can improve GPS accuracy")
                         }
                     }
                     .padding()
                     .background(Color(.secondarySystemGroupedBackground))
                     .cornerRadius(12)
                     .padding(.horizontal)
+
+                    // Road Alignment (Map Matching) Section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Road Alignment")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .padding(.horizontal)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+                                    .foregroundColor(.blue)
+                                Text("Stadia Maps API Key")
+                                    .fontWeight(.medium)
+                            }
+
+                            SecureField("Paste your API key", text: $mapMatchingAPIKey)
+                                .textInputAutocapitalization(.never)
+                                .disableAutocorrection(true)
+                                .padding(10)
+                                .background(Color(.tertiarySystemGroupedBackground))
+                                .cornerRadius(8)
+
+                            Text("Enables true road map-matching (Valhalla HMM) on the Map tab. Get a free key at client.stadiamaps.com. Without a key, the app falls back to Apple Maps snapping.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            if let url = URL(string: "https://client.stadiamaps.com") {
+                                Link(destination: url) {
+                                    HStack(spacing: 4) {
+                                        Text("Get a free API key")
+                                        Image(systemName: "arrow.up.right")
+                                            .font(.caption)
+                                    }
+                                    .font(.subheadline)
+                                    .foregroundColor(.blue)
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(12)
+                        .padding(.horizontal)
+                    }
 
                     // About Section
                     VStack(spacing: 12) {
@@ -261,13 +308,24 @@ struct SettingsView: View {
                 .padding(.top)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Settings")
             .onAppear {
                 updatePermissionStatus()
             }
             .onReceive(refreshTimer) { _ in
-                // Refresh permission status every second when Settings tab is visible
                 updatePermissionStatus()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func navigationWrapper<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if horizontalSizeClass == .regular {
+            content()
+                .navigationTitle("Settings")
+        } else {
+            NavigationStack {
+                content()
+                    .navigationTitle("Settings")
             }
         }
     }

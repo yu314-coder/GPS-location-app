@@ -38,7 +38,7 @@ struct AppConstants {
     // App Information
     struct App {
         static let version = "1.0.0"
-        static let name = "Flight GPS Tracker"
+        static let name = "GPS Workout Tracker"
     }
 
     // Default Locations (for initialization)

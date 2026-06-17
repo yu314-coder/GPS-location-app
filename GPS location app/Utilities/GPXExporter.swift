@@ -34,7 +34,7 @@ class GPXExporter {
 
         var gpx = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <gpx version="1.1" creator="Flight GPS Tracker" xmlns="http://www.topografix.com/GPX/1/1">
+        <gpx version="1.1" creator="GPS Workout Tracker" xmlns="http://www.topografix.com/GPX/1/1">
           <metadata>
             <name>Workout \(dateFormatter.string(from: flight.startDate))</name>
             <time>\(dateFormatter.string(from: flight.startDate))</time>

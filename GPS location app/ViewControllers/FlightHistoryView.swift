@@ -420,7 +420,7 @@ struct HealthKitWorkoutCard: View {
         case .running: return "Running"
         case .walking: return "Walking"
         case .hiking: return "Hiking"
-        case .other: return "Flight"
+        case .other: return "Other"
         default: return "Workout"
         }
     }
@@ -431,7 +431,7 @@ struct HealthKitWorkoutCard: View {
         case .running: return "figure.run"
         case .walking: return "figure.walk"
         case .hiking: return "mountain.2.fill"
-        case .other: return "airplane"
+        case .other: return "figure.mixed.cardio"
         default: return "figure.mixed.cardio"
         }
     }
@@ -468,7 +468,7 @@ struct FlightCard: View {
             // Header
             HStack {
                 HStack(spacing: 8) {
-                    Image(systemName: "airplane")
+                    Image(systemName: "figure.run")
                         .font(.title3)
                         .foregroundColor(.cyan)
 
