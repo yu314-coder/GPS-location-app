@@ -13,6 +13,7 @@ struct FlightCheckpointPayload: Codable {
     let effort: Int?
     let workoutType: UInt?
     let isFinal: Bool
+    var workoutUUID: UUID?   // links the local track to the saved HealthKit workout
 }
 
 struct FlightCheckpointEnvelope: Codable {
@@ -325,6 +326,12 @@ extension WatchConnectivityManager: WCSessionDelegate {
     func session(_ session: WCSession, didReceiveMessage message: [String : Any], replyHandler: @escaping ([String : Any]) -> Void) {
         print("📱 Received message from watch: \(message)")
 
+        if message["type"] as? String == "flightLink" {
+            handleFlightLink(message)
+            replyHandler(["status": "linked"])
+            return
+        }
+
         if let action = message["action"] as? String {
             switch action {
             case "workoutStarted":
@@ -406,6 +413,26 @@ extension WatchConnectivityManager: WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveMessageData messageData: Data) {
         handleFlightCheckpointMessageData(messageData)
+    }
+
+    // Durable delivery of the flight→workout link (arrives even if the app was
+    // suspended because it was never in a workout).
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any]) {
+        if userInfo["type"] as? String == "flightLink" {
+            handleFlightLink(userInfo)
+        }
+    }
+
+    private func handleFlightLink(_ dict: [String: Any]) {
+        guard let flightStr = dict["flightID"] as? String,
+              let workoutStr = dict["workoutUUID"] as? String,
+              let flightID = UUID(uuidString: flightStr),
+              let workoutUUID = UUID(uuidString: workoutStr) else {
+            print("📱 ⚠️ Malformed flightLink")
+            return
+        }
+        FlightDataStore.shared.updateWorkoutUUID(for: flightID, workoutUUID: workoutUUID)
+        print("📱 🔗 Linked local flight \(flightID) → HealthKit workout \(workoutUUID)")
     }
 
     func session(_ session: WCSession, didReceive file: WCSessionFile) {

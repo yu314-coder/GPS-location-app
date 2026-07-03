@@ -299,6 +299,25 @@ struct SettingsView: View {
                             .cornerRadius(12)
                         }
                         .buttonStyle(PlainButtonStyle())
+
+                        // Attribution (required for OSM road-alignment data)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Map & Data Credits")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.secondary)
+                            Text("Road alignment uses map data © OpenStreetMap contributors, available under the Open Database License (ODbL), retrieved via the Overpass API. Maps © Apple.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            if let url = URL(string: "https://www.openstreetmap.org/copyright") {
+                                Link("OpenStreetMap copyright", destination: url)
+                                    .font(.caption2)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(12)
                     }
                     .padding(.horizontal)
 

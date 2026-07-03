@@ -971,6 +971,17 @@ struct EnhancedFlightHistoryView: View {
             return
         }
 
+        // A watch-recorded workout syncs its track to the iPhone under the WATCH's
+        // flight UUID, linked to this HealthKit workout via workoutUUID. Find it so
+        // the track shows even when the iPhone was never in a workout.
+        if let linkedID = flightDataStore.savedFlights.first(where: { $0.workoutUUID == workout.id })?.id,
+           let linkedDetails = flightDataStore.loadFlightDetails(id: linkedID),
+           !linkedDetails.locations.isEmpty {
+            print("📦 Using linked local track for HealthKit workout \(workout.id) (flight \(linkedID))")
+            selectedFlight = linkedDetails
+            return
+        }
+
         // Check cache first
         if let cachedFlight = workoutDetailsCache[workout.id] {
             print("📦 Using cached workout details for \(workout.id)")

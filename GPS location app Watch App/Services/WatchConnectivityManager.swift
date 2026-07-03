@@ -14,6 +14,7 @@ struct FlightCheckpointPayload: Codable {
     let effort: Int?
     let workoutType: UInt?
     let isFinal: Bool
+    var workoutUUID: UUID?   // links the local track to the saved HealthKit workout
 }
 
 struct FlightCheckpointEnvelope: Codable {
@@ -118,6 +119,24 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     @discardableResult
     func transferFlightCheckpointToPhone(_ payload: FlightCheckpointPayload) -> Bool {
         transferPayloadToPhone(payload, metadataType: "flightCheckpoint", flightID: payload.flightID, preferImmediateMessage: true)
+    }
+
+    /// Tell the iPhone which HealthKit workout a locally-synced flight belongs to.
+    /// Uses transferUserInfo — a small, durable, in-order transfer that is delivered
+    /// even when the iPhone app is suspended (e.g. it was never in a workout).
+    func transferFlightWorkoutLink(flightID: UUID, workoutUUID: UUID) {
+        guard let session = session else { return }
+        let info: [String: Any] = [
+            "type": "flightLink",
+            "flightID": flightID.uuidString,
+            "workoutUUID": workoutUUID.uuidString
+        ]
+        session.transferUserInfo(info)
+        // Also send immediately when reachable for a fast link.
+        if session.activationState == .activated, session.isReachable {
+            session.sendMessage(info, replyHandler: nil, errorHandler: nil)
+        }
+        print("⌚ 🔗 Sent flight→workout link: \(flightID) → \(workoutUUID)")
     }
 
     private func transferFlightToPhone(_ flight: Flight, metadataType: String) {

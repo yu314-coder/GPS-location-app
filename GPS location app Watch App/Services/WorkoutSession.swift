@@ -706,6 +706,14 @@ class WorkoutSession: NSObject, ObservableObject {
                             builder.finishWorkout { workout, error in
                                 if let workout = workout {
                                     self.flight.workoutUUID = workout.uuid
+                                    // Push the HealthKit workout UUID to the iPhone so its
+                                    // locally-synced track (keyed by the watch flight UUID)
+                                    // links to the workout shown in the Workouts tab — even
+                                    // when the iPhone was never in a workout.
+                                    self.connectivityManager.transferFlightWorkoutLink(
+                                        flightID: self.flight.id,
+                                        workoutUUID: workout.uuid
+                                    )
                                     print("✅ Workout finished successfully")
                                     print("   UUID: \(workout.uuid)")
                                     print("   Type: \(workout.workoutActivityType.rawValue)")
@@ -1903,7 +1911,8 @@ class WorkoutSession: NSObject, ObservableObject {
             metrics: checkpointMetrics,
             effort: flight.effort,
             workoutType: flight.workoutType,
-            isFinal: isFinal
+            isFinal: isFinal,
+            workoutUUID: flight.workoutUUID   // links iPhone's local track to the HealthKit workout
         )
 
         FlightDataStore.shared.mergeFlightCheckpoint(payload)

@@ -277,6 +277,10 @@ class FlightDataStore: ObservableObject {
         mergedFlight.metrics = mergeMetrics(existing: mergedFlight.metrics, checkpoint: checkpoint.metrics)
         mergedFlight.effort = checkpoint.effort
         mergedFlight.workoutType = checkpoint.workoutType
+        // Link to the HealthKit workout so the Workouts tab can find this track.
+        if let workoutUUID = checkpoint.workoutUUID {
+            mergedFlight.workoutUUID = workoutUUID
+        }
 
         if checkpoint.locationStartIndex <= mergedFlight.locations.count {
             if checkpoint.locationStartIndex < mergedFlight.locations.count {
