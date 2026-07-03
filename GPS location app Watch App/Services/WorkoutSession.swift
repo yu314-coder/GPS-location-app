@@ -1250,8 +1250,9 @@ class WorkoutSession: NSObject, ObservableObject {
     }
 
     private func checkMotionFallback() {
-        guard motionManager.isDeviceMotionAvailable else { return }
-
+        // NOTE: do NOT bail if device motion is unavailable — we still dead-reckon
+        // by maintaining the last known speed (vehicle/tunnel case). Motion, when
+        // available, only nudges the estimate.
         let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
 
         // Only kick in once GPS has been quiet long enough.
@@ -1264,7 +1265,6 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Motion fallback is the primary — always run when GPS is silent.
         // (Pedometer fallback defers to it via checkPedometerFallback.)
-
         if !isUsingMotionFallback {
             startMotionFallback()
         }
@@ -1274,22 +1274,25 @@ class WorkoutSession: NSObject, ObservableObject {
         let dt = min(max(now.timeIntervalSince(previousTick), 0.5), 2.0)
         lastMotionFallbackTick = now
 
-        // ZUPT: when motion is below deadband, assume stationary → decay speed fast.
-        let accel = lastMotionForwardAccel
+        // CRITICAL FIX (tunnels/trains): a vehicle at constant speed produces almost
+        // no acceleration, so aggressive ZUPT wrongly decided "stopped" and the watch
+        // added no distance. Instead, MAINTAIN the last known speed with a slow decay
+        // (matches the iPhone fallback), so the watch keeps tracking through the gap.
+        // Wrist accelerometer magnitude is too noisy to integrate, so it only gives a
+        // gentle boost when clear forward motion is sensed.
+        let accel = motionManager.isDeviceMotionAvailable ? lastMotionForwardAccel : 0.0
         let nextSpeed: Double
-        if accel < MOTION_ACCEL_DEADBAND {
-            nextSpeed = max(motionFallbackSpeed * 0.85, 0.0)
+        if accel >= MOTION_ACCEL_DEADBAND {
+            let boosted = motionFallbackSpeed + (accel - MOTION_ACCEL_DEADBAND) * dt * 0.3
+            nextSpeed = min(max(boosted, 0.0), MOTION_FALLBACK_MAX_SPEED)
         } else {
-            // Integrate the smoothed magnitude. Apply a small damping so noise
-            // doesn't accumulate as runaway speed.
-            let raw = motionFallbackSpeed + (accel - MOTION_ACCEL_DEADBAND) * dt
-            nextSpeed = min(max(raw * 0.97, 0.0), MOTION_FALLBACK_MAX_SPEED)
+            nextSpeed = max(motionFallbackSpeed * 0.98, 0.0)   // slow decay — keep moving
         }
 
         let distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
         motionFallbackSpeed = nextSpeed
 
-        guard distance >= 0.25 else { return }
+        guard distance >= 0.1 else { return }
 
         appendEstimatedPedometerFallbackLocation(distanceMeters: distance, timestamp: now)
         motionFallbackDistanceAdded += distance
@@ -1304,8 +1307,11 @@ class WorkoutSession: NSObject, ObservableObject {
     private func startMotionFallback() {
         isUsingMotionFallback = true
         motionFallbackDistanceAdded = 0.0
-        // Seed speed estimate from last known smoothed speed for continuity.
-        motionFallbackSpeed = min(max(currentMetrics.smoothedSpeed, 0.0), MOTION_FALLBACK_MAX_SPEED)
+        // Seed from the best available speed so we keep moving through the gap:
+        // smoothed speed → last GPS point's speed → average speed.
+        let lastPointSpeed = flight.locations.last.map { max($0.speed, 0.0) } ?? 0.0
+        let seed = max(currentMetrics.smoothedSpeed, max(lastPointSpeed, currentMetrics.averageSpeed))
+        motionFallbackSpeed = min(max(seed, 0.0), MOTION_FALLBACK_MAX_SPEED)
         lastMotionFallbackTick = nil
         lastMotionFallbackLogTime = Date()
         let gap = Date().timeIntervalSince(lastLocationTime)
