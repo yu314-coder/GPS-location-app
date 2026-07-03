@@ -963,15 +963,37 @@ struct WorkoutMapView: View {
         isRoadAligning = true
         roadAlignProgress = 0
         roadAlignTotal = tracksToAlign.count
-        roadAlignMessage = useValhalla
-            ? "Map-matching \(tracksToAlign.count) routes to roads (Valhalla HMM)…"
-            : "Aligning \(tracksToAlign.count) routes to roads using Apple Maps data…"
+        roadAlignMessage = "Preparing road data…"
         roadAlignedCoordinates = [:]
 
         Task {
             var aligned: [UUID: [CLLocationCoordinate2D]] = [:]
             // For the MKDirections fallback only — distribute a request budget.
             let segmentLimits = alignmentSegmentLimits(for: tracksToAlign, requestBudget: roadAlignmentRequestBudget)
+
+            // PRIMARY: on-device HMM map matching against locally cached OSM roads.
+            // Road tiles download once (the only online step); afterwards alignment
+            // works fully offline. Pad the bbox slightly so projections stay inside.
+            var offlineIndex: RoadNetworkStore.RoadIndex?
+            let unionBounds = tracksToAlign
+                .compactMap { MapBounds($0.coordinates) }
+                .reduce(nil as MapBounds?) { acc, b in acc.map { $0.union(b) } ?? b }
+            if let bounds = unionBounds {
+                offlineIndex = await RoadNetworkStore.shared.index(
+                    minLat: bounds.minLat - 0.002, minLon: bounds.minLon - 0.002,
+                    maxLat: bounds.maxLat + 0.002, maxLon: bounds.maxLon + 0.002,
+                    allowDownload: true,
+                    progress: { message in
+                        Task { @MainActor in roadAlignMessage = message }
+                    }
+                )
+            }
+            let engineName = offlineIndex != nil
+                ? "on-device map matching · road data © OpenStreetMap"
+                : (useValhalla ? "Valhalla map matching" : "Apple Maps road data")
+            await MainActor.run {
+                roadAlignMessage = "Aligning \(tracksToAlign.count) routes (\(engineName))…"
+            }
 
             for track in tracksToAlign {
                 guard track.canRoadAlign else {
@@ -984,15 +1006,18 @@ struct WorkoutMapView: View {
                 let fullCoords = FlightDataStore.shared.loadRouteCoordinates(id: track.id)
                 let coordsToAlign = fullCoords.count > track.coordinates.count ? fullCoords : track.coordinates
 
-                // Cascade: Valhalla (only if a key is set) → Apple Maps road data
-                // (no key, needs network) → offline smoother (always works).
+                // Cascade: on-device HMM vs cached OSM roads (OFFLINE, primary)
+                // → Valhalla (optional key) → Apple Maps → offline smoother.
                 var corrected: [CLLocationCoordinate2D]?
                 var usedNetwork = false
-                if useValhalla {
+                if let offlineIndex {
+                    corrected = OfflineMapMatcher.match(coordinates: coordsToAlign, index: offlineIndex)
+                }
+                if corrected == nil, useValhalla {
                     corrected = await MapMatchingService.matchRoute(coordinates: coordsToAlign, costing: track.costing)
                     usedNetwork = true
                 }
-                if corrected == nil {
+                if corrected == nil, offlineIndex == nil {
                     let maxSegments = segmentLimits[track.id] ?? 1
                     corrected = await roadAlignedRoute(
                         coordinates: coordsToAlign,
@@ -1004,7 +1029,7 @@ struct WorkoutMapView: View {
                     if corrected != nil { usedNetwork = true }
                 }
                 if corrected == nil {
-                    // No network / throttled → at least clean the trace offline.
+                    // Off-road workout (trail/field) or no data → clean the trace offline.
                     corrected = RouteSmoother.smooth(coordsToAlign)
                 }
 
@@ -1024,8 +1049,7 @@ struct WorkoutMapView: View {
             await MainActor.run {
                 isRoadAligning = false
                 let correctedCount = aligned.count
-                let engine = useValhalla ? "Valhalla map matching" : "Apple Maps road data"
-                roadAlignMessage = "Aligned \(correctedCount) of \(tracksToAlign.count) routes (\(engine)). Shown on this map only."
+                roadAlignMessage = "Aligned \(correctedCount) of \(tracksToAlign.count) routes (\(engineName)). Shown on this map only."
                 rebuildMultiPolylineFromDisplay()   // reflect aligned geometry in the overlay
                 if let selectedTrack {
                     focus(selectedTrack)
