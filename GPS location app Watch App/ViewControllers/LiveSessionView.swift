@@ -82,7 +82,8 @@ struct LiveSessionView: View {
                         timeSinceLastGPS: timeSinceLastGPS,
                         locationCount: workoutSession.flight.locations.count,
                         isTracking: workoutSession.locationManager.isTracking,
-                        isUsingIPhoneFallback: workoutSession.isUsingIPhoneGPSFallback
+                        isUsingIPhoneFallback: workoutSession.isUsingIPhoneGPSFallback,
+                        fallbackStatus: workoutSession.fallbackDebugStatus
                     )
 
                     Text(workoutSession.networkDebugMessage)
@@ -492,6 +493,7 @@ struct GPSTrackingStatusView: View {
     let locationCount: Int
     let isTracking: Bool
     let isUsingIPhoneFallback: Bool
+    var fallbackStatus: String = ""
 
     var body: some View {
         VStack(spacing: 8) {
@@ -613,6 +615,24 @@ struct GPSTrackingStatusView: View {
                         .font(.caption2)
                         .fontWeight(.medium)
                         .foregroundColor(isUsingIPhoneFallback ? .blue : .primary)
+                }
+
+                // Live fallback / dead-reckoning status (debug)
+                if !fallbackStatus.isEmpty {
+                    HStack {
+                        Image(systemName: "gyroscope")
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                        Text("Fallback:")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(fallbackStatus)
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .monospacedDigit()
+                            .foregroundColor(fallbackStatus.hasPrefix("GPS OK") ? .green : .orange)
+                    }
                 }
             }
             .padding(.horizontal, 8)

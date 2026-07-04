@@ -37,6 +37,7 @@ class WorkoutSession: NSObject, ObservableObject {
     @Published var currentMetrics = FlightMetrics()
     @Published var lastLocationTime: Date = Date()  // Exposed for UI to monitor GPS health
     @Published var isUsingIPhoneGPSFallback = false
+    @Published var fallbackDebugStatus = "GPS OK"   // live on-screen fallback state
     @Published var networkDebugMessage = "GPS active"
     @Published var networkPathStatus = "Net: pending • iPhone: disconnected"
     @Published var nativePedometerStepCount: Int = 0
@@ -1133,6 +1134,7 @@ class WorkoutSession: NSObject, ObservableObject {
                 let newDistance = pedometerDelta - pedometerFallbackDistanceAdded
                 appendEstimatedPedometerFallbackLocation(distanceMeters: newDistance, timestamp: Date())
                 pedometerFallbackDistanceAdded = pedometerDelta
+                fallbackDebugStatus = String(format: "Steps DR +%.0fm", pedometerFallbackDistanceAdded)
 
                 // Log every 5 seconds to avoid spam
                 let now = Date()
@@ -1308,8 +1310,14 @@ class WorkoutSession: NSObject, ObservableObject {
         // available, only nudges the estimate.
         let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
 
-        // Only kick in once GPS has been quiet long enough.
-        guard timeSinceLastGPS >= GPS_GAP_THRESHOLD else {
+        // SECOND FALLBACK: when the iPhone relay is active/pending but not actually
+        // delivering coordinates (iPhone also has no GPS — basement/airplane), switch
+        // to acceleration + last-point + velocity dead reckoning IMMEDIATELY instead
+        // of sitting on a dead relay. Use a short threshold in that case.
+        let iPhoneRelayActive = connectivityManager.isUsingIPhoneGPS || connectivityManager.isIPhoneGPSRequestPending
+        let engageThreshold = iPhoneRelayActive ? 2.5 : GPS_GAP_THRESHOLD
+
+        guard timeSinceLastGPS >= engageThreshold else {
             if isUsingMotionFallback {
                 endMotionFallback(reason: "GPS returned")
             }
@@ -1351,6 +1359,14 @@ class WorkoutSession: NSObject, ObservableObject {
 
         let distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
         motionFallbackSpeed = nextSpeed
+
+        let motionAvailable = motionManager.isDeviceMotionAvailable
+        fallbackDebugStatus = String(
+            format: "Motion DR%@ %.0fkm/h +%.0fm",
+            motionAvailable ? "" : "(seed)",
+            motionFallbackSpeed * 3.6,
+            motionFallbackDistanceAdded
+        )
 
         guard distance >= 0.1 else { return }
 
@@ -1879,6 +1895,12 @@ class WorkoutSession: NSObject, ObservableObject {
         // Add to flight (after GPS filtering passed)
         flight.locations.append(location)
         lastLocationTime = Date()  // Track location received
+        // A real fix arrived → dead reckoning no longer needed.
+        switch source {
+        case .iphoneFallback: fallbackDebugStatus = "GPS OK (iPhone relay)"
+        case .iphoneAssist: fallbackDebugStatus = "GPS OK (watch+iPhone)"
+        case .watchGPS: fallbackDebugStatus = "GPS OK (watch)"
+        }
         if let refreshTime = lastManualRefreshRequestTime {
             let delay = Date().timeIntervalSince(refreshTime)
             setNetworkDebugMessage("Fresh fix received in \(String(format: "%.1f", delay))s (±\(String(format: "%.1f", location.horizontalAccuracy))m)")
