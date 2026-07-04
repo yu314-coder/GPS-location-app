@@ -87,7 +87,9 @@ class WorkoutSession: NSObject, ObservableObject {
     private var pedometerDistanceAtGapStart: Double = 0.0  // pedometer.currentDistance when gap started
     private var gpsDistanceAtGapStart: Double = 0.0  // totalDistance when gap started
     private var pedometerFallbackDistanceAdded: Double = 0.0  // how much pedometer distance was added during this gap
+    private var pedometerFallbackStartTime: Date?             // when pedometer fallback engaged (to detect "no steps → vehicle")
     private let GPS_GAP_THRESHOLD: TimeInterval = 5.0  // seconds without valid GPS before switching to pedometer
+    private let PEDOMETER_NO_STEP_GRACE: TimeInterval = 8.0   // if pedometer adds ~nothing this long, motion takes over
     private var lastPedometerFallbackLogTime: Date = .distantPast
     private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
     private let ESTIMATED_LOCATION_VERTICAL_ACCURACY: Double = 250.0
@@ -1147,6 +1149,7 @@ class WorkoutSession: NSObject, ObservableObject {
         pedometerDistanceAtGapStart = pedometerManager.currentDistance
         gpsDistanceAtGapStart = currentMetrics.totalDistance
         pedometerFallbackDistanceAdded = 0.0
+        pedometerFallbackStartTime = Date()
         lastPedometerFallbackLogTime = Date()
 
         let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
@@ -1238,6 +1241,7 @@ class WorkoutSession: NSObject, ObservableObject {
         pedometerFallbackDistanceAdded = 0.0
         pedometerDistanceAtGapStart = 0.0
         gpsDistanceAtGapStart = 0.0
+        pedometerFallbackStartTime = nil
         lastAnchorlessFallbackTime = nil
     }
 
@@ -1282,12 +1286,21 @@ class WorkoutSession: NSObject, ObservableObject {
 
     private func checkMotionFallback() {
         // For step-based activities the pedometer (step count) is more accurate than
-        // accelerometer integration — let it own the gap (basement/underground walks).
-        // Accelerometer dead reckoning is for NON-step motion: airplane, train, car.
+        // accelerometer integration — let it own the gap WHILE it's producing step
+        // distance (basement/underground walks). BUT if the pedometer has run for a
+        // while adding ~nothing (no steps → you're in a VEHICLE in a no-GPS zone —
+        // the reported bug), fall through to accelerometer dead reckoning so the
+        // watch still tracks instead of getting stuck on a dead iPhone fallback.
         let isStepBased = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
         if isStepBased && pedometerManager.isPedometerAvailable {
-            if isUsingMotionFallback { endMotionFallback(reason: "step-based → pedometer primary") }
-            return
+            let pedometerElapsed = pedometerFallbackStartTime.map { Date().timeIntervalSince($0) } ?? 0
+            let pedometerProducing = pedometerFallbackDistanceAdded > 1.0
+            let inGrace = !isUsingPedometerFallback || pedometerElapsed < PEDOMETER_NO_STEP_GRACE
+            if pedometerProducing || inGrace {
+                if isUsingMotionFallback { endMotionFallback(reason: "pedometer producing step distance") }
+                return
+            }
+            // else: pedometer idle with no steps → treat as vehicle, use motion below.
         }
 
         // NOTE: do NOT bail if device motion is unavailable — we still dead-reckon
