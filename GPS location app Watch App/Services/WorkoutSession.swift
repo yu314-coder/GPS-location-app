@@ -90,7 +90,8 @@ class WorkoutSession: NSObject, ObservableObject {
     private var pedometerFallbackDistanceAdded: Double = 0.0  // how much pedometer distance was added during this gap
     private var pedometerFallbackStartTime: Date?             // when pedometer fallback engaged (to detect "no steps → vehicle")
     private let GPS_GAP_THRESHOLD: TimeInterval = 5.0  // seconds without valid GPS before switching to pedometer
-    private let PEDOMETER_NO_STEP_GRACE: TimeInterval = 8.0   // if pedometer adds ~nothing this long, motion takes over
+    private let WATCH_DEAD_RECKON_THRESHOLD: TimeInterval = 3.0  // engage watch's own accel dead reckoning fast
+    private let PEDOMETER_NO_STEP_GRACE: TimeInterval = 5.0   // if pedometer adds ~nothing this long, motion takes over
     private var lastPedometerFallbackLogTime: Date = .distantPast
     private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
     private let ESTIMATED_LOCATION_VERTICAL_ACCURACY: Double = 250.0
@@ -1305,27 +1306,17 @@ class WorkoutSession: NSObject, ObservableObject {
             // else: pedometer idle with no steps → treat as vehicle, use motion below.
         }
 
-        // NOTE: do NOT bail if device motion is unavailable — we still dead-reckon
-        // by maintaining the last known speed (vehicle/tunnel case). Motion, when
-        // available, only nudges the estimate.
+        // The watch's OWN accelerometer + velocity is the PRIMARY GPS-loss fallback —
+        // it does not depend on the iPhone (which may also have no GPS/internet).
+        // Engage quickly whenever GPS goes quiet, regardless of iPhone relay state.
         let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
-
-        // SECOND FALLBACK: when the iPhone relay is active/pending but not actually
-        // delivering coordinates (iPhone also has no GPS — basement/airplane), switch
-        // to acceleration + last-point + velocity dead reckoning IMMEDIATELY instead
-        // of sitting on a dead relay. Use a short threshold in that case.
-        let iPhoneRelayActive = connectivityManager.isUsingIPhoneGPS || connectivityManager.isIPhoneGPSRequestPending
-        let engageThreshold = iPhoneRelayActive ? 2.5 : GPS_GAP_THRESHOLD
-
-        guard timeSinceLastGPS >= engageThreshold else {
+        guard timeSinceLastGPS >= WATCH_DEAD_RECKON_THRESHOLD else {
             if isUsingMotionFallback {
                 endMotionFallback(reason: "GPS returned")
             }
             return
         }
 
-        // Motion fallback is the primary — always run when GPS is silent.
-        // (Pedometer fallback defers to it via checkPedometerFallback.)
         if !isUsingMotionFallback {
             startMotionFallback()
         }
@@ -1342,7 +1333,19 @@ class WorkoutSession: NSObject, ObservableObject {
         //    with a slow decay so we keep covering distance (tunnels/trains) instead
         //    of wrongly deciding "stopped".
         //  • Truly stationary (accel below deadband for a while) → slow bleed to 0.
-        let accel = motionManager.isDeviceMotionAvailable ? lastMotionForwardAccel : 0.0
+        //
+        // Source of the acceleration: the WATCH's own accelerometer normally. If the
+        // watch can't run device-motion (memory pressure / suppressed), fall back to
+        // the acceleration RELAYED FROM THE IPHONE (it feels the same vehicle motion).
+        var accel = motionManager.isDeviceMotionAvailable ? lastMotionForwardAccel : 0.0
+        var accelSource = "watch"
+        if !motionManager.isDeviceMotionAvailable || lastMotionForwardAccel < 0.0001 {
+            if let assist = recentIPhoneMotionAssist(near: now) {
+                let iphoneAccel = max(assist.forwardAcceleration.map { abs($0) } ?? 0.0,
+                                      assist.horizontalAcceleration ?? 0.0)
+                if iphoneAccel > accel { accel = iphoneAccel; accelSource = "iPhone-accel" }
+            }
+        }
         let nextSpeed: Double
         if accel >= MOTION_ACCEL_DEADBAND {
             // Integrate the propulsive part of the acceleration into velocity.
@@ -1360,10 +1363,9 @@ class WorkoutSession: NSObject, ObservableObject {
         let distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
         motionFallbackSpeed = nextSpeed
 
-        let motionAvailable = motionManager.isDeviceMotionAvailable
         fallbackDebugStatus = String(
-            format: "Motion DR%@ %.0fkm/h +%.0fm",
-            motionAvailable ? "" : "(seed)",
+            format: "DR[%@] %.0fkm/h +%.0fm",
+            accelSource,
             motionFallbackSpeed * 3.6,
             motionFallbackDistanceAdded
         )
