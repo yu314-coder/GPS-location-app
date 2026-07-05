@@ -107,6 +107,8 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastMotionForwardAccel: Double = 0.0        // m/s², lightly smoothed
     private var lastMotionFallbackLogTime: Date = .distantPast
     private var lastAnchorlessFallbackTime: Date?          // for distance-only dead reckoning
+    private var lastIPhoneRelayCoord: (lat: Double, lon: Double)?  // detect frozen (stale) iPhone relay
+    private var frozenIPhoneRelayCount: Int = 0
     private let MOTION_FALLBACK_TICK: TimeInterval = 1.0
     private let MOTION_FALLBACK_MAX_SPEED: Double = .greatestFiniteMagnitude // no cap
     private let MOTION_ACCEL_DEADBAND: Double = 0.08        // m/s² — below = no propulsion
@@ -1729,6 +1731,32 @@ class WorkoutSession: NSObject, ObservableObject {
         if location.horizontalAccuracy < 0 {
             print("⌚ 🚫 [\(sourceLabel)] INVALID location (no fix) - REJECTED")
             return
+        }
+
+        // FROZEN iPHONE RELAY GUARD: "connected to iPhone" does NOT mean the iPhone
+        // has real GPS data. In a basement/airplane the iPhone relays its last-known
+        // position, re-timestamped as fresh. Accepting those keeps resetting the GPS
+        // gap and blocks the watch's own accelerometer dead reckoning. If the relayed
+        // iPhone position isn't actually moving, treat it as NO DATA and drop it so
+        // the gap grows and the watch switches to accel/velocity.
+        if isIPhoneSource {
+            if let last = lastIPhoneRelayCoord {
+                let moved = CLLocation(latitude: last.lat, longitude: last.lon)
+                    .distance(from: CLLocation(latitude: location.latitude, longitude: location.longitude))
+                // Real GPS always jitters (>1m even when stationary); a re-sent cached
+                // position is essentially identical (~0m) → that's a stale relay.
+                if moved < 1.0 {
+                    frozenIPhoneRelayCount += 1
+                    if frozenIPhoneRelayCount >= 2 {
+                        // Stale relay confirmed — do NOT update lastLocationTime/status.
+                        skippedLocationCount += 1
+                        return
+                    }
+                } else {
+                    frozenIPhoneRelayCount = 0
+                }
+            }
+            lastIPhoneRelayCoord = (location.latitude, location.longitude)
         }
 
         if isUsingPedometerFallback {
