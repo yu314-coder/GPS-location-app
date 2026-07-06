@@ -106,6 +106,7 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastMotionFallbackTick: Date?
     private var lastMotionForwardAccel: Double = 0.0        // m/s², lightly smoothed
     private var lastMotionFallbackLogTime: Date = .distantPast
+    private var lastFallbackTickTime: Date?                 // debounce for dual-timer fallback driver
     private var lastAnchorlessFallbackTime: Date?          // for distance-only dead reckoning
     private var lastIPhoneRelayCoord: (lat: Double, lon: Double)?  // detect frozen (stale) iPhone relay
     private var frozenIPhoneRelayCount: Int = 0
@@ -969,8 +970,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // activity types. Pedometer is a secondary that only kicks in if
             // motion fallback isn't adding distance.
             if !self.isPaused {
-                self.checkMotionFallback()
-                self.checkPedometerFallback()
+                self.runGpsGapFallbacksTick(source: "keepAlive")
             }
 
             // Every 10 seconds, log that we're still alive
@@ -1289,33 +1289,51 @@ class WorkoutSession: NSObject, ObservableObject {
         lastMotionForwardAccel = 0.0
     }
 
-    private func checkMotionFallback() {
-        // For step-based activities the pedometer (step count) is more accurate than
-        // accelerometer integration — let it own the gap WHILE it's producing step
-        // distance (basement/underground walks). BUT if the pedometer has run for a
-        // while adding ~nothing (no steps → you're in a VEHICLE in a no-GPS zone —
-        // the reported bug), fall through to accelerometer dead reckoning so the
-        // watch still tracks instead of getting stuck on a dead iPhone fallback.
-        let isStepBased = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
-        if isStepBased && pedometerManager.isPedometerAvailable {
-            let pedometerElapsed = pedometerFallbackStartTime.map { Date().timeIntervalSince($0) } ?? 0
-            let pedometerProducing = pedometerFallbackDistanceAdded > 1.0
-            let inGrace = !isUsingPedometerFallback || pedometerElapsed < PEDOMETER_NO_STEP_GRACE
-            if pedometerProducing || inGrace {
-                if isUsingMotionFallback { endMotionFallback(reason: "pedometer producing step distance") }
-                return
-            }
-            // else: pedometer idle with no steps → treat as vehicle, use motion below.
+    /// Debounced driver for the GPS-gap fallbacks. Called from BOTH the session's
+    /// keep-alive timer AND the live view's 1 s timer, because on watchOS the always-on
+    /// / throttled state can suspend one while the other keeps ticking. Whichever fires
+    /// first each second does the work; the other is a no-op. This guarantees the
+    /// accel/velocity dead reckoning actually RUNS even when the session's RunLoop timer
+    /// is starved — the exact cause of the elevator/basement "stuck on GPS OK" bug (the
+    /// UI counter kept climbing off the view's own timer while the fallbacks never ran).
+    func runGpsGapFallbacksTick(source: String) {
+        guard isActive, !isPaused else { return }
+        let now = Date()
+        if let last = lastFallbackTickTime, now.timeIntervalSince(last) < 0.5 {
+            return  // already ran this second (the other timer beat us to it)
         }
+        lastFallbackTickTime = now
+        checkMotionFallback()
+        checkPedometerFallback()
+    }
 
-        // The watch's OWN accelerometer + velocity is the PRIMARY GPS-loss fallback —
-        // it does not depend on the iPhone (which may also have no GPS/internet).
-        // Engage quickly whenever GPS goes quiet, regardless of iPhone relay state.
+    private func checkMotionFallback() {
+        // The watch's OWN accelerometer + velocity is the PRIMARY GPS-loss fallback.
+        // It engages FAST and UNCONDITIONALLY the moment GPS goes quiet — it NEVER
+        // waits on the iPhone relay, and NEVER waits on the pedometer to "warm up".
+        // (Both are dead in a basement / airplane / elevator, which is exactly when
+        // the fallback is needed.) This is the required behavior: "when no data from
+        // iPhone, immediately switch to acceleration/velocity."
+        //
+        // The OLD logic gated motion behind the pedometer with a grace window, so a
+        // dead pedometer (0 Hz, 0 steps — an elevator/vehicle/plane) left the watch
+        // stuck forever on "GPS OK" with a frozen track. Motion now owns the gap by
+        // default; the pedometer only takes over while it is genuinely counting steps.
         let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
         guard timeSinceLastGPS >= WATCH_DEAD_RECKON_THRESHOLD else {
             if isUsingMotionFallback {
                 endMotionFallback(reason: "GPS returned")
             }
+            return
+        }
+
+        // Yield the gap to the pedometer ONLY while it is ACTIVELY producing real step
+        // distance (a basement/underground WALK with actual footsteps, where step
+        // counting beats accelerometer integration). A pedometer that was armed but is
+        // adding ~nothing does NOT block dead reckoning — we fall straight through.
+        let isStepBased = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
+        if isStepBased && isUsingPedometerFallback && pedometerFallbackDistanceAdded > 1.0 {
+            if isUsingMotionFallback { endMotionFallback(reason: "pedometer producing step distance") }
             return
         }
 
@@ -1349,16 +1367,21 @@ class WorkoutSession: NSObject, ObservableObject {
             }
         }
         let nextSpeed: Double
-        if accel >= MOTION_ACCEL_DEADBAND {
-            // Integrate the propulsive part of the acceleration into velocity.
+        // For NON-step activities (airplane, train, vehicle) integrate the propulsive
+        // part of the acceleration into velocity — this captures takeoff / acceleration.
+        // For STEP activities we deliberately do NOT integrate accelerometer magnitude:
+        // footfall spikes aren't net forward propulsion and would inflate the estimate.
+        // Instead we hold/decay the seeded walking speed (the pedometer supplies precise
+        // distance the moment it detects real steps, and motion yields to it then).
+        if !isStepBased && accel >= MOTION_ACCEL_DEADBAND {
             let integrated = motionFallbackSpeed + (accel - MOTION_ACCEL_DEADBAND) * dt
             nextSpeed = min(max(integrated * 0.999, 0.0), MOTION_FALLBACK_MAX_SPEED)
         } else {
-            // Constant velocity / cruise (airplane, train): HOLD the speed with only
-            // a very slow decay so a long no-GPS stretch keeps covering distance.
-            // (Accelerometer can't sustain velocity perfectly without a GPS
-            // reference, so this under-estimates a long flight — but records real
-            // distance instead of nothing.)
+            // Constant velocity / cruise (airplane, train) OR a step activity: HOLD the
+            // speed with only a very slow decay so a long no-GPS stretch keeps covering
+            // distance instead of wrongly deciding "stopped". (Accelerometer can't
+            // sustain velocity perfectly without a GPS reference, so this under-estimates
+            // a long flight — but records real distance instead of nothing.)
             nextSpeed = max(motionFallbackSpeed * 0.999, 0.0)
         }
 

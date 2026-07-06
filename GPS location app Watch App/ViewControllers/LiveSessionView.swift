@@ -333,6 +333,13 @@ struct LiveSessionView: View {
             // Update UI metrics only once per second for smooth performance
             // This prevents the UI from updating on every GPS point (which can be multiple times per second)
             if workoutSession.isActive {
+                // CRITICAL: also drive the GPS-gap fallbacks from THIS timer. On watchOS
+                // the always-on/throttled state can starve the session's own keep-alive
+                // RunLoop timer while this view timer keeps firing — that starvation is
+                // why the accel/velocity dead reckoning never engaged (stuck on "GPS OK"
+                // while the counter climbed). The tick is debounced so it runs at most
+                // once per second no matter how many timers call it.
+                workoutSession.runGpsGapFallbacksTick(source: "view")
                 displayMetrics = workoutSession.currentMetrics
                 // CRITICAL: Calculate time since last GPS update to detect when GPS breaks
                 timeSinceLastGPS = Date().timeIntervalSince(workoutSession.lastLocationTime)
