@@ -1782,7 +1782,15 @@ class WorkoutSession: NSObject, ObservableObject {
             lastIPhoneRelayCoord = (location.latitude, location.longitude)
         }
 
-        if isUsingPedometerFallback {
+        // GPS RETURN AFTER A DEAD-RECKONING GAP (pedometer OR motion fallback).
+        // While a fallback runs, the last appended point is a DRIFTED ESTIMATE, so the
+        // normal speed/jump glitch filters below would see the returning real fix as a
+        // "teleport" and reject it — leaving lastLocationTime frozen and the watch STUCK
+        // in fallback forever (reported bug: it never switches back to real GPS). Fix:
+        // when ANY fallback is active, sanity-check the incoming fix (accuracy + age),
+        // then REANCHOR to it — end the fallback, append the real position, reset the
+        // GPS clock — bypassing the glitch filters that assume a continuous real track.
+        if isUsingPedometerFallback || isUsingMotionFallback {
             if !useRawGPS {
                 if location.horizontalAccuracy > sourceAccuracyThreshold {
                     print("⌚ ⚠️ [\(sourceLabel)] GPS reanchor still poor: ±\(String(format: "%.0f", location.horizontalAccuracy))m - waiting")
@@ -1798,14 +1806,23 @@ class WorkoutSession: NSObject, ObservableObject {
                 }
             }
 
-            endPedometerFallback(reason: "GPS returned (±\(String(format: "%.0f", location.horizontalAccuracy))m, src=\(sourceLabel))")
+            let reanchorReason = "GPS returned (±\(String(format: "%.0f", location.horizontalAccuracy))m, src=\(sourceLabel))"
+            if isUsingMotionFallback { endMotionFallback(reason: reanchorReason) }
+            if isUsingPedometerFallback { endPedometerFallback(reason: reanchorReason) }
+            frozenIPhoneRelayCount = 0
             flight.locations.append(location)
             lastLocationTime = Date()
+            // Real fix is back → clear the dead-reckoning status so the UI shows GPS OK.
+            switch source {
+            case .iphoneFallback: fallbackDebugStatus = "GPS OK (iPhone relay)"
+            case .iphoneAssist:   fallbackDebugStatus = "GPS OK (watch+iPhone)"
+            case .watchGPS:       fallbackDebugStatus = "GPS OK (watch)"
+            }
             currentMetrics.currentAltitude = location.altitude
             if location.altitude > currentMetrics.maxAltitude {
                 currentMetrics.maxAltitude = location.altitude
             }
-            print("⌚ 🦶→📡 GPS reanchor after estimated pedometer gap — position updated, distance skipped for this point")
+            print("⌚ 🧭→📡 GPS reanchor after dead-reckoning gap — position updated, distance skipped for this point")
             return
         }
 
