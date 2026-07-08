@@ -755,11 +755,19 @@ class WorkoutSession: NSObject, ObservableObject {
                                         includeGPSDistance: !distanceAdded,
                                         includeNativeStepDistance: true
                                     ) { _, _ in
-                                        // 5. Save route to the existing workout using filtered flight locations
-                                        print("⌚ 🗺️ Preparing to save route with \(self.flight.locations.count) filtered locations")
+                                        // 5. Save route to the existing workout. CRITICAL: use the FULL
+                                        // persisted track from disk — NOT self.flight.locations, which is
+                                        // pruned down to minRetainedLocationsOnWatch (2) as points stream to
+                                        // the iPhone. Rebuilding the route from the in-memory array would save
+                                        // only a 2-point stub (the reported "watch doesn't save the track").
+                                        // The watch's FlightDataStore accumulates EVERY point (real AND
+                                        // estimated/fallback) on disk via the checkpoints, so load that.
+                                        let persisted = FlightDataStore.shared.loadFlightDetails(id: self.flight.id)?.locations ?? []
+                                        let routeLocations = persisted.count >= self.flight.locations.count ? persisted : self.flight.locations
+                                        print("⌚ 🗺️ Preparing to save route: \(routeLocations.count) locations (in-memory=\(self.flight.locations.count), persisted=\(persisted.count))")
                                         self.healthKitManager.saveRoute(
                                             for: workout,
-                                            locations: self.flight.locations
+                                            locations: routeLocations
                                         ) { [weak self] success, error in
                                             guard let self = self else { return }
 
@@ -1164,14 +1172,63 @@ class WorkoutSession: NSObject, ObservableObject {
         print("⌚ 🦶 Will use pedometer incremental distance until GPS returns")
     }
 
+    /// A geographic origin to dead-reckon FROM when a fallback gap begins before any GPS
+    /// fix was recorded (workout started underground / in-flight). Prefers the iPhone's
+    /// last-known relay position (a real-world coordinate, stale is fine), then the
+    /// watch's own last-known GPS. Returns nil only if neither exists anywhere.
+    private func syntheticFallbackAnchor(at timestamp: Date) -> FlightLocation? {
+        let coordinate: CLLocationCoordinate2D
+        let altitude: Double
+        if let relay = lastIPhoneRelayCoord {
+            coordinate = CLLocationCoordinate2D(latitude: relay.lat, longitude: relay.lon)
+            altitude = locationManager.currentLocation?.altitude ?? currentMetrics.currentAltitude
+        } else if let known = locationManager.currentLocation {
+            coordinate = known.coordinate
+            altitude = known.altitude
+        } else {
+            return nil
+        }
+        // Timestamp the seed slightly earlier so the first dead-reckoned point that
+        // follows has a strictly-later timestamp (clean ordering for the HK route).
+        let seed = CLLocation(
+            coordinate: coordinate,
+            altitude: altitude,
+            horizontalAccuracy: ESTIMATED_LOCATION_HORIZONTAL_ACCURACY,
+            verticalAccuracy: ESTIMATED_LOCATION_VERTICAL_ACCURACY,
+            course: 0,
+            speed: 0,
+            timestamp: timestamp.addingTimeInterval(-0.5)
+        )
+        return FlightLocation(
+            from: seed,
+            isFiltered: false,
+            isValid: true,
+            signalStrength: 20.0,
+            pressure: locationManager.currentPressure,
+            isEstimated: true
+        )
+    }
+
     private func appendEstimatedPedometerFallbackLocation(distanceMeters: Double, timestamp: Date) {
         guard distanceMeters > 0.0 else { return }
 
-        // NO-ANCHOR case (deep basement / airplane where the watch never got a GPS
-        // fix): accumulate distance-only so the workout still records progress.
-        // A map coordinate is impossible without any GPS reference, but the distance
-        // metric (what matters for the workout) still grows.
-        guard let previousLocation = flight.locations.last else {
+        // Resolve the point to dead-reckon FROM. Normally the last recorded location.
+        // But a workout that STARTS with no GPS (basement / subway / airplane) has no
+        // prior point — so seed the track from the best available real-world position:
+        // the iPhone's last-known relay (stale is fine) or the watch's own last-known
+        // GPS. This lets the velocity/step fallback lay down a real ESTIMATED track
+        // instead of just a distance number. Only if NO position exists anywhere do we
+        // fall back to distance-only (a coordinate is impossible with zero reference).
+        let previousLocation: FlightLocation
+        if let last = flight.locations.last {
+            previousLocation = last
+        } else if let seed = syntheticFallbackAnchor(at: timestamp) {
+            flight.locations.append(seed)   // becomes the origin; we dead-reckon from it
+            previousLocation = seed
+            print("⌚ 🧭 Fallback seeded synthetic anchor (no GPS yet) at \(String(format: "%.5f", seed.latitude)),\(String(format: "%.5f", seed.longitude))")
+        } else {
+            // Truly no geographic reference anywhere — accumulate distance-only so the
+            // workout still records progress (can't place a point without any anchor).
             currentMetrics.totalDistance += distanceMeters
             let dt = max(timestamp.timeIntervalSince(lastAnchorlessFallbackTime ?? timestamp), 0.5)
             let speed = distanceMeters / dt
