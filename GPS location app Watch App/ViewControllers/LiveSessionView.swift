@@ -225,6 +225,37 @@ struct LiveSessionView: View {
                         }
                         .buttonStyle(.plain)
 
+                        // Force Velocity toggle: when ON, the watch ignores GPS and tracks
+                        // distance/route purely from its own accelerometer + velocity dead
+                        // reckoning (useful in known-bad-GPS areas, or to force the estimate).
+                        // Toggling OFF hands back to normal GPS on the next real fix.
+                        Button(action: {
+                            workoutSession.forceMotionFallback.toggle()
+                            print("⌚ 🔘 Force Velocity toggled -> \(workoutSession.forceMotionFallback ? "ON" : "OFF")")
+                        }) {
+                            HStack {
+                                Image(systemName: workoutSession.forceMotionFallback ? "speedometer" : "location.fill")
+                                    .font(.caption)
+                                Text(workoutSession.forceMotionFallback ? "Velocity: ON" : "Force Velocity")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                LinearGradient(
+                                    colors: workoutSession.forceMotionFallback
+                                        ? [Color.purple, Color.purple.opacity(0.8)]
+                                        : [Color.gray.opacity(0.6), Color.gray.opacity(0.4)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .foregroundColor(.white)
+                            .cornerRadius(20)
+                        }
+                        .buttonStyle(.plain)
+
                         // Stop button
                         Button(action: {
                             showStopConfirmation = true

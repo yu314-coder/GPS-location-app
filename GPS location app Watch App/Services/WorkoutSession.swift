@@ -38,6 +38,7 @@ class WorkoutSession: NSObject, ObservableObject {
     @Published var lastLocationTime: Date = Date()  // Exposed for UI to monitor GPS health
     @Published var isUsingIPhoneGPSFallback = false
     @Published var fallbackDebugStatus = "GPS OK"   // live on-screen fallback state
+    @Published var forceMotionFallback = false      // UI toggle: force velocity (accel) dead reckoning, ignore GPS
     @Published var networkDebugMessage = "GPS active"
     @Published var networkPathStatus = "Net: pending • iPhone: disconnected"
     @Published var nativePedometerStepCount: Int = 0
@@ -393,6 +394,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
             // Reset location filtering statistics
             skippedLocationCount = 0
+            forceMotionFallback = false   // manual velocity override always starts OFF
             lastLocationTime = Date()
             latestIPhoneMotionAssist = nil
 
@@ -1361,7 +1363,11 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         lastFallbackTickTime = now
         checkMotionFallback()
-        checkPedometerFallback()
+        // In forced velocity mode the pedometer is intentionally OFF — motion (velocity)
+        // is the sole distance source, so steps can't mix in or double-count.
+        if !forceMotionFallback {
+            checkPedometerFallback()
+        }
     }
 
     private func checkMotionFallback() {
@@ -1376,22 +1382,29 @@ class WorkoutSession: NSObject, ObservableObject {
         // dead pedometer (0 Hz, 0 steps — an elevator/vehicle/plane) left the watch
         // stuck forever on "GPS OK" with a frozen track. Motion now owns the gap by
         // default; the pedometer only takes over while it is genuinely counting steps.
-        let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
-        guard timeSinceLastGPS >= WATCH_DEAD_RECKON_THRESHOLD else {
-            if isUsingMotionFallback {
-                endMotionFallback(reason: "GPS returned")
-            }
-            return
-        }
-
-        // Yield the gap to the pedometer ONLY while it is ACTIVELY producing real step
-        // distance (a basement/underground WALK with actual footsteps, where step
-        // counting beats accelerometer integration). A pedometer that was armed but is
-        // adding ~nothing does NOT block dead reckoning — we fall straight through.
         let isStepBased = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
-        if isStepBased && isUsingPedometerFallback && pedometerFallbackDistanceAdded > 1.0 {
-            if isUsingMotionFallback { endMotionFallback(reason: "pedometer producing step distance") }
-            return
+        let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
+
+        // MANUAL OVERRIDE: when the user forces velocity (motion) mode ON from the
+        // workout UI, dead reckoning runs UNCONDITIONALLY — it does not wait for a GPS
+        // gap and does not yield to the pedometer. GPS fixes are ignored for distance
+        // while forced (see processNewLocation), so there is no double-counting.
+        if !forceMotionFallback {
+            guard timeSinceLastGPS >= WATCH_DEAD_RECKON_THRESHOLD else {
+                if isUsingMotionFallback {
+                    endMotionFallback(reason: "GPS returned")
+                }
+                return
+            }
+
+            // Yield the gap to the pedometer ONLY while it is ACTIVELY producing real
+            // step distance (a basement/underground WALK with actual footsteps, where
+            // step counting beats accelerometer integration). A pedometer that was armed
+            // but is adding ~nothing does NOT block dead reckoning — fall straight through.
+            if isStepBased && isUsingPedometerFallback && pedometerFallbackDistanceAdded > 1.0 {
+                if isUsingMotionFallback { endMotionFallback(reason: "pedometer producing step distance") }
+                return
+            }
         }
 
         if !isUsingMotionFallback {
@@ -1446,8 +1459,9 @@ class WorkoutSession: NSObject, ObservableObject {
         motionFallbackSpeed = nextSpeed
 
         fallbackDebugStatus = String(
-            format: "DR[%@] %.0fkm/h +%.0fm",
+            format: "DR[%@]%@ %.0fkm/h +%.0fm",
             accelSource,
+            forceMotionFallback ? " FORCED" : "",
             motionFallbackSpeed * 3.6,
             motionFallbackDistanceAdded
         )
@@ -1767,6 +1781,16 @@ class WorkoutSession: NSObject, ObservableObject {
     }
 
     private func processNewLocation(_ location: FlightLocation, source: LocationInputSource) {
+        // FORCED VELOCITY MODE: the user has manually forced motion (velocity) dead
+        // reckoning as the SOLE distance/track source from the workout UI. Ignore GPS
+        // fixes entirely so they can't double-count against the motion distance. The
+        // watch's LocationManager still updates its own last-known coordinate
+        // independently, so when the toggle is turned OFF the next real fix reanchors
+        // cleanly (via the "GPS RETURN AFTER A DEAD-RECKONING GAP" block below).
+        if forceMotionFallback {
+            return
+        }
+
         // Check user setting for raw GPS mode
         let useRawGPS = UserDefaults.standard.bool(forKey: "useRawGPS")
         let isFlight = workoutType == .other
