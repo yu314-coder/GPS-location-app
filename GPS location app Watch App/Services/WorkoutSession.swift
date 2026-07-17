@@ -1439,11 +1439,15 @@ class WorkoutSession: NSObject, ObservableObject {
         let nextSpeed: Double
         // For NON-step activities (airplane, train, vehicle) integrate the propulsive
         // part of the acceleration into velocity — this captures takeoff / acceleration.
-        // For STEP activities we deliberately do NOT integrate accelerometer magnitude:
-        // footfall spikes aren't net forward propulsion and would inflate the estimate.
-        // Instead we hold/decay the seeded walking speed (the pedometer supplies precise
-        // distance the moment it detects real steps, and motion yields to it then).
-        if !isStepBased && accel >= MOTION_ACCEL_DEADBAND {
+        // For automatic STEP fallback we deliberately do NOT integrate accelerometer
+        // magnitude (footfall spikes aren't net forward propulsion and would inflate the
+        // estimate — the pedometer supplies precise step distance instead).
+        //
+        // BUT when the user has FORCED velocity mode, the pedometer is off and GPS is
+        // ignored, so accelerometer integration is the ONLY distance source — integrate
+        // it regardless of activity type. (Without this, forcing velocity on a walk
+        // records 0.0 because the seeded speed just decays to zero — the reported bug.)
+        if (forceMotionFallback || !isStepBased) && accel >= MOTION_ACCEL_DEADBAND {
             let integrated = motionFallbackSpeed + (accel - MOTION_ACCEL_DEADBAND) * dt
             nextSpeed = min(max(integrated * 0.999, 0.0), MOTION_FALLBACK_MAX_SPEED)
         } else {
