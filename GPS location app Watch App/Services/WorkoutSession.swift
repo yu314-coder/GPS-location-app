@@ -102,10 +102,22 @@ class WorkoutSession: NSObject, ObservableObject {
     // isn't applicable. Uses CMDeviceMotion's userAcceleration (gravity-removed).
     private let motionManager = CMMotionManager()
     private var isUsingMotionFallback = false
-    private var motionFallbackSpeed: Double = 0.0          // m/s
+    private var motionFallbackSpeed: Double = 0.0          // m/s (= magnitude of the velocity vector)
     private var motionFallbackDistanceAdded: Double = 0.0   // meters this gap
     private var lastMotionFallbackTick: Date?
-    private var lastMotionForwardAccel: Double = 0.0        // m/s², lightly smoothed
+    private var lastMotionForwardAccel: Double = 0.0        // m/s² horizontal magnitude (iPhone-assist compat)
+    // Signed WORLD-frame inertial state. We integrate an acceleration VECTOR into a
+    // velocity VECTOR (X ≈ north, Y ≈ west in a Z-vertical reference frame) so that
+    // deceleration SUBTRACTS and transient bumps/vibration cancel out — this is what
+    // stops the old |accel|-magnitude runaway where speed could only ever climb.
+    private var worldAccelX: Double = 0.0                   // m/s², gravity-free, world frame (≈ north)
+    private var worldAccelY: Double = 0.0                   // m/s², world frame (≈ west)
+    private var accelBiasX: Double = 0.0                    // slow DC-bias estimate (curbs drift)
+    private var accelBiasY: Double = 0.0
+    private var motionVelX: Double = 0.0                    // m/s velocity vector (north)
+    private var motionVelY: Double = 0.0                    // m/s velocity vector (west)
+    private var motionHeadingDegrees: Double = 0.0          // bearing from velocity vector, for route projection
+    private var motionAttitudeReady = false                 // device-motion w/ attitude is delivering
     private var lastMotionFallbackLogTime: Date = .distantPast
     private var lastFallbackTickTime: Date?                 // debounce for dual-timer fallback driver
     private var lastAnchorlessFallbackTime: Date?          // for distance-only dead reckoning
@@ -113,7 +125,8 @@ class WorkoutSession: NSObject, ObservableObject {
     private var frozenIPhoneRelayCount: Int = 0
     private let MOTION_FALLBACK_TICK: TimeInterval = 1.0
     private let MOTION_FALLBACK_MAX_SPEED: Double = .greatestFiniteMagnitude // no cap
-    private let MOTION_ACCEL_DEADBAND: Double = 0.08        // m/s² — below = no propulsion
+    private let MOTION_ACCEL_DEADBAND: Double = 0.08        // m/s² — below = treat as stationary (ZUPT)
+    private let MOTION_VEL_LEAK: Double = 0.999             // per-tick velocity leak; bounds residual drift
 
     // GPS accuracy thresholds (Modern approach based on Google Maps & fitness apps research)
     private let MAX_HORIZONTAL_ACCURACY: Double = 100.0  // 100m maximum (more lenient to capture more distance points)
@@ -1246,11 +1259,19 @@ class WorkoutSession: NSObject, ObservableObject {
             return
         }
 
-        let headingDegrees = normalizedHeading(
-            recentIPhoneMotionAssist(near: timestamp)?.directionDegrees
-                ?? validCourse(previousLocation.course)
-                ?? 0.0
-        )
+        // While the velocity (motion) fallback is active, steer the estimated track by
+        // the heading DERIVED FROM THE VELOCITY VECTOR (it turns as you turn) instead of
+        // a fixed bearing — otherwise the route is a straight line (the reported bug).
+        let headingDegrees: Double
+        if isUsingMotionFallback && motionFallbackSpeed > 0.1 {
+            headingDegrees = normalizedHeading(motionHeadingDegrees)
+        } else {
+            headingDegrees = normalizedHeading(
+                recentIPhoneMotionAssist(near: timestamp)?.directionDegrees
+                    ?? validCourse(previousLocation.course)
+                    ?? 0.0
+            )
+        }
         let coordinate = projectedCoordinate(
             from: CLLocationCoordinate2D(latitude: previousLocation.latitude, longitude: previousLocation.longitude),
             distanceMeters: distanceMeters,
@@ -1323,18 +1344,33 @@ class WorkoutSession: NSObject, ObservableObject {
             return
         }
         motionManager.deviceMotionUpdateInterval = 0.1
-        motionManager.startDeviceMotionUpdates(to: OperationQueue.main) { [weak self] motion, _ in
+        // Use a Z-vertical reference frame so acceleration can be rotated into a WORLD
+        // frame (X/Y horizontal, Z up). Prefer magnetic north so the route heading is
+        // geographically meaningful; else an arbitrary-but-consistent X axis (route
+        // shape/distance still correct, orientation arbitrary).
+        let available = CMMotionManager.availableAttitudeReferenceFrames()
+        let refFrame: CMAttitudeReferenceFrame =
+            available.contains(.xMagneticNorthZVertical) ? .xMagneticNorthZVertical : .xArbitraryZVertical
+        let handler: CMDeviceMotionHandler = { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
-            // Horizontal user-acceleration magnitude (gravity already removed).
-            // 1g = 9.81 m/s². userAcceleration is in g, so multiply.
-            let ax = motion.userAcceleration.x * 9.81
-            let ay = motion.userAcceleration.y * 9.81
-            let horizMag = sqrt(ax * ax + ay * ay)
-            // Lighter low-pass so SUSTAINED acceleration (e.g. airplane takeoff) is
-            // preserved for velocity integration, while jitter is still damped.
-            self.lastMotionForwardAccel = self.lastMotionForwardAccel * 0.7 + horizMag * 0.3
+            // Rotate the gravity-free user acceleration from the device frame into the
+            // world/reference frame (R · a_device). userAcceleration is in g → ×9.81.
+            // Z (vertical, e.g. an elevator) lands in worldZ and is INTENTIONALLY dropped,
+            // so vertical motion never inflates horizontal distance.
+            let a = motion.userAcceleration
+            let r = motion.attitude.rotationMatrix
+            let axW = (r.m11 * a.x + r.m12 * a.y + r.m13 * a.z) * 9.81   // world X (≈ north w/ mag frame)
+            let ayW = (r.m21 * a.x + r.m22 * a.y + r.m23 * a.z) * 9.81   // world Y (≈ west)
+            // Light low-pass to damp jitter while preserving sustained acceleration.
+            self.worldAccelX = self.worldAccelX * 0.7 + axW * 0.3
+            self.worldAccelY = self.worldAccelY * 0.7 + ayW * 0.3
+            self.motionAttitudeReady = true
+            // Horizontal magnitude kept for the iPhone-assist accel path / diagnostics.
+            let hx = a.x * 9.81, hy = a.y * 9.81
+            self.lastMotionForwardAccel = self.lastMotionForwardAccel * 0.7 + sqrt(hx*hx + hy*hy) * 0.3
         }
-        print("⌚ 🧭 Device motion updates started (motion fallback armed)")
+        motionManager.startDeviceMotionUpdates(using: refFrame, to: OperationQueue.main, withHandler: handler)
+        print("⌚ 🧭 Device motion updates started (world-frame dead reckoning armed, ref=\(refFrame.rawValue))")
     }
 
     private func stopMotionUpdates() {
@@ -1344,6 +1380,10 @@ class WorkoutSession: NSObject, ObservableObject {
         isUsingMotionFallback = false
         motionFallbackSpeed = 0.0
         motionFallbackDistanceAdded = 0.0
+        motionVelX = 0.0; motionVelY = 0.0
+        accelBiasX = 0.0; accelBiasY = 0.0
+        worldAccelX = 0.0; worldAccelY = 0.0
+        motionAttitudeReady = false
         lastMotionFallbackTick = nil
         lastMotionForwardAccel = 0.0
     }
@@ -1427,38 +1467,58 @@ class WorkoutSession: NSObject, ObservableObject {
         // Source of the acceleration: the WATCH's own accelerometer normally. If the
         // watch can't run device-motion (memory pressure / suppressed), fall back to
         // the acceleration RELAYED FROM THE IPHONE (it feels the same vehicle motion).
-        var accel = motionManager.isDeviceMotionAvailable ? lastMotionForwardAccel : 0.0
         var accelSource = "watch"
-        if !motionManager.isDeviceMotionAvailable || lastMotionForwardAccel < 0.0001 {
+        var aX = worldAccelX
+        var aY = worldAccelY
+        if !motionManager.isDeviceMotionAvailable || !motionAttitudeReady {
+            // Device motion suppressed (memory pressure): fall back to the iPhone-relayed
+            // acceleration MAGNITUDE, applied along the current heading (best effort).
             if let assist = recentIPhoneMotionAssist(near: now) {
-                let iphoneAccel = max(assist.forwardAcceleration.map { abs($0) } ?? 0.0,
-                                      assist.horizontalAcceleration ?? 0.0)
-                if iphoneAccel > accel { accel = iphoneAccel; accelSource = "iPhone-accel" }
+                let mag = max(assist.forwardAcceleration.map { abs($0) } ?? 0.0,
+                              assist.horizontalAcceleration ?? 0.0)
+                let h = motionHeadingDegrees * .pi / 180
+                aX = mag * cos(h)           // north component
+                aY = -mag * sin(h)          // west component (east = -Y)
+                accelSource = "iPhone-accel"
+            } else {
+                aX = 0; aY = 0
             }
         }
-        let nextSpeed: Double
-        // For NON-step activities (airplane, train, vehicle) integrate the propulsive
-        // part of the acceleration into velocity — this captures takeoff / acceleration.
-        // For automatic STEP fallback we deliberately do NOT integrate accelerometer
-        // magnitude (footfall spikes aren't net forward propulsion and would inflate the
-        // estimate — the pedometer supplies precise step distance instead).
-        //
-        // BUT when the user has FORCED velocity mode, the pedometer is off and GPS is
-        // ignored, so accelerometer integration is the ONLY distance source — integrate
-        // it regardless of activity type. (Without this, forcing velocity on a walk
-        // records 0.0 because the seeded speed just decays to zero — the reported bug.)
-        if (forceMotionFallback || !isStepBased) && accel >= MOTION_ACCEL_DEADBAND {
-            let integrated = motionFallbackSpeed + (accel - MOTION_ACCEL_DEADBAND) * dt
-            nextSpeed = min(max(integrated * 0.999, 0.0), MOTION_FALLBACK_MAX_SPEED)
+
+        // Slowly track and subtract sensor DC bias so a constant offset doesn't
+        // integrate into ever-growing velocity (curbs long-term drift).
+        accelBiasX += (aX - accelBiasX) * 0.002
+        accelBiasY += (aY - accelBiasY) * 0.002
+        let ampX = aX - accelBiasX
+        let ampY = aY - accelBiasY
+        let accelMag = sqrt(ampX * ampX + ampY * ampY)
+
+        // For FORCED mode and non-step activities, integrate the acceleration VECTOR into
+        // the velocity VECTOR (signed → deceleration subtracts, bumps cancel). For the
+        // AUTOMATIC step fallback the pedometer owns distance, so we only hold/decay the
+        // seeded velocity here (matches prior shipped behavior).
+        if forceMotionFallback || !isStepBased {
+            motionVelX = (motionVelX + ampX * dt) * MOTION_VEL_LEAK
+            motionVelY = (motionVelY + ampY * dt) * MOTION_VEL_LEAK
+            // Settle-to-rest (a constrained ZUPT): bleed residual velocity to zero ONLY
+            // when already slow AND there's no horizontal acceleration, so a stopped
+            // vehicle doesn't keep drifting. Gated on LOW speed because a smooth high-
+            // speed cruise also has ~zero acceleration — we must never kill that.
+            let curSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
+            if accelMag < MOTION_ACCEL_DEADBAND && curSpeed < 1.5 {
+                motionVelX *= 0.6
+                motionVelY *= 0.6
+            }
         } else {
-            // Constant velocity / cruise (airplane, train) OR a step activity: HOLD the
-            // speed with only a very slow decay so a long no-GPS stretch keeps covering
-            // distance instead of wrongly deciding "stopped". (Accelerometer can't
-            // sustain velocity perfectly without a GPS reference, so this under-estimates
-            // a long flight — but records real distance instead of nothing.)
-            nextSpeed = max(motionFallbackSpeed * 0.999, 0.0)
+            motionVelX *= 0.999
+            motionVelY *= 0.999
         }
 
+        let nextSpeed = min(sqrt(motionVelX * motionVelX + motionVelY * motionVelY), MOTION_FALLBACK_MAX_SPEED)
+        if nextSpeed > 0.1 {
+            // Bearing clockwise from north: north = +X, east = −Y.
+            motionHeadingDegrees = normalizedHeading(atan2(-motionVelY, motionVelX) * 180 / .pi)
+        }
         let distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
         motionFallbackSpeed = nextSpeed
 
@@ -1489,11 +1549,20 @@ class WorkoutSession: NSObject, ObservableObject {
         // smoothed speed → last GPS point's speed → average speed.
         let lastPointSpeed = flight.locations.last.map { max($0.speed, 0.0) } ?? 0.0
         let seed = max(currentMetrics.smoothedSpeed, max(lastPointSpeed, currentMetrics.averageSpeed))
-        motionFallbackSpeed = min(max(seed, 0.0), MOTION_FALLBACK_MAX_SPEED)
+        let seedSpeed = min(max(seed, 0.0), MOTION_FALLBACK_MAX_SPEED)
+        // Seed the velocity VECTOR along the last known GPS course so cruise is
+        // maintained in the correct direction (a moving car keeps its speed & heading).
+        let courseDeg = flight.locations.last.flatMap { validCourse($0.course) } ?? motionHeadingDegrees
+        let c = courseDeg * .pi / 180
+        motionVelX = seedSpeed * cos(c)      // north component
+        motionVelY = -seedSpeed * sin(c)     // west component (east = −Y)
+        motionHeadingDegrees = courseDeg
+        motionFallbackSpeed = seedSpeed
+        accelBiasX = 0; accelBiasY = 0
         lastMotionFallbackTick = nil
         lastMotionFallbackLogTime = Date()
         let gap = Date().timeIntervalSince(lastLocationTime)
-        print("⌚ 🧭 MOTION FALLBACK STARTED: GPS lost for \(Int(gap))s, seed speed=\(String(format: "%.1f", motionFallbackSpeed * 3.6))km/h")
+        print("⌚ 🧭 MOTION FALLBACK STARTED: GPS lost for \(Int(gap))s, seed=\(String(format: "%.1f", seedSpeed * 3.6))km/h @ \(Int(courseDeg))°")
     }
 
     private func endMotionFallback(reason: String) {
@@ -1503,6 +1572,8 @@ class WorkoutSession: NSObject, ObservableObject {
         isUsingMotionFallback = false
         motionFallbackSpeed = 0.0
         motionFallbackDistanceAdded = 0.0
+        motionVelX = 0.0; motionVelY = 0.0
+        accelBiasX = 0.0; accelBiasY = 0.0
         lastMotionFallbackTick = nil
         lastAnchorlessFallbackTime = nil
     }
