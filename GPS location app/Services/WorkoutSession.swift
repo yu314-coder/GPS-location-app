@@ -129,10 +129,33 @@ class WorkoutSession: ObservableObject {
     private var lastRealLocationTime: Date = .distantPast
     private var lastEstimatedFallbackTick: Date?
     private var estimatedFallbackSpeed: Double = 0.0
+    private var estimatedFallbackDistanceAdded: Double = 0.0
     private let ESTIMATED_LOCATION_GAP_THRESHOLD: TimeInterval = 5.0
     private let ESTIMATED_LOCATION_TICK_INTERVAL: TimeInterval = 1.0
     private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
     private let ESTIMATED_LOCATION_VERTICAL_ACCURACY: Double = 250.0
+
+    // MARK: - Forced velocity (inertial dead reckoning) — mirrors the watch implementation
+    /// UI toggle: force velocity/acceleration dead reckoning and ignore GPS for distance.
+    @Published var forceMotionFallback = false
+    /// Live status for the UI, e.g. "DR FORCED 62km/h +410m".
+    @Published var motionFallbackStatus = "GPS OK"
+    // Signed WORLD-frame velocity vector (north/east). Integrating a VECTOR (not the
+    // magnitude of acceleration) is what makes deceleration subtract and transient bumps
+    // cancel — integrating |accel| can only ever increase speed and diverges.
+    private var motionVelNorth: Double = 0.0
+    private var motionVelEast: Double = 0.0
+    private var accelBiasNorth: Double = 0.0
+    private var accelBiasEast: Double = 0.0
+    private var prevResidualNorth: Double = 0.0
+    private var prevResidualEast: Double = 0.0
+    private var worldAccelNorth: Double = 0.0
+    private var worldAccelEast: Double = 0.0
+    private var motionHeadingDegrees: Double = 0.0
+    private let MOTION_VEL_LEAK: Double = 0.9998   // per-second leak (drift backstop)
+    private let MOTION_BIAS_RATE: Double = 0.01    // bias learning rate (quiet periods only)
+    private let MOTION_BIAS_GATE: Double = 0.3     // m/s²: above this = REAL accel → freeze bias
+    private let MOTION_ACCEL_DEADBAND: Double = 0.08
 
     private var healthKitExportType: HKWorkoutActivityType {
         let preference = UserDefaults.standard.string(forKey: "healthKitExportType") ?? "auto"
@@ -605,6 +628,14 @@ class WorkoutSession: ObservableObject {
         isUsingEstimatedLocationFallback = false
         lastEstimatedFallbackTick = nil
         estimatedFallbackSpeed = 0.0
+        estimatedFallbackDistanceAdded = 0.0
+        forceMotionFallback = false          // manual velocity override always starts OFF
+        motionFallbackStatus = "GPS OK"
+        resetInertialState(seedSpeed: 0, courseDegrees: 0)
+        // Feed the inertial integrator at the device-motion sample rate.
+        locationManager.onWorldAccelSample = { [weak self] north, east, dt in
+            self?.integrateWorldAccelSample(north: north, east: east, dt: dt)
+        }
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
 
         print("✅ Flight initialized at: \(startDate)")
@@ -1299,6 +1330,41 @@ class WorkoutSession: ObservableObject {
         return totalDistance
     }
 
+    /// Integrate the world-frame acceleration VECTOR into a velocity VECTOR at the sensor
+    /// rate. Called from LocationManager.onWorldAccelSample. Signed integration means
+    /// braking subtracts and bumps cancel; a gated bias estimator bounds drift (it learns
+    /// ONLY while there is no real acceleration, so it never absorbs genuine motion).
+    private func integrateWorldAccelSample(north: Double, east: Double, dt: TimeInterval) {
+        guard isActive, !isPaused else { return }
+        // Light low-pass to damp sensor jitter while preserving sustained acceleration.
+        worldAccelNorth = worldAccelNorth * 0.7 + north * 0.3
+        worldAccelEast = worldAccelEast * 0.7 + east * 0.3
+        guard isUsingEstimatedLocationFallback || forceMotionFallback else { return }
+
+        let rN = worldAccelNorth - accelBiasNorth
+        let rE = worldAccelEast - accelBiasEast
+        if sqrt(rN * rN + rE * rE) < MOTION_BIAS_GATE {
+            accelBiasNorth += rN * MOTION_BIAS_RATE
+            accelBiasEast += rE * MOTION_BIAS_RATE
+        }
+        // Trapezoidal integration (average of consecutive samples).
+        let iN = worldAccelNorth - accelBiasNorth
+        let iE = worldAccelEast - accelBiasEast
+        motionVelNorth += ((prevResidualNorth + iN) / 2.0) * dt
+        motionVelEast += ((prevResidualEast + iE) / 2.0) * dt
+        prevResidualNorth = iN
+        prevResidualEast = iE
+    }
+
+    private func resetInertialState(seedSpeed: Double, courseDegrees: Double) {
+        let c = courseDegrees * .pi / 180
+        motionVelNorth = seedSpeed * cos(c)
+        motionVelEast = seedSpeed * sin(c)
+        motionHeadingDegrees = courseDegrees
+        accelBiasNorth = 0; accelBiasEast = 0
+        prevResidualNorth = 0; prevResidualEast = 0
+    }
+
     private func startEstimatedFallbackTimer() {
         stopEstimatedFallbackTimer()
         estimatedFallbackTimer = Timer.scheduledTimer(withTimeInterval: ESTIMATED_LOCATION_TICK_INTERVAL, repeats: true) { [weak self] _ in
@@ -1318,14 +1384,23 @@ class WorkoutSession: ObservableObject {
 
     private func checkEstimatedLocationFallback() {
         guard isActive && !isPaused else { return }
-        guard let anchor = flight.locations.last(where: { !$0.isEstimated && $0.isValid }) else { return }
+        // High motion sample rate only while forced (thermal-friendly otherwise).
+        locationManager.setHighRateMotion(forceMotionFallback)
 
+        let anchor = flight.locations.last(where: { !$0.isEstimated && $0.isValid })
         let timeSinceRealFix = Date().timeIntervalSince(lastRealLocationTime)
-        guard timeSinceRealFix >= ESTIMATED_LOCATION_GAP_THRESHOLD else {
-            if isUsingEstimatedLocationFallback {
-                endEstimatedLocationFallback(reason: "GPS returned")
+
+        // MANUAL OVERRIDE: when the user forces velocity mode, dead reckoning runs
+        // UNCONDITIONALLY — it does not wait for a GPS gap. GPS is ignored for distance
+        // while forced (see processNewLocation), so there is no double-counting.
+        if !forceMotionFallback {
+            guard anchor != nil else { return }
+            guard timeSinceRealFix >= ESTIMATED_LOCATION_GAP_THRESHOLD else {
+                if isUsingEstimatedLocationFallback {
+                    endEstimatedLocationFallback(reason: "GPS returned")
+                }
+                return
             }
-            return
         }
 
         if !isUsingEstimatedLocationFallback {
@@ -1337,36 +1412,64 @@ class WorkoutSession: ObservableObject {
         let dt = min(max(now.timeIntervalSince(previousTick), 0.5), 2.0)
         lastEstimatedFallbackTick = now
 
-        let headingDegrees = normalizedHeading(
-            locationManager.currentCompassHeading
-                ?? locationManager.currentMotionDirectionDegrees
-                ?? validCourse(anchor.course)
-                ?? 0.0
-        )
-        let forwardAcceleration = locationManager.currentMotionForwardAcceleration ?? 0.0
-        let maxFallbackSpeed = estimatedFallbackMaxSpeed()
-        let nextSpeed: Double
-        if abs(forwardAcceleration) >= 0.05 {
-            nextSpeed = min(max(estimatedFallbackSpeed + forwardAcceleration * dt, 0.0), maxFallbackSpeed)
-        } else {
-            nextSpeed = min(max(estimatedFallbackSpeed * 0.98, 0.0), maxFallbackSpeed)
+        // The velocity VECTOR is integrated at sensor rate in integrateWorldAccelSample.
+        // Here we only apply the leak, the settle-to-rest check, and convert to distance.
+        let leak = pow(MOTION_VEL_LEAK, dt)
+        motionVelNorth *= leak
+        motionVelEast *= leak
+        let rN = worldAccelNorth - accelBiasNorth
+        let rE = worldAccelEast - accelBiasEast
+        let accelMag = sqrt(rN * rN + rE * rE)
+        let curSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
+        // Settle-to-rest ONLY when already slow AND not accelerating — a smooth
+        // high-speed cruise also has ~zero acceleration and must never be killed.
+        if accelMag < MOTION_ACCEL_DEADBAND && curSpeed < 1.5 {
+            motionVelNorth *= 0.6
+            motionVelEast *= 0.6
         }
 
-        let distance = min(((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt, maxFallbackSpeed * dt)
+        // NO speed cap — speed is simply the magnitude of the velocity vector.
+        let nextSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
+        if nextSpeed > 0.1 {
+            motionHeadingDegrees = normalizedHeading(atan2(motionVelEast, motionVelNorth) * 180 / .pi)
+        }
+        let headingDegrees = nextSpeed > 0.1
+            ? normalizedHeading(motionHeadingDegrees)
+            : normalizedHeading(
+                locationManager.currentCompassHeading
+                    ?? locationManager.currentMotionDirectionDegrees
+                    ?? anchor.flatMap { validCourse($0.course) }
+                    ?? 0.0
+              )
+
+        let distance = ((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt
         estimatedFallbackSpeed = nextSpeed
+        motionFallbackStatus = String(format: "DR%@ %.0fkm/h +%.0fm",
+                                      forceMotionFallback ? " FORCED" : "",
+                                      nextSpeed * 3.6,
+                                      estimatedFallbackDistanceAdded)
 
         guard distance >= 0.25 else { return }
         appendEstimatedLocation(distanceMeters: distance, headingDegrees: headingDegrees, timestamp: now)
+        estimatedFallbackDistanceAdded += distance
     }
 
-    private func startEstimatedLocationFallback(anchor: FlightLocation, gapSeconds: TimeInterval) {
+    private func startEstimatedLocationFallback(anchor: FlightLocation?, gapSeconds: TimeInterval) {
         isUsingEstimatedLocationFallback = true
         lastEstimatedFallbackTick = nil
-        estimatedFallbackSpeed = min(
-            max(currentMetrics.smoothedSpeed > 0 ? currentMetrics.smoothedSpeed : anchor.speed, 0.0),
-            estimatedFallbackMaxSpeed()
-        )
-        print("📍 Estimated-location fallback started after \(String(format: "%.1f", gapSeconds))s without GPS")
+        let anchorSpeed = anchor.map { max($0.speed, 0.0) } ?? 0.0
+        // No speed cap — seed from the best known speed.
+        let seed = max(currentMetrics.smoothedSpeed > 0 ? currentMetrics.smoothedSpeed : anchorSpeed, 0.0)
+        estimatedFallbackSpeed = seed
+        estimatedFallbackDistanceAdded = 0.0
+        // Seed the velocity VECTOR along the last known course so a moving vehicle keeps
+        // both its speed and its heading through the gap.
+        let course = locationManager.currentCompassHeading
+            ?? anchor.flatMap { validCourse($0.course) }
+            ?? locationManager.currentMotionDirectionDegrees
+            ?? 0.0
+        resetInertialState(seedSpeed: seed, courseDegrees: course)
+        print("📍 Estimated-location fallback started after \(String(format: "%.1f", gapSeconds))s without GPS (seed \(String(format: "%.1f", seed * 3.6))km/h @ \(Int(course))°)")
     }
 
     private func endEstimatedLocationFallback(reason: String) {
@@ -1375,6 +1478,9 @@ class WorkoutSession: ObservableObject {
         isUsingEstimatedLocationFallback = false
         lastEstimatedFallbackTick = nil
         estimatedFallbackSpeed = 0.0
+        estimatedFallbackDistanceAdded = 0.0
+        resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
+        motionFallbackStatus = "GPS OK"
     }
 
     private func reanchorAfterEstimatedFallback(with location: FlightLocation) {
@@ -1471,6 +1577,14 @@ class WorkoutSession: ObservableObject {
     }
 
     private func processNewLocation(_ location: FlightLocation) {
+        // FORCED VELOCITY MODE: the user has made velocity/acceleration dead reckoning the
+        // SOLE distance source from the workout UI. Ignore GPS fixes entirely so they
+        // can't double-count against the integrated motion distance. Turning the toggle
+        // off resumes normal GPS on the next fix (reanchorAfterEstimatedFallback).
+        if forceMotionFallback {
+            return
+        }
+
         // Accept every usable Core Location GPS fix on iPhone/iPad. Distance is
         // calculated from the recorded track without speed, jump, acceleration,
         // stale-time, or accuracy caps.

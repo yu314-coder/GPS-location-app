@@ -604,6 +604,33 @@ struct LiveSessionView: View {
                             .disabled(workoutSession.isPaused || !workoutSession.isActive)
                         }
 
+                        // Force Velocity toggle: track distance purely from accelerometer
+                        // + velocity dead reckoning, ignoring GPS. Useful in known-bad-GPS
+                        // areas. Turning it off hands back to GPS on the next fix.
+                        Button(action: {
+                            workoutSession.forceMotionFallback.toggle()
+                            print("🔘 Force Velocity toggled -> \(workoutSession.forceMotionFallback ? "ON" : "OFF")")
+                        }) {
+                            HStack {
+                                Image(systemName: workoutSession.forceMotionFallback ? "speedometer" : "location.fill")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(workoutSession.forceMotionFallback ? "Velocity Mode: ON" : "Force Velocity")
+                                        .fontWeight(.semibold)
+                                    if workoutSession.forceMotionFallback {
+                                        Text(workoutSession.motionFallbackStatus)
+                                            .font(.caption2)
+                                            .opacity(0.9)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(workoutSession.forceMotionFallback ? Color.purple : Color.gray.opacity(0.5))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
+                        .disabled(!workoutSession.isActive)
+
                         // Stop tracking
                         Button(action: {
                             showStopConfirmation = true

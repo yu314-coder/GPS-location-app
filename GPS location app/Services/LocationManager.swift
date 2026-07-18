@@ -648,6 +648,10 @@ class LocationManager: NSObject, ObservableObject {
             self.currentMotionForwardAcceleration = projectedAcceleration.forward
             self.currentMotionLateralAcceleration = projectedAcceleration.lateral
             self.currentMotionDirectionDegrees = movementDirection
+            // Feed the inertial dead-reckoning integrator at the sensor rate.
+            self.onWorldAccelSample?(referenceAcceleration.north,
+                                     referenceAcceleration.east,
+                                     self.motionManager.deviceMotionUpdateInterval)
             self.onMotionAccelerationUpdate?(
                 acceleration,
                 accelerationX,
@@ -682,14 +686,42 @@ class LocationManager: NSObject, ObservableObject {
     }
 
     private func referenceFrameAcceleration(from motion: CMDeviceMotion) -> (north: Double, east: Double, up: Double) {
-        let acceleration = motion.userAcceleration
-        let matrix = motion.attitude.rotationMatrix
+        let a = motion.userAcceleration
+        let g = motion.gravity
+        let m = motion.attitude.rotationMatrix
 
         // Convert gravity-free device acceleration into the motion reference frame.
-        let north = (acceleration.x * matrix.m11 + acceleration.y * matrix.m21 + acceleration.z * matrix.m31) * standardGravity
-        let east = (acceleration.x * matrix.m12 + acceleration.y * matrix.m22 + acceleration.z * matrix.m32) * standardGravity
-        let up = (acceleration.x * matrix.m13 + acceleration.y * matrix.m23 + acceleration.z * matrix.m33) * standardGravity
-        return (north, east, up)
+        // Apple's rotation-matrix convention (R·v vs Rᵀ·v) is ambiguous, and guessing
+        // wrong leaks VERTICAL motion (e.g. an elevator) into the horizontal components.
+        // Resolve it at runtime: pick whichever orientation makes GRAVITY vertical —
+        // that is by definition the true device→world rotation.
+        let gUpCol = g.x * m.m13 + g.y * m.m23 + g.z * m.m33
+        let gUpRow = g.x * m.m31 + g.y * m.m32 + g.z * m.m33
+        if abs(gUpCol) >= abs(gUpRow) {
+            return ((a.x * m.m11 + a.y * m.m21 + a.z * m.m31) * standardGravity,
+                    (a.x * m.m12 + a.y * m.m22 + a.z * m.m32) * standardGravity,
+                    gUpCol * standardGravity)
+        } else {
+            return ((a.x * m.m11 + a.y * m.m12 + a.z * m.m13) * standardGravity,
+                    (a.x * m.m21 + a.y * m.m22 + a.z * m.m23) * standardGravity,
+                    gUpRow * standardGravity)
+        }
+    }
+
+    /// Per-sample world-frame horizontal acceleration (north, east, dt) for inertial
+    /// dead reckoning. Fires at the device-motion rate so velocity can be integrated
+    /// properly rather than sampled once per second.
+    var onWorldAccelSample: ((Double, Double, TimeInterval) -> Void)?
+
+    /// Raise the device-motion rate for accurate velocity integration while the user has
+    /// forced velocity mode on; drop back to the thermal-friendly rate otherwise.
+    func setHighRateMotion(_ enabled: Bool) {
+        guard motionManager.isDeviceMotionActive else { return }
+        let target = enabled ? 0.02 : 0.5
+        if abs(motionManager.deviceMotionUpdateInterval - target) > 0.001 {
+            motionManager.deviceMotionUpdateInterval = target
+            print("📈 Device-motion rate → \(enabled ? "50Hz (forced velocity)" : "2Hz (normal)")")
+        }
     }
 
     private func projectAcceleration(
