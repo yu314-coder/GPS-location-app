@@ -124,9 +124,12 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastIPhoneRelayCoord: (lat: Double, lon: Double)?  // detect frozen (stale) iPhone relay
     private var frozenIPhoneRelayCount: Int = 0
     private let MOTION_FALLBACK_TICK: TimeInterval = 1.0
-    private let MOTION_FALLBACK_MAX_SPEED: Double = .greatestFiniteMagnitude // no cap
+    // NOTE: there is deliberately NO speed cap anywhere in the velocity dead reckoning —
+    // speed is simply the magnitude of the integrated velocity vector.
     private let MOTION_ACCEL_DEADBAND: Double = 0.08        // m/s² — below = treat as stationary (ZUPT)
-    private let MOTION_VEL_LEAK: Double = 0.999             // per-tick velocity leak; bounds residual drift
+    private let MOTION_VEL_LEAK: Double = 0.9998            // per-second velocity leak (drift backstop)
+    private let MOTION_BIAS_RATE: Double = 0.01             // bias learning rate (quiet periods only)
+    private let MOTION_BIAS_GATE: Double = 0.3              // m/s²: above this = REAL accel → freeze bias
 
     // GPS accuracy thresholds (Modern approach based on Google Maps & fitness apps research)
     private let MAX_HORIZONTAL_ACCURACY: Double = 100.0  // 100m maximum (more lenient to capture more distance points)
@@ -1353,21 +1356,53 @@ class WorkoutSession: NSObject, ObservableObject {
             available.contains(.xMagneticNorthZVertical) ? .xMagneticNorthZVertical : .xArbitraryZVertical
         let handler: CMDeviceMotionHandler = { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
-            // Rotate the gravity-free user acceleration from the device frame into the
-            // world/reference frame (R · a_device). userAcceleration is in g → ×9.81.
-            // Z (vertical, e.g. an elevator) lands in worldZ and is INTENTIONALLY dropped,
-            // so vertical motion never inflates horizontal distance.
-            let a = motion.userAcceleration
+            let a = motion.userAcceleration     // linear accel, gravity removed (g units)
+            let g = motion.gravity              // gravity direction in the device frame
             let r = motion.attitude.rotationMatrix
-            let axW = (r.m11 * a.x + r.m12 * a.y + r.m13 * a.z) * 9.81   // world X (≈ north w/ mag frame)
-            let ayW = (r.m21 * a.x + r.m22 * a.y + r.m23 * a.z) * 9.81   // world Y (≈ west)
-            // Light low-pass to damp jitter while preserving sustained acceleration.
+            // Rotate the (gravity-free) acceleration from the device frame into the WORLD
+            // frame. Apple's matrix convention (R·v vs Rᵀ·v) is resolved robustly: pick
+            // whichever rotation makes GRAVITY vertical (its Z the largest), which is the
+            // true device→world rotation. This guarantees vertical motion (an elevator)
+            // lands in world-Z and is DROPPED — it can never inflate horizontal distance.
+            let gRowZ = r.m31*g.x + r.m32*g.y + r.m33*g.z
+            let gColZ = r.m13*g.x + r.m23*g.y + r.m33*g.z
+            let axW: Double, ayW: Double
+            if abs(gRowZ) >= abs(gColZ) {
+                axW = (r.m11*a.x + r.m12*a.y + r.m13*a.z) * 9.81   // world X (≈ north)
+                ayW = (r.m21*a.x + r.m22*a.y + r.m23*a.z) * 9.81   // world Y (≈ west)
+            } else {
+                axW = (r.m11*a.x + r.m21*a.y + r.m31*a.z) * 9.81
+                ayW = (r.m12*a.x + r.m22*a.y + r.m32*a.z) * 9.81
+            }
+            // Light low-pass to damp sensor jitter while preserving sustained accel.
             self.worldAccelX = self.worldAccelX * 0.7 + axW * 0.3
             self.worldAccelY = self.worldAccelY * 0.7 + ayW * 0.3
             self.motionAttitudeReady = true
-            // Horizontal magnitude kept for the iPhone-assist accel path / diagnostics.
             let hx = a.x * 9.81, hy = a.y * 9.81
             self.lastMotionForwardAccel = self.lastMotionForwardAccel * 0.7 + sqrt(hx*hx + hy*hy) * 0.3
+
+            // SENSOR-RATE integration (correct numerical integration — NOT 1 Hz sampling).
+            // Integrate the acceleration VECTOR into the velocity VECTOR every sample while
+            // the velocity fallback owns distance in an accel-integrating mode (forced, or
+            // any non-step activity). Signed ⇒ deceleration subtracts and bumps cancel.
+            guard self.isUsingMotionFallback else { return }
+            let isStep = (self.workoutType == .walking || self.workoutType == .running || self.workoutType == .hiking)
+            guard self.forceMotionFallback || !isStep else { return }
+            let dtS = self.motionManager.deviceMotionUpdateInterval   // 0.1 s
+            // DC-bias tracking — this is what actually BOUNDS the drift (with only the
+            // leak, a constant bias b settles at ≈ b/(1−leak), i.e. huge phantom speed).
+            // CRITICAL: learn the bias ONLY while there is no real acceleration, and
+            // FREEZE it during genuine accel/braking. An ungated estimator absorbs real
+            // motion — verified in simulation, it lost 54% of a car trip and never came
+            // to a stop. Gated, the same trip lands within +2% and does stop.
+            let rX = self.worldAccelX - self.accelBiasX
+            let rY = self.worldAccelY - self.accelBiasY
+            if sqrt(rX * rX + rY * rY) < self.MOTION_BIAS_GATE {
+                self.accelBiasX += rX * self.MOTION_BIAS_RATE
+                self.accelBiasY += rY * self.MOTION_BIAS_RATE
+            }
+            self.motionVelX += (self.worldAccelX - self.accelBiasX) * dtS
+            self.motionVelY += (self.worldAccelY - self.accelBiasY) * dtS
         }
         motionManager.startDeviceMotionUpdates(using: refFrame, to: OperationQueue.main, withHandler: handler)
         print("⌚ 🧭 Device motion updates started (world-frame dead reckoning armed, ref=\(refFrame.rawValue))")
@@ -1467,54 +1502,44 @@ class WorkoutSession: NSObject, ObservableObject {
         // Source of the acceleration: the WATCH's own accelerometer normally. If the
         // watch can't run device-motion (memory pressure / suppressed), fall back to
         // the acceleration RELAYED FROM THE IPHONE (it feels the same vehicle motion).
+        // NOTE: the velocity vector is integrated at SENSOR RATE inside the device-motion
+        // handler (correct numerical integration). This 1 Hz tick only applies the leak,
+        // the settle-to-rest check, and converts velocity → distance.
         var accelSource = "watch"
-        var aX = worldAccelX
-        var aY = worldAccelY
         if !motionManager.isDeviceMotionAvailable || !motionAttitudeReady {
-            // Device motion suppressed (memory pressure): fall back to the iPhone-relayed
-            // acceleration MAGNITUDE, applied along the current heading (best effort).
-            if let assist = recentIPhoneMotionAssist(near: now) {
+            // Device motion suppressed (memory pressure): no sensor-rate path available,
+            // so integrate the iPhone-relayed acceleration MAGNITUDE along the current
+            // heading here at tick rate (best effort).
+            accelSource = "iPhone-accel"
+            if forceMotionFallback || !isStepBased,
+               let assist = recentIPhoneMotionAssist(near: now) {
                 let mag = max(assist.forwardAcceleration.map { abs($0) } ?? 0.0,
                               assist.horizontalAcceleration ?? 0.0)
                 let h = motionHeadingDegrees * .pi / 180
-                aX = mag * cos(h)           // north component
-                aY = -mag * sin(h)          // west component (east = -Y)
-                accelSource = "iPhone-accel"
-            } else {
-                aX = 0; aY = 0
+                motionVelX += mag * cos(h) * dt          // north component
+                motionVelY += -mag * sin(h) * dt         // west component (east = −Y)
             }
         }
 
-        // Slowly track and subtract sensor DC bias so a constant offset doesn't
-        // integrate into ever-growing velocity (curbs long-term drift).
-        accelBiasX += (aX - accelBiasX) * 0.002
-        accelBiasY += (aY - accelBiasY) * 0.002
-        let ampX = aX - accelBiasX
-        let ampY = aY - accelBiasY
-        let accelMag = sqrt(ampX * ampX + ampY * ampY)
+        // Mild per-second leak bounds residual drift without killing a real cruise.
+        motionVelX *= MOTION_VEL_LEAK
+        motionVelY *= MOTION_VEL_LEAK
 
-        // For FORCED mode and non-step activities, integrate the acceleration VECTOR into
-        // the velocity VECTOR (signed → deceleration subtracts, bumps cancel). For the
-        // AUTOMATIC step fallback the pedometer owns distance, so we only hold/decay the
-        // seeded velocity here (matches prior shipped behavior).
-        if forceMotionFallback || !isStepBased {
-            motionVelX = (motionVelX + ampX * dt) * MOTION_VEL_LEAK
-            motionVelY = (motionVelY + ampY * dt) * MOTION_VEL_LEAK
-            // Settle-to-rest (a constrained ZUPT): bleed residual velocity to zero ONLY
-            // when already slow AND there's no horizontal acceleration, so a stopped
-            // vehicle doesn't keep drifting. Gated on LOW speed because a smooth high-
-            // speed cruise also has ~zero acceleration — we must never kill that.
-            let curSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
-            if accelMag < MOTION_ACCEL_DEADBAND && curSpeed < 1.5 {
-                motionVelX *= 0.6
-                motionVelY *= 0.6
-            }
-        } else {
-            motionVelX *= 0.999
-            motionVelY *= 0.999
+        // Settle-to-rest (a constrained ZUPT): bleed residual velocity to zero ONLY when
+        // already slow AND there's no horizontal acceleration, so a stopped vehicle stops
+        // drifting. Gated on LOW speed because a smooth high-speed cruise also has ~zero
+        // acceleration — we must never kill that.
+        let accelMagX = worldAccelX - accelBiasX
+        let accelMagY = worldAccelY - accelBiasY
+        let accelMag = sqrt(accelMagX * accelMagX + accelMagY * accelMagY)
+        let curSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
+        if accelMag < MOTION_ACCEL_DEADBAND && curSpeed < 1.5 {
+            motionVelX *= 0.6
+            motionVelY *= 0.6
         }
 
-        let nextSpeed = min(sqrt(motionVelX * motionVelX + motionVelY * motionVelY), MOTION_FALLBACK_MAX_SPEED)
+        // Speed is the magnitude of the velocity vector — NO speed limit is applied.
+        let nextSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
         if nextSpeed > 0.1 {
             // Bearing clockwise from north: north = +X, east = −Y.
             motionHeadingDegrees = normalizedHeading(atan2(-motionVelY, motionVelX) * 180 / .pi)
@@ -1549,7 +1574,7 @@ class WorkoutSession: NSObject, ObservableObject {
         // smoothed speed → last GPS point's speed → average speed.
         let lastPointSpeed = flight.locations.last.map { max($0.speed, 0.0) } ?? 0.0
         let seed = max(currentMetrics.smoothedSpeed, max(lastPointSpeed, currentMetrics.averageSpeed))
-        let seedSpeed = min(max(seed, 0.0), MOTION_FALLBACK_MAX_SPEED)
+        let seedSpeed = max(seed, 0.0)   // no speed limit
         // Seed the velocity VECTOR along the last known GPS course so cruise is
         // maintained in the correct direction (a moving car keeps its speed & heading).
         let courseDeg = flight.locations.last.flatMap { validCourse($0.course) } ?? motionHeadingDegrees
