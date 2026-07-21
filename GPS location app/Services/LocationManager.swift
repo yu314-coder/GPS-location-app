@@ -41,6 +41,15 @@ class LocationManager: NSObject, ObservableObject {
     // Pressure tracking
     private var latestPressure: Double?
     private var lastRelativeAltitudeSample: (altitude: Double, timestamp: Date)?
+    /// Monotonic timestamp of the previous device-motion sample, used to derive the true
+    /// integration interval for inertial dead reckoning.
+    private var lastMotionSampleTimestamp: TimeInterval?
+    /// Local magnetic declination (true − magnetic), learned from CLHeading. Used to rotate
+    /// Core Motion's magnetic-north-referenced acceleration into the true-north frame.
+    private(set) var magneticDeclinationDegrees: Double = 0
+    /// False when Core Motion could only supply `.xArbitraryZVertical`, i.e. the world X axis
+    /// is not north and integrated direction is meaningless in absolute terms.
+    private(set) var motionReferenceFrameIsAbsolute: Bool = true
     private let standardGravity = 9.80665
 
     // GPS reconnection logic
@@ -589,7 +598,17 @@ class LocationManager: NSObject, ObservableObject {
         }
 
         motionManager.deviceMotionUpdateInterval = 0.5
+        lastMotionSampleTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
+
+        // Whether the attitude frame is geographically anchored. `.xArbitraryZVertical` has a
+        // vertical Z but an X axis pointing in an UNKNOWN direction, so world-frame
+        // acceleration from it carries no absolute bearing information — distance is still
+        // valid, direction is not. Consumers must not treat it as north.
+        motionReferenceFrameIsAbsolute = CMMotionManager.availableAttitudeReferenceFrames().contains(.xMagneticNorthZVertical)
+        if !motionReferenceFrameIsAbsolute {
+            print("⚠️ Magnetic-north attitude frame unavailable — dead-reckoned DIRECTION will fall back to compass/GPS course")
+        }
 
         let referenceFrame: CMAttitudeReferenceFrame = CMMotionManager.availableAttitudeReferenceFrames().contains(.xMagneticNorthZVertical)
             ? .xMagneticNorthZVertical
@@ -613,7 +632,7 @@ class LocationManager: NSObject, ObservableObject {
             let accelerationX = userAcceleration.x * self.standardGravity
             let accelerationY = userAcceleration.y * self.standardGravity
             let accelerationZ = userAcceleration.z * self.standardGravity
-            let referenceAcceleration = self.referenceFrameAcceleration(from: motion)
+            let referenceAcceleration = self.trueNorthAcceleration(from: motion)
             let horizontalAcceleration = sqrt(
                 referenceAcceleration.north * referenceAcceleration.north +
                 referenceAcceleration.east * referenceAcceleration.east
@@ -648,10 +667,26 @@ class LocationManager: NSObject, ObservableObject {
             self.currentMotionForwardAcceleration = projectedAcceleration.forward
             self.currentMotionLateralAcceleration = projectedAcceleration.lateral
             self.currentMotionDirectionDegrees = movementDirection
-            // Feed the inertial dead-reckoning integrator at the sensor rate.
-            self.onWorldAccelSample?(referenceAcceleration.north,
-                                     referenceAcceleration.east,
-                                     self.motionManager.deviceMotionUpdateInterval)
+            // Feed the inertial dead-reckoning integrator at the sensor rate. dt MUST come
+            // from the sample timestamps, not from deviceMotionUpdateInterval: that property
+            // is the REQUESTED rate, delivery jitters around it, and setHighRateMotion flips
+            // it between 2Hz and 50Hz mid-workout. Integrating with a nominal dt injects a
+            // direct, unbounded error into velocity and therefore distance.
+            let sampleDt: TimeInterval
+            if let previous = self.lastMotionSampleTimestamp {
+                // Clamp against dropped/duplicated samples and scheduler stalls.
+                sampleDt = min(max(motion.timestamp - previous, 0.0), 1.0)
+            } else {
+                sampleDt = 0.0
+            }
+            self.lastMotionSampleTimestamp = motion.timestamp
+            if sampleDt > 0 {
+                self.onWorldAccelSample?(referenceAcceleration.north,
+                                         referenceAcceleration.east,
+                                         referenceAcceleration.up,
+                                         rotationMagnitude,
+                                         sampleDt)
+            }
             self.onMotionAccelerationUpdate?(
                 acceleration,
                 accelerationX,
@@ -670,6 +705,7 @@ class LocationManager: NSObject, ObservableObject {
 
     private func stopMotionTracking() {
         motionManager.stopDeviceMotionUpdates()
+        lastMotionSampleTimestamp = nil
         DispatchQueue.main.async { [weak self] in
             self?.currentMotionAcceleration = nil
             self?.currentPitch = nil
@@ -685,6 +721,22 @@ class LocationManager: NSObject, ObservableObject {
         print("📈 Stopped device-motion acceleration recording")
     }
 
+    /// World-frame acceleration rotated from Core Motion's MAGNETIC-north reference frame
+    /// into the TRUE-north frame that every other part of the app (GPS course, saved
+    /// coordinates, the map) uses.
+    private func trueNorthAcceleration(from motion: CMDeviceMotion) -> (north: Double, east: Double, up: Double) {
+        let w = referenceFrameAcceleration(from: motion)
+        // A declination correction only means anything if the frame is anchored to magnetic
+        // north in the first place.
+        guard motionReferenceFrameIsAbsolute, magneticDeclinationDegrees != 0 else { return w }
+        let d = magneticDeclinationDegrees * .pi / 180
+        let c = cos(d), s = sin(d)
+        // Rotate the horizontal vector by +declination (true bearing = magnetic + declination).
+        return (north: w.north * c - w.east * s,
+                east:  w.north * s + w.east * c,
+                up:    w.up)
+    }
+
     private func referenceFrameAcceleration(from motion: CMDeviceMotion) -> (north: Double, east: Double, up: Double) {
         let a = motion.userAcceleration
         let g = motion.gravity
@@ -697,21 +749,37 @@ class LocationManager: NSObject, ObservableObject {
         // that is by definition the true device→world rotation.
         let gUpCol = g.x * m.m13 + g.y * m.m23 + g.z * m.m33
         let gUpRow = g.x * m.m31 + g.y * m.m32 + g.z * m.m33
+
+        // Core Motion's reference frame is NORTH-WEST-UP, not north-EAST-up: with X toward
+        // (magnetic) north and Z up, right-handedness forces Y = Z × X = WEST. The second
+        // world axis must therefore be NEGATED to obtain east. Without this every
+        // dead-reckoned heading comes out mirrored about the north/south axis (a right turn
+        // is drawn as a left turn). The watch implementation already accounts for this.
+        // NOTE: `up` is the VERTICAL USER ACCELERATION, obtained by projecting userAcceleration
+        // onto the world up axis with the same rotation used for the horizontal components.
+        // It is not the gravity projection (which is a near-constant −9.81 and carries no
+        // information about movement).
+        let north: Double
+        let west: Double
+        let up: Double
         if abs(gUpCol) >= abs(gUpRow) {
-            return ((a.x * m.m11 + a.y * m.m21 + a.z * m.m31) * standardGravity,
-                    (a.x * m.m12 + a.y * m.m22 + a.z * m.m32) * standardGravity,
-                    gUpCol * standardGravity)
+            north = (a.x * m.m11 + a.y * m.m21 + a.z * m.m31) * standardGravity
+            west  = (a.x * m.m12 + a.y * m.m22 + a.z * m.m32) * standardGravity
+            up    = (a.x * m.m13 + a.y * m.m23 + a.z * m.m33) * standardGravity
         } else {
-            return ((a.x * m.m11 + a.y * m.m12 + a.z * m.m13) * standardGravity,
-                    (a.x * m.m21 + a.y * m.m22 + a.z * m.m23) * standardGravity,
-                    gUpRow * standardGravity)
+            north = (a.x * m.m11 + a.y * m.m12 + a.z * m.m13) * standardGravity
+            west  = (a.x * m.m21 + a.y * m.m22 + a.z * m.m23) * standardGravity
+            up    = (a.x * m.m31 + a.y * m.m32 + a.z * m.m33) * standardGravity
         }
+        return (north, -west, up)
     }
 
     /// Per-sample world-frame horizontal acceleration (north, east, dt) for inertial
     /// dead reckoning. Fires at the device-motion rate so velocity can be integrated
     /// properly rather than sampled once per second.
-    var onWorldAccelSample: ((Double, Double, TimeInterval) -> Void)?
+    /// (north, east, up, rotationRateMagnitude, dt) — up and rotation rate feed the ZUPT
+    /// stationarity detector.
+    var onWorldAccelSample: ((Double, Double, Double, Double, TimeInterval) -> Void)?
 
     /// Raise the device-motion rate for accurate velocity integration while the user has
     /// forced velocity mode on; drop back to the thermal-friendly rate otherwise.
@@ -821,6 +889,18 @@ extension LocationManager: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
         guard heading >= 0 else { return }
+
+        // Core Motion's attitude reference frame is MAGNETIC north, but GPS course, the map,
+        // and every saved coordinate are TRUE north. CLHeading reports both, so their
+        // difference is the local magnetic declination — the only place we can obtain it
+        // without shipping a world magnetic model. Without this correction the entire
+        // dead-reckoned route is rotated by up to ~15° depending on location.
+        if newHeading.trueHeading >= 0 && newHeading.magneticHeading >= 0 {
+            var d = newHeading.trueHeading - newHeading.magneticHeading
+            if d > 180 { d -= 360 } else if d < -180 { d += 360 }
+            // Declination is a smooth geographic field; reject nonsense from a bad calibration.
+            if abs(d) <= 45 { magneticDeclinationDegrees = d }
+        }
 
         currentCompassHeading = heading
         onCompassHeadingUpdate?(heading, Date())

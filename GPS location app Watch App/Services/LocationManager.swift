@@ -10,6 +10,9 @@ class LocationManager: NSObject, ObservableObject {
     private let altimeter = CMAltimeter()
 
     @Published var currentLocation: CLLocation?
+    /// Local magnetic declination (true − magnetic), learned from CLHeading. Used to rotate
+    /// Core Motion's magnetic-north-referenced acceleration into the true-north frame.
+    private(set) var magneticDeclinationDegrees: Double = 0
     @Published var authorizationStatus: CLAuthorizationStatus
     @Published var isTracking = false
     @Published var locations: [FlightLocation] = []
@@ -101,6 +104,12 @@ class LocationManager: NSObject, ObservableObject {
 
         isTracking = true
         locationManager.startUpdatingLocation()
+        // Heading is needed for magnetic declination: Core Motion's attitude reference frame
+        // is MAGNETIC north while every saved coordinate is TRUE north, and CLHeading is the
+        // only source that reports both so their difference can be measured.
+        if CLLocationManager.headingAvailable() {
+            locationManager.startUpdatingHeading()
+        }
 
         // Reset reconnection state when starting fresh
         reconnectionAttempts = 0
@@ -569,6 +578,14 @@ class LocationManager: NSObject, ObservableObject {
 
 // MARK: - CLLocationManagerDelegate
 extension LocationManager: CLLocationManagerDelegate {
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        guard newHeading.trueHeading >= 0, newHeading.magneticHeading >= 0 else { return }
+        var d = newHeading.trueHeading - newHeading.magneticHeading
+        if d > 180 { d -= 360 } else if d < -180 { d += 360 }
+        // Declination is a smooth geographic field; reject nonsense from a bad calibration.
+        if abs(d) <= 45 { magneticDeclinationDegrees = d }
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
 

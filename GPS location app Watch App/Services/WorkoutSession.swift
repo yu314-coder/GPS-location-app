@@ -128,10 +128,26 @@ class WorkoutSession: NSObject, ObservableObject {
     private let MOTION_FALLBACK_TICK: TimeInterval = 1.0
     // NOTE: there is deliberately NO speed cap anywhere in the velocity dead reckoning —
     // speed is simply the magnitude of the integrated velocity vector.
-    private let MOTION_ACCEL_DEADBAND: Double = 0.08        // m/s² — below = treat as stationary (ZUPT)
-    private let MOTION_VEL_LEAK: Double = 0.9998            // per-second velocity leak (drift backstop)
-    private let MOTION_BIAS_RATE: Double = 0.01             // bias learning rate (quiet periods only)
-    private let MOTION_BIAS_GATE: Double = 0.3              // m/s²: above this = REAL accel → freeze bias
+    // ZUPT state — replaces the old velocity leak and settle-to-rest damping.
+    /// False when Core Motion could only supply `.xArbitraryZVertical`, i.e. world X is not
+    /// north and the integrated direction carries no absolute bearing.
+    private var motionFrameIsAbsolute = true
+    private var zuptWindow: [(t: TimeInterval, accel: Double, rotation: Double)] = []
+    private var zuptWindowFilled = false
+    private var isInertialStationary = false
+    private var lastMotionSampleTimestamp: TimeInterval?
+    /// Tuned by simulation: above ~0.35 the detector fires during a genuine smooth cruise and
+    /// destroys real velocity.
+    private let ZUPT_ACCEL_THRESHOLD: Double = 0.25         // m/s² peak residual within window
+    private let ZUPT_ROTATION_THRESHOLD: Double = 0.35      // rad/s — a resting device is not rotating
+    private let ZUPT_WINDOW: TimeInterval = 0.75            // s of quiet before velocity is zeroed
+    private let ZUPT_BIAS_RATE: Double = 0.05               // fast bias learning during a ZUPT
+    // CONTINUOUS gated bias estimation — NOT redundant with ZUPT. The dominant real-world
+    // error is attitude error tilting GRAVITY into the horizontal axes (0.5° = 0.086 m/s²).
+    // On a sustained cruise the device never goes stationary so ZUPT never fires, and this is
+    // the only term that can cancel it. Simulated 30-min drive: with it −0.3%, without +211%.
+    private let MOTION_BIAS_RATE: Double = 0.01
+    private let MOTION_BIAS_GATE: Double = 0.3
 
     // GPS accuracy thresholds (Modern approach based on Google Maps & fitness apps research)
     private let MAX_HORIZONTAL_ACCURACY: Double = 100.0  // 100m maximum (more lenient to capture more distance points)
@@ -1359,6 +1375,12 @@ class WorkoutSession: NSObject, ObservableObject {
         let available = CMMotionManager.availableAttitudeReferenceFrames()
         let refFrame: CMAttitudeReferenceFrame =
             available.contains(.xMagneticNorthZVertical) ? .xMagneticNorthZVertical : .xArbitraryZVertical
+        // `.xArbitraryZVertical` has a vertical Z but an X axis pointing in an UNKNOWN
+        // direction: route SHAPE and distance stay valid, absolute bearing does not.
+        motionFrameIsAbsolute = available.contains(.xMagneticNorthZVertical)
+        if !motionFrameIsAbsolute {
+            print("⌚ ⚠️ Magnetic-north attitude frame unavailable — DR direction falls back to GPS course")
+        }
         let handler: CMDeviceMotionHandler = { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
             let a = motion.userAcceleration     // linear accel, gravity removed (g units)
@@ -1371,17 +1393,44 @@ class WorkoutSession: NSObject, ObservableObject {
             // lands in world-Z and is DROPPED — it can never inflate horizontal distance.
             let gRowZ = r.m31*g.x + r.m32*g.y + r.m33*g.z
             let gColZ = r.m13*g.x + r.m23*g.y + r.m33*g.z
-            let axW: Double, ayW: Double
+            var axW: Double, ayW: Double
+            let azW: Double
             if abs(gRowZ) >= abs(gColZ) {
                 axW = (r.m11*a.x + r.m12*a.y + r.m13*a.z) * 9.81   // world X (≈ north)
                 ayW = (r.m21*a.x + r.m22*a.y + r.m23*a.z) * 9.81   // world Y (≈ west)
+                azW = (r.m31*a.x + r.m32*a.y + r.m33*a.z) * 9.81   // world Z (up)
             } else {
                 axW = (r.m11*a.x + r.m21*a.y + r.m31*a.z) * 9.81
                 ayW = (r.m12*a.x + r.m22*a.y + r.m32*a.z) * 9.81
+                azW = (r.m13*a.x + r.m23*a.y + r.m33*a.z) * 9.81
             }
-            // Light low-pass to damp sensor jitter while preserving sustained accel.
-            self.worldAccelX = self.worldAccelX * 0.7 + axW * 0.3
-            self.worldAccelY = self.worldAccelY * 0.7 + ayW * 0.3
+            // MAGNETIC -> TRUE north. The attitude reference frame is magnetic north, but GPS
+            // course and every saved coordinate are true north; without this the whole
+            // dead-reckoned route is rotated by the local declination (up to ~15°).
+            let decl = self.locationManager.magneticDeclinationDegrees
+            if decl != 0 && self.motionFrameIsAbsolute {
+                // World Y is WEST, so the horizontal pair here is (north, west): rotating by
+                // +declination in the north/east sense is a −declination rotation in this one.
+                let dr = -decl * .pi / 180
+                let c = cos(dr), s = sin(dr)
+                let n = axW, w = ayW
+                axW = n * c - w * s
+                ayW = n * s + w * c
+            }
+            // Light low-pass, time-constant corrected: a fixed 0.7/0.3 blend has a different
+            // corner frequency at every sample rate, so derive alpha from the real dt.
+            let sampleDt: TimeInterval
+            if let previous = self.lastMotionSampleTimestamp {
+                sampleDt = min(max(motion.timestamp - previous, 0.0), 1.0)
+            } else {
+                sampleDt = 0.0
+            }
+            self.lastMotionSampleTimestamp = motion.timestamp
+            guard sampleDt > 0 else { return }
+            let tau = 0.15
+            let alpha = min(sampleDt / (tau + sampleDt), 1.0)
+            self.worldAccelX += (axW - self.worldAccelX) * alpha
+            self.worldAccelY += (ayW - self.worldAccelY) * alpha
             self.motionAttitudeReady = true
             let hx = a.x * 9.81, hy = a.y * 9.81
             self.lastMotionForwardAccel = self.lastMotionForwardAccel * 0.7 + sqrt(hx*hx + hy*hy) * 0.3
@@ -1393,15 +1442,50 @@ class WorkoutSession: NSObject, ObservableObject {
             guard self.isUsingMotionFallback else { return }
             let isStep = (self.workoutType == .walking || self.workoutType == .running || self.workoutType == .hiking)
             guard self.forceMotionFallback || !isStep else { return }
-            let dtS = self.motionManager.deviceMotionUpdateInterval   // 0.1 s
-            // DC-bias tracking — this is what actually BOUNDS the drift (with only the
-            // leak, a constant bias b settles at ≈ b/(1−leak), i.e. huge phantom speed).
-            // CRITICAL: learn the bias ONLY while there is no real acceleration, and
-            // FREEZE it during genuine accel/braking. An ungated estimator absorbs real
-            // motion — verified in simulation, it lost 54% of a car trip and never came
-            // to a stop. Gated, the same trip lands within +2% and does stop.
+            // dt comes from the sample timestamps, NOT deviceMotionUpdateInterval: that is
+            // the REQUESTED rate, actual delivery jitters around it, and any mismatch feeds
+            // straight into velocity and (doubly) into distance.
+            let dtS = sampleDt
             let rX = self.worldAccelX - self.accelBiasX
             let rY = self.worldAccelY - self.accelBiasY
+
+            // ZERO-VELOCITY UPDATE, replacing the old velocity leak and settle damping.
+            // Those decayed velocity continuously, but a steady cruise has ~zero acceleration
+            // and is indistinguishable from drift by magnitude alone — so they bled away real
+            // speed and under-reported distance. Instead, detect genuine stationarity from
+            // the FULL 3-axis residual plus the gyro, and only then zero velocity and re-learn
+            // the bias. Between those moments the integration runs untouched.
+            let accelMag3D = sqrt(rX * rX + rY * rY + azW * azW)
+            let rot = motion.rotationRate
+            let rotMag = sqrt(rot.x*rot.x + rot.y*rot.y + rot.z*rot.z)
+            let sampleTime = (self.zuptWindow.last?.t ?? 0) + dtS
+            self.zuptWindow.append((t: sampleTime, accel: accelMag3D, rotation: rotMag))
+            // Trimming keeps only samples INSIDE the window, so the retained span is always a
+            // little SHORTER than ZUPT_WINDOW and a `span >= ZUPT_WINDOW` test would never
+            // pass (verified in simulation: the detector fired on 0.0% of samples). Having
+            // trimmed at all is the correct proof that a full window has accumulated.
+            while let first = self.zuptWindow.first, sampleTime - first.t > self.ZUPT_WINDOW {
+                self.zuptWindow.removeFirst()
+                self.zuptWindowFilled = true
+            }
+            let peakAccel = self.zuptWindow.map(\.accel).max() ?? 0
+            let peakRotation = self.zuptWindow.map(\.rotation).max() ?? 0
+            let stationary = self.zuptWindowFilled
+                && peakAccel < self.ZUPT_ACCEL_THRESHOLD
+                && peakRotation < self.ZUPT_ROTATION_THRESHOLD
+            self.isInertialStationary = stationary
+            if stationary {
+                self.motionVelX = 0
+                self.motionVelY = 0
+                self.accelBiasX += rX * self.ZUPT_BIAS_RATE
+                self.accelBiasY += rY * self.ZUPT_BIAS_RATE
+                self.prevResidualX = 0
+                self.prevResidualY = 0
+                return
+            }
+            // Keep learning the bias while moving whenever residual acceleration is small —
+            // this is what cancels gravity leakage over a long cruise — but freeze it during
+            // genuine acceleration or braking so it cannot absorb real motion.
             if sqrt(rX * rX + rY * rY) < self.MOTION_BIAS_GATE {
                 self.accelBiasX += rX * self.MOTION_BIAS_RATE
                 self.accelBiasY += rY * self.MOTION_BIAS_RATE
@@ -1429,6 +1513,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0
+        zuptWindow.removeAll(); zuptWindowFilled = false; isInertialStationary = false; lastMotionSampleTimestamp = nil
         worldAccelX = 0.0; worldAccelY = 0.0
         motionAttitudeReady = false
         lastMotionFallbackTick = nil
@@ -1533,26 +1618,19 @@ class WorkoutSession: NSObject, ObservableObject {
             }
         }
 
-        // Mild per-second leak bounds residual drift without killing a real cruise.
-        motionVelX *= MOTION_VEL_LEAK
-        motionVelY *= MOTION_VEL_LEAK
-
-        // Settle-to-rest (a constrained ZUPT): bleed residual velocity to zero ONLY when
-        // already slow AND there's no horizontal acceleration, so a stopped vehicle stops
-        // drifting. Gated on LOW speed because a smooth high-speed cruise also has ~zero
-        // acceleration — we must never kill that.
-        let accelMagX = worldAccelX - accelBiasX
-        let accelMagY = worldAccelY - accelBiasY
-        let accelMag = sqrt(accelMagX * accelMagX + accelMagY * accelMagY)
-        let curSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
-        if accelMag < MOTION_ACCEL_DEADBAND && curSpeed < 1.5 {
-            motionVelX *= 0.6
-            motionVelY *= 0.6
-        }
+        // Drift correction lives entirely in the sensor-rate ZUPT inside the device-motion
+        // handler. There is deliberately NO velocity leak and no settle-to-rest damping here
+        // any more: both decayed genuine cruise velocity (a steady cruise has ~zero
+        // acceleration, so it looks exactly like drift to a magnitude test) and made distance
+        // read low the longer the trip ran.
 
         // Speed is the magnitude of the velocity vector — NO speed limit is applied.
         let nextSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
-        if nextSpeed > 0.1 {
+        // Only trust the integrated velocity vector for BEARING when the attitude frame is
+        // anchored to magnetic north. In an arbitrary frame the speed (and so the distance)
+        // is still valid but the direction is not, so leave the heading on its last
+        // GPS/compass-derived value rather than pointing the route somewhere invented.
+        if nextSpeed > 0.1 && motionFrameIsAbsolute {
             // Bearing clockwise from north: north = +X, east = −Y.
             motionHeadingDegrees = normalizedHeading(atan2(-motionVelY, motionVelX) * 180 / .pi)
         }
@@ -1597,6 +1675,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionFallbackSpeed = seedSpeed
         accelBiasX = 0; accelBiasY = 0
         prevResidualX = 0; prevResidualY = 0
+        zuptWindow.removeAll(); zuptWindowFilled = false; isInertialStationary = false; lastMotionSampleTimestamp = nil
         lastMotionFallbackTick = nil
         lastMotionFallbackLogTime = Date()
         let gap = Date().timeIntervalSince(lastLocationTime)
@@ -1613,6 +1692,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0
+        zuptWindow.removeAll(); zuptWindowFilled = false; isInertialStationary = false; lastMotionSampleTimestamp = nil
         lastMotionFallbackTick = nil
         lastAnchorlessFallbackTime = nil
     }

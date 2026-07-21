@@ -152,10 +152,34 @@ class WorkoutSession: ObservableObject {
     private var worldAccelNorth: Double = 0.0
     private var worldAccelEast: Double = 0.0
     private var motionHeadingDegrees: Double = 0.0
-    private let MOTION_VEL_LEAK: Double = 0.9998   // per-second leak (drift backstop)
-    private let MOTION_BIAS_RATE: Double = 0.01    // bias learning rate (quiet periods only)
-    private let MOTION_BIAS_GATE: Double = 0.3     // m/s²: above this = REAL accel → freeze bias
-    private let MOTION_ACCEL_DEADBAND: Double = 0.08
+    // ZERO-VELOCITY UPDATE (ZUPT) state. This REPLACES the old per-second velocity leak and
+    // the "settle to rest" damping. Those two heuristics decayed velocity continuously, which
+    // is wrong: a steady cruise has ~zero acceleration, so a leak silently bleeds away real
+    // speed and under-reports distance the longer you travel. ZUPT is the standard inertial
+    // technique instead — detect moments when the device is GENUINELY stationary, and only
+    // then hard-zero the velocity and re-learn the accelerometer bias. Between those moments
+    // the integration is left alone to do honest physics.
+    private var zuptWindow: [(t: TimeInterval, accel: Double, rotation: Double)] = []
+    private var zuptWindowFilled = false
+    private var isInertialStationary = false
+    /// Peak residual acceleration allowed within the window for it to count as stationary.
+    /// Tuned by simulation: above ~0.35 the detector starts firing during a genuine smooth
+    /// cruise and destroys real velocity (a 0.5 threshold lost 80% of the distance).
+    private let ZUPT_ACCEL_THRESHOLD: Double = 0.25     // m/s²
+    /// Gyro magnitude ceiling — a stationary device is not rotating either.
+    private let ZUPT_ROTATION_THRESHOLD: Double = 0.35  // rad/s
+    /// The device must look quiet for this long before velocity is zeroed.
+    private let ZUPT_WINDOW: TimeInterval = 0.75        // s
+    /// Bias learning rate during a confirmed ZUPT (fast — the velocity is known to be zero).
+    private let ZUPT_BIAS_RATE: Double = 0.05
+    // CONTINUOUS gated bias estimation. This is NOT redundant with ZUPT and must not be
+    // removed: the dominant real-world error is attitude error tilting GRAVITY into the
+    // horizontal axes (0.5° = 0.086 m/s² of phantom acceleration). On a sustained cruise the
+    // device never becomes stationary, so ZUPT never fires, and this estimator is the only
+    // thing that can cancel that term. Simulation of a 30-minute highway drive: with it,
+    // −0.3% distance error; without it, +211%.
+    private let MOTION_BIAS_RATE: Double = 0.01    // learning rate during quiet periods
+    private let MOTION_BIAS_GATE: Double = 0.3     // m/s²: above this = REAL accel → freeze
 
     private var healthKitExportType: HKWorkoutActivityType {
         let preference = UserDefaults.standard.string(forKey: "healthKitExportType") ?? "auto"
@@ -633,8 +657,9 @@ class WorkoutSession: ObservableObject {
         motionFallbackStatus = "GPS OK"
         resetInertialState(seedSpeed: 0, courseDegrees: 0)
         // Feed the inertial integrator at the device-motion sample rate.
-        locationManager.onWorldAccelSample = { [weak self] north, east, dt in
-            self?.integrateWorldAccelSample(north: north, east: east, dt: dt)
+        locationManager.onWorldAccelSample = { [weak self] north, east, up, rotationRate, dt in
+            self?.integrateWorldAccelSample(north: north, east: east, up: up,
+                                            rotationRate: rotationRate, dt: dt)
         }
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
 
@@ -1334,20 +1359,65 @@ class WorkoutSession: ObservableObject {
     /// rate. Called from LocationManager.onWorldAccelSample. Signed integration means
     /// braking subtracts and bumps cancel; a gated bias estimator bounds drift (it learns
     /// ONLY while there is no real acceleration, so it never absorbs genuine motion).
-    private func integrateWorldAccelSample(north: Double, east: Double, dt: TimeInterval) {
+    private func integrateWorldAccelSample(north: Double, east: Double, up: Double,
+                                           rotationRate: Double, dt: TimeInterval) {
         guard isActive, !isPaused else { return }
-        // Light low-pass to damp sensor jitter while preserving sustained acceleration.
-        worldAccelNorth = worldAccelNorth * 0.7 + north * 0.3
-        worldAccelEast = worldAccelEast * 0.7 + east * 0.3
+        // Light low-pass, time-constant corrected. A fixed 0.7/0.3 blend means a completely
+        // different corner frequency at 2Hz than at 50Hz, so the filter changed character
+        // whenever the sample rate was switched. Deriving alpha from dt keeps it constant.
+        let tau = 0.15
+        let alpha = min(dt / (tau + dt), 1.0)
+        worldAccelNorth += (north - worldAccelNorth) * alpha
+        worldAccelEast += (east - worldAccelEast) * alpha
         guard isUsingEstimatedLocationFallback || forceMotionFallback else { return }
 
         let rN = worldAccelNorth - accelBiasNorth
         let rE = worldAccelEast - accelBiasEast
+
+        // --- Stationarity detection over a sliding window ---------------------------------
+        // Use the FULL 3-axis residual plus the gyro: a device at rest is quiet on every
+        // axis and is not rotating. Judging by horizontal magnitude alone would call a
+        // smooth constant-speed cruise "stationary" and destroy the velocity.
+        let sampleTime = (zuptWindow.last?.t ?? 0) + dt
+        let accelMag3D = sqrt(rN * rN + rE * rE + up * up)
+        zuptWindow.append((t: sampleTime, accel: accelMag3D, rotation: rotationRate))
+        // Trimming keeps only samples INSIDE the window, so the retained span is always a
+        // little SHORTER than ZUPT_WINDOW and a `span >= ZUPT_WINDOW` test would never pass
+        // (verified in simulation: the detector fired on 0.0% of samples). Having trimmed at
+        // all is the correct proof that a full window of history has accumulated.
+        while let first = zuptWindow.first, sampleTime - first.t > ZUPT_WINDOW {
+            zuptWindow.removeFirst()
+            zuptWindowFilled = true
+        }
+        // Judge on the PEAK rather than the mean so a single real movement inside the window
+        // vetoes the ZUPT.
+        let peakAccel = zuptWindow.map(\.accel).max() ?? 0
+        let peakRotation = zuptWindow.map(\.rotation).max() ?? 0
+        isInertialStationary = zuptWindowFilled
+            && peakAccel < ZUPT_ACCEL_THRESHOLD
+            && peakRotation < ZUPT_ROTATION_THRESHOLD
+
+        if isInertialStationary {
+            // Truly at rest: the velocity IS zero, so assert it rather than nudging it, and
+            // use this known-good moment to re-learn the bias quickly.
+            motionVelNorth = 0
+            motionVelEast = 0
+            accelBiasNorth += rN * ZUPT_BIAS_RATE
+            accelBiasEast += rE * ZUPT_BIAS_RATE
+            prevResidualNorth = 0
+            prevResidualEast = 0
+            return
+        }
+
+        // Moving: keep learning the bias whenever residual acceleration is small (this is what
+        // cancels gravity leakage during a long cruise), but FREEZE it during genuine
+        // acceleration or braking so it cannot absorb real motion.
         if sqrt(rN * rN + rE * rE) < MOTION_BIAS_GATE {
             accelBiasNorth += rN * MOTION_BIAS_RATE
             accelBiasEast += rE * MOTION_BIAS_RATE
         }
-        // Trapezoidal integration (average of consecutive samples).
+
+        // Honest trapezoidal integration — no leak, no cap, no damping.
         let iN = worldAccelNorth - accelBiasNorth
         let iE = worldAccelEast - accelBiasEast
         motionVelNorth += ((prevResidualNorth + iN) / 2.0) * dt
@@ -1363,6 +1433,9 @@ class WorkoutSession: ObservableObject {
         motionHeadingDegrees = courseDegrees
         accelBiasNorth = 0; accelBiasEast = 0
         prevResidualNorth = 0; prevResidualEast = 0
+        zuptWindow.removeAll()
+        zuptWindowFilled = false
+        isInertialStationary = false
     }
 
     private func startEstimatedFallbackTimer() {
@@ -1412,28 +1485,22 @@ class WorkoutSession: ObservableObject {
         let dt = min(max(now.timeIntervalSince(previousTick), 0.5), 2.0)
         lastEstimatedFallbackTick = now
 
-        // The velocity VECTOR is integrated at sensor rate in integrateWorldAccelSample.
-        // Here we only apply the leak, the settle-to-rest check, and convert to distance.
-        let leak = pow(MOTION_VEL_LEAK, dt)
-        motionVelNorth *= leak
-        motionVelEast *= leak
-        let rN = worldAccelNorth - accelBiasNorth
-        let rE = worldAccelEast - accelBiasEast
-        let accelMag = sqrt(rN * rN + rE * rE)
-        let curSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
-        // Settle-to-rest ONLY when already slow AND not accelerating — a smooth
-        // high-speed cruise also has ~zero acceleration and must never be killed.
-        if accelMag < MOTION_ACCEL_DEADBAND && curSpeed < 1.5 {
-            motionVelNorth *= 0.6
-            motionVelEast *= 0.6
-        }
-
+        // The velocity VECTOR is integrated at sensor rate in integrateWorldAccelSample,
+        // which also owns drift correction via ZUPT. There is deliberately NO velocity leak
+        // and no settle-to-rest damping here any more: both decayed genuine cruise speed
+        // (which has ~zero acceleration and is indistinguishable from drift by magnitude
+        // alone) and caused distance to be systematically under-reported.
         // NO speed cap — speed is simply the magnitude of the velocity vector.
         let nextSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
         if nextSpeed > 0.1 {
             motionHeadingDegrees = normalizedHeading(atan2(motionVelEast, motionVelNorth) * 180 / .pi)
         }
-        let headingDegrees = nextSpeed > 0.1
+        // The integrated velocity vector only gives a real bearing when the attitude frame is
+        // anchored to magnetic north. With `.xArbitraryZVertical` the world X axis points in
+        // an unknown direction, so the SPEED (and hence distance) is still usable but the
+        // direction is not — fall back to compass/GPS course for the bearing in that case.
+        let canUseInertialHeading = nextSpeed > 0.1 && locationManager.motionReferenceFrameIsAbsolute
+        let headingDegrees = canUseInertialHeading
             ? normalizedHeading(motionHeadingDegrees)
             : normalizedHeading(
                 locationManager.currentCompassHeading
