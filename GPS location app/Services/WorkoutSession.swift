@@ -1503,9 +1503,12 @@ class WorkoutSession: ObservableObject {
         let headingDegrees = canUseInertialHeading
             ? normalizedHeading(motionHeadingDegrees)
             : normalizedHeading(
-                locationManager.currentCompassHeading
+                // Prefer GPS COURSE (true direction of travel) over the compass: inside a
+                // vehicle — especially an aircraft — the magnetometer reads the metal shell
+                // and local EMI, not the heading, so course-over-ground is far more reliable.
+                anchor.flatMap { validCourse($0.course) }
+                    ?? locationManager.currentCompassHeading
                     ?? locationManager.currentMotionDirectionDegrees
-                    ?? anchor.flatMap { validCourse($0.course) }
                     ?? 0.0
               )
 
@@ -1530,9 +1533,11 @@ class WorkoutSession: ObservableObject {
         estimatedFallbackSpeed = seed
         estimatedFallbackDistanceAdded = 0.0
         // Seed the velocity VECTOR along the last known course so a moving vehicle keeps
-        // both its speed and its heading through the gap.
-        let course = locationManager.currentCompassHeading
-            ?? anchor.flatMap { validCourse($0.course) }
+        // both its speed and its heading through the gap. Prefer GPS COURSE over the compass:
+        // course-over-ground is the true direction of travel, whereas the magnetometer is
+        // unreliable inside a vehicle/aircraft (metal shell, EMI). Matches the watch.
+        let course = anchor.flatMap { validCourse($0.course) }
+            ?? locationManager.currentCompassHeading
             ?? locationManager.currentMotionDirectionDegrees
             ?? 0.0
         resetInertialState(seedSpeed: seed, courseDegrees: course)
