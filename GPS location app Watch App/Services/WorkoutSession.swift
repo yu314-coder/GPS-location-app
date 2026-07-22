@@ -1766,11 +1766,16 @@ class WorkoutSession: NSObject, ObservableObject {
         let distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
         motionFallbackSpeed = nextSpeed
 
+        // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
+        // confirm in real time whether the inertial direction tracks the real one.
+        let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         fallbackDebugStatus = String(
-            format: "DR[%@]%@ %.0fkm/h +%.0fm",
+            format: "DR[%@]%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
             accelSource,
             forceMotionFallback ? " FORCED" : "",
             motionFallbackSpeed * 3.6,
+            motionHeadingDegrees,
+            compassText,
             motionFallbackDistanceAdded
         )
 

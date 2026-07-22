@@ -1608,9 +1608,17 @@ class WorkoutSession: ObservableObject {
 
         let distance = ((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt
         estimatedFallbackSpeed = nextSpeed
-        motionFallbackStatus = String(format: "DR%@ %.0fkm/h +%.0fm",
+        // Live diagnostic: computed travel heading (from the integrated velocity vector) vs
+        // the magnetometer. During a ground test, drive a KNOWN compass direction and check
+        // that the computed heading (→) matches it — if it instead tracks the compass/phone
+        // orientation, the inertial signal is too weak to establish direction (expected when
+        // walking; a car/plane's sustained acceleration fixes it).
+        let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
+        motionFallbackStatus = String(format: "DR%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
                                       forceMotionFallback ? " FORCED" : "",
                                       nextSpeed * 3.6,
+                                      headingDegrees,
+                                      compassText,
                                       estimatedFallbackDistanceAdded)
 
         guard distance >= 0.25 else { return }

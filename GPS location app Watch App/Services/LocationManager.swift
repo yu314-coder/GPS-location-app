@@ -13,6 +13,8 @@ class LocationManager: NSObject, ObservableObject {
     /// Local magnetic declination (true − magnetic), learned from CLHeading. Used to rotate
     /// Core Motion's magnetic-north-referenced acceleration into the true-north frame.
     private(set) var magneticDeclinationDegrees: Double = 0
+    /// Latest compass heading (true if available), for the live Velocity-Mode diagnostic.
+    private(set) var currentCompassHeading: Double?
     @Published var authorizationStatus: CLAuthorizationStatus
     @Published var isTracking = false
     @Published var locations: [FlightLocation] = []
@@ -579,6 +581,8 @@ class LocationManager: NSObject, ObservableObject {
 // MARK: - CLLocationManagerDelegate
 extension LocationManager: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        if heading >= 0 { currentCompassHeading = heading }
         guard newHeading.trueHeading >= 0, newHeading.magneticHeading >= 0 else { return }
         var d = newHeading.trueHeading - newHeading.magneticHeading
         if d > 180 { d -= 360 } else if d < -180 { d += 360 }
