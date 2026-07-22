@@ -1245,6 +1245,49 @@ class WorkoutSession: NSObject, ObservableObject {
         )
     }
 
+    /// Linearly warp the trailing run of dead-reckoned points so the DR path from the last
+    /// real GPS anchor lands on the new GPS fix. Drift is distributed by distance travelled,
+    /// preserving the path's shape while bounding error to both anchors. Distance is
+    /// reconciled for the corrected geometry. Mirrors the iPhone implementation.
+    private func rubberSheetEstimatedGap(onto fix: FlightLocation) {
+        var start = flight.locations.count
+        while start > 0 && flight.locations[start - 1].isEstimated { start -= 1 }
+        let n = flight.locations.count - start
+        guard n > 0, start > 0 else { return }
+        let anchor = flight.locations[start - 1]
+
+        var cumulative = [Double](repeating: 0, count: n)
+        var previous = anchor
+        var oldGapLength = 0.0
+        for k in 0..<n {
+            oldGapLength += flight.locations[start + k].distance(to: previous)
+            cumulative[k] = oldGapLength
+            previous = flight.locations[start + k]
+        }
+        guard oldGapLength > 0.5 else { return }
+
+        let last = flight.locations[start + n - 1]
+        let driftNorth = (fix.latitude - last.latitude) * 111_320.0
+        let driftEast = (fix.longitude - last.longitude) * 111_320.0 * cos(last.latitude * .pi / 180)
+        let driftMagnitude = sqrt(driftNorth * driftNorth + driftEast * driftEast)
+        guard driftMagnitude > 3.0 else { return }
+
+        for k in 0..<n {
+            let fraction = cumulative[k] / oldGapLength
+            flight.locations[start + k] = flight.locations[start + k]
+                .movedHorizontally(north: driftNorth * fraction, east: driftEast * fraction)
+        }
+
+        var newGapLength = 0.0
+        previous = anchor
+        for k in 0..<n {
+            newGapLength += flight.locations[start + k].distance(to: previous)
+            previous = flight.locations[start + k]
+        }
+        currentMetrics.totalDistance = max(0, currentMetrics.totalDistance + (newGapLength - oldGapLength))
+        print("⌚ 📍 Rubber-sheet: warped \(n) DR points onto GPS (drift \(String(format: "%.0f", driftMagnitude))m, Δdist \(String(format: "%+.0f", newGapLength - oldGapLength))m)")
+    }
+
     private func appendEstimatedPedometerFallbackLocation(distanceMeters: Double, timestamp: Date) {
         guard distanceMeters > 0.0 else { return }
 
@@ -2085,6 +2128,9 @@ class WorkoutSession: NSObject, ObservableObject {
             if isUsingMotionFallback { endMotionFallback(reason: reanchorReason) }
             if isUsingPedometerFallback { endPedometerFallback(reason: reanchorReason) }
             frozenIPhoneRelayCount = 0
+            // Rubber-sheet the dead-reckoned gap onto the returning GPS fix so it is pinned to
+            // GPS at both ends rather than left drifted.
+            rubberSheetEstimatedGap(onto: location)
             flight.locations.append(location)
             lastLocationTime = Date()
             // Real fix is back → clear the dead-reckoning status so the UI shows GPS OK.

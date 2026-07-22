@@ -1557,6 +1557,11 @@ class WorkoutSession: ObservableObject {
 
     private func reanchorAfterEstimatedFallback(with location: FlightLocation) {
         endEstimatedLocationFallback(reason: "real GPS fix received")
+        // Before accepting the fix, rubber-sheet the dead-reckoned points in this gap so they
+        // connect the last real anchor to the true GPS endpoint. This pins the whole gap to
+        // GPS at BOTH ends instead of leaving the drifted DR track hanging — the single
+        // biggest accuracy win when GPS is available intermittently.
+        rubberSheetEstimatedGap(onto: location)
         flight.locations.append(location)
         lastRealLocationTime = Date()
         NotificationCenter.default.post(
@@ -1571,6 +1576,55 @@ class WorkoutSession: ObservableObject {
         currentMetrics.currentPressure = locationManager.currentPressure
         persistActiveWorkoutSnapshot(force: false, reason: "estimatedFallbackReanchor")
         print("📍 Estimated fallback reanchored to GPS without adding reanchor distance")
+    }
+
+    /// Rubber-sheet (linearly warp) the trailing run of dead-reckoned points so the DR path
+    /// from the last real GPS anchor lands exactly on the new GPS fix. The accumulated drift
+    /// is distributed along the run in proportion to distance travelled, which keeps the DR
+    /// path's SHAPE while bounding its error to both anchors. Distance is reconciled so the
+    /// total reflects the corrected geometry.
+    private func rubberSheetEstimatedGap(onto fix: FlightLocation) {
+        var start = flight.locations.count
+        while start > 0 && flight.locations[start - 1].isEstimated { start -= 1 }
+        let n = flight.locations.count - start
+        // Need at least one estimated point AND a real anchor in front of it.
+        guard n > 0, start > 0 else { return }
+        let anchor = flight.locations[start - 1]
+
+        // Original cumulative distance along the DR run (anchor → e1 → … → eN).
+        var cumulative = [Double](repeating: 0, count: n)
+        var previous = anchor
+        var oldGapLength = 0.0
+        for k in 0..<n {
+            oldGapLength += flight.locations[start + k].distance(to: previous)
+            cumulative[k] = oldGapLength
+            previous = flight.locations[start + k]
+        }
+        guard oldGapLength > 0.5 else { return }
+
+        // Drift vector = true endpoint (GPS fix) − drifted last estimated point, in metres.
+        let last = flight.locations[start + n - 1]
+        let driftNorth = (fix.latitude - last.latitude) * 111_320.0
+        let driftEast = (fix.longitude - last.longitude) * 111_320.0 * cos(last.latitude * .pi / 180)
+        let driftMagnitude = sqrt(driftNorth * driftNorth + driftEast * driftEast)
+        // Below GPS noise there is nothing meaningful to correct.
+        guard driftMagnitude > 3.0 else { return }
+
+        for k in 0..<n {
+            let fraction = cumulative[k] / oldGapLength
+            flight.locations[start + k] = flight.locations[start + k]
+                .movedHorizontally(north: driftNorth * fraction, east: driftEast * fraction)
+        }
+
+        // Reconcile the accumulated distance for the change in the run's geometry.
+        var newGapLength = 0.0
+        previous = anchor
+        for k in 0..<n {
+            newGapLength += flight.locations[start + k].distance(to: previous)
+            previous = flight.locations[start + k]
+        }
+        currentMetrics.totalDistance = max(0, currentMetrics.totalDistance + (newGapLength - oldGapLength))
+        print("📍 Rubber-sheet: warped \(n) DR points onto GPS (drift \(String(format: "%.0f", driftMagnitude))m, Δdist \(String(format: "%+.0f", newGapLength - oldGapLength))m)")
     }
 
     private func appendEstimatedLocation(distanceMeters: Double, headingDegrees: Double, timestamp: Date) {

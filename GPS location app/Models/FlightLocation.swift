@@ -117,4 +117,34 @@ struct FlightLocation: Identifiable, Codable, Hashable {
         let location2 = other.toCLLocation()
         return location1.distance(from: location2)
     }
+
+    /// Full member-wise initializer. The coordinate fields are `let`, so producing a copy
+    /// with a shifted position (used to rubber-sheet dead-reckoned points onto a GPS fix)
+    /// needs an initializer that sets every stored property explicitly.
+    init(id: UUID, timestamp: Date, latitude: Double, longitude: Double, altitude: Double,
+         horizontalAccuracy: Double, verticalAccuracy: Double, speed: Double, course: Double,
+         pressure: Double?, satelliteCount: Int?, signalStrength: Double?,
+         isFiltered: Bool, isValid: Bool, isEstimated: Bool) {
+        self.id = id; self.timestamp = timestamp
+        self.latitude = latitude; self.longitude = longitude
+        self.altitude = altitude
+        self.horizontalAccuracy = horizontalAccuracy; self.verticalAccuracy = verticalAccuracy
+        self.speed = speed; self.course = course
+        self.pressure = pressure; self.satelliteCount = satelliteCount; self.signalStrength = signalStrength
+        self.isFiltered = isFiltered; self.isValid = isValid; self.isEstimated = isEstimated
+    }
+
+    /// A copy shifted horizontally by (north, east) metres, preserving identity and every
+    /// other field. Uses a local equirectangular approximation, which is exact enough for the
+    /// small (metres-to-hundreds-of-metres) corrections rubber-sheeting applies.
+    func movedHorizontally(north: Double, east: Double) -> FlightLocation {
+        let newLat = latitude + north / 111_320.0
+        let cosLat = Swift.max(cos(latitude * .pi / 180), 0.000001)
+        let newLon = longitude + east / (111_320.0 * cosLat)
+        return FlightLocation(
+            id: id, timestamp: timestamp, latitude: newLat, longitude: newLon, altitude: altitude,
+            horizontalAccuracy: horizontalAccuracy, verticalAccuracy: verticalAccuracy,
+            speed: speed, course: course, pressure: pressure, satelliteCount: satelliteCount,
+            signalStrength: signalStrength, isFiltered: isFiltered, isValid: isValid, isEstimated: isEstimated)
+    }
 }
