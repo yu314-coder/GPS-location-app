@@ -132,6 +132,13 @@ class WorkoutSession: NSObject, ObservableObject {
     /// False when Core Motion could only supply `.xArbitraryZVertical`, i.e. world X is not
     /// north and the integrated direction carries no absolute bearing.
     private var motionFrameIsAbsolute = true
+    /// World-frame heading of the watch's +Y axis from the gyro-fused attitude. Its CHANGES
+    /// track turns regardless of acceleration.
+    private var deviceYawHeadingDegrees: Double?
+    /// Travel course − device yaw, anchored when dead reckoning engages. Travel heading =
+    /// device yaw + offset; the gyro carries every turn, with no acceleration needed —
+    /// which is why direction works while walking, where the velocity vector has no signal.
+    private var yawHeadingOffset: Double?
     private var zuptWindow: [(t: TimeInterval, accel: Double, rotation: Double)] = []
     private var zuptWindowFilled = false
     private var isInertialStationary = false
@@ -1482,6 +1489,19 @@ class WorkoutSession: NSObject, ObservableObject {
             // Integrate the acceleration VECTOR into the velocity VECTOR every sample while
             // the velocity fallback owns distance in an accel-integrating mode (forced, or
             // any non-step activity). Signed ⇒ deceleration subtracts and bumps cancel.
+            // Device +Y axis heading from the gyro-fused attitude (see yawHeadingOffset).
+            // Transforming the unit vector (0,1,0) collapses the same convention branches to
+            // single matrix elements: row-dominant → (m12, m22), column-dominant → (m21, m22).
+            let yawN: Double, yawW: Double
+            if abs(gRowZ) >= abs(gColZ) { yawN = r.m12; yawW = r.m22 }
+            else { yawN = r.m21; yawW = r.m22 }
+            if yawN * yawN + yawW * yawW > 0.05 {
+                var yawHeading = atan2(-yawW, yawN) * 180 / .pi
+                if self.motionFrameIsAbsolute { yawHeading += decl }
+                if yawHeading < 0 { yawHeading += 360 } else if yawHeading >= 360 { yawHeading -= 360 }
+                self.deviceYawHeadingDegrees = yawHeading
+            }
+
             let rot = motion.rotationRate
             let rotMag = sqrt(rot.x*rot.x + rot.y*rot.y + rot.z*rot.z)
             // The residual integration (ZUPT + gated bias + trapezoid) is factored into a
@@ -1499,6 +1519,7 @@ class WorkoutSession: NSObject, ObservableObject {
         isUsingMotionFallback = false
         motionFallbackSpeed = 0.0
         motionFallbackDistanceAdded = 0.0
+        yawHeadingOffset = nil
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0
@@ -1755,13 +1776,28 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Speed is the magnitude of the velocity vector — NO speed limit is applied.
         let nextSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
-        // Only trust the integrated velocity vector for BEARING when the attitude frame is
-        // anchored to magnetic north. In an arbitrary frame the speed (and so the distance)
-        // is still valid but the direction is not, so leave the heading on its last
-        // GPS/compass-derived value rather than pointing the route somewhere invented.
-        if nextSpeed > 0.1 && motionFrameIsAbsolute {
-            // Bearing clockwise from north: north = +X, east = −Y.
-            motionHeadingDegrees = normalizedHeading(atan2(-motionVelY, motionVelX) * 180 / .pi)
+        // HEADING: attitude yaw + anchored offset is PRIMARY — the gyro-fused attitude tracks
+        // turns with no dependence on acceleration (walking has ~zero net accel, so the
+        // velocity-vector bearing has no signal there). The velocity vector only slowly
+        // re-calibrates the offset during strong sustained acceleration (vehicle/takeoff),
+        // where its bearing is actually informative.
+        let velHeading: Double? = nextSpeed > 0.1
+            ? normalizedHeading(atan2(-motionVelY, motionVelX) * 180 / .pi)  // north=+X, east=−Y
+            : nil
+        let rXh = worldAccelX - accelBiasX
+        let rYh = worldAccelY - accelBiasY
+        let horizAccelMag = sqrt(rXh * rXh + rYh * rYh)
+        if let deviceYaw = deviceYawHeadingDegrees, let offset = yawHeadingOffset {
+            var yawHeading = normalizedHeading(deviceYaw + offset)
+            if let vh = velHeading, nextSpeed > 5.0, horizAccelMag > 0.5, motionFrameIsAbsolute {
+                var err = vh - yawHeading
+                if err > 180 { err -= 360 } else if err < -180 { err += 360 }
+                yawHeadingOffset = normalizedHeading(offset + 0.1 * err)
+                yawHeading = normalizedHeading(deviceYaw + yawHeadingOffset!)
+            }
+            motionHeadingDegrees = yawHeading
+        } else if let vh = velHeading, motionFrameIsAbsolute {
+            motionHeadingDegrees = vh
         }
         let distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
         motionFallbackSpeed = nextSpeed
@@ -1806,6 +1842,8 @@ class WorkoutSession: NSObject, ObservableObject {
         motionVelX = seedSpeed * cos(c)      // north component
         motionVelY = -seedSpeed * sin(c)     // west component (east = −Y)
         motionHeadingDegrees = courseDeg
+        // Anchor the yaw-relative heading: travel heading = device yaw + offset from here on.
+        yawHeadingOffset = deviceYawHeadingDegrees.map { normalizedHeading(courseDeg - $0) }
         motionFallbackSpeed = seedSpeed
         accelBiasX = 0; accelBiasY = 0
         prevResidualX = 0; prevResidualY = 0
@@ -1823,6 +1861,7 @@ class WorkoutSession: NSObject, ObservableObject {
         isUsingMotionFallback = false
         motionFallbackSpeed = 0.0
         motionFallbackDistanceAdded = 0.0
+        yawHeadingOffset = nil
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0

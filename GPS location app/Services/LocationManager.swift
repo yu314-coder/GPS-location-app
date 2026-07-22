@@ -50,6 +50,9 @@ class LocationManager: NSObject, ObservableObject {
     /// False when Core Motion could only supply `.xArbitraryZVertical`, i.e. the world X axis
     /// is not north and integrated direction is meaningless in absolute terms.
     private(set) var motionReferenceFrameIsAbsolute: Bool = true
+    /// World-frame heading of the device's +Y axis from the gyro-fused attitude. Changes in
+    /// this value track turns regardless of acceleration; see deviceYawHeading(from:).
+    private(set) var currentDeviceYawHeading: Double?
     private let standardGravity = 9.80665
 
     // GPS reconnection logic
@@ -633,6 +636,9 @@ class LocationManager: NSObject, ObservableObject {
             let accelerationY = userAcceleration.y * self.standardGravity
             let accelerationZ = userAcceleration.z * self.standardGravity
             let referenceAcceleration = self.trueNorthAcceleration(from: motion)
+            if let yawHeading = self.deviceYawHeading(from: motion) {
+                self.currentDeviceYawHeading = yawHeading
+            }
             let horizontalAcceleration = sqrt(
                 referenceAcceleration.north * referenceAcceleration.north +
                 referenceAcceleration.east * referenceAcceleration.east
@@ -772,6 +778,36 @@ class LocationManager: NSObject, ObservableObject {
             up    = (a.x * m.m31 + a.y * m.m32 + a.z * m.m33) * standardGravity
         }
         return (north, -west, up)
+    }
+
+    /// World-frame heading (degrees clockwise from north) of the DEVICE's +Y axis (the top of
+    /// the phone), from the gyro-fused attitude. This is NOT the direction of travel — the
+    /// phone can point anywhere — but its CHANGES track every turn of the body/vehicle the
+    /// phone rides in, independent of acceleration. Dead reckoning uses
+    /// (GPS course at engage) + (Δ device yaw) as the travel heading, which works even when
+    /// there is no net forward acceleration (walking), where the velocity-vector heading has
+    /// no signal at all.
+    private func deviceYawHeading(from motion: CMDeviceMotion) -> Double? {
+        let g = motion.gravity
+        let m = motion.attitude.rotationMatrix
+        let gUpCol = g.x * m.m13 + g.y * m.m23 + g.z * m.m33
+        let gUpRow = g.x * m.m31 + g.y * m.m32 + g.z * m.m33
+        // Transform the device +Y unit vector with the SAME convention branch used for
+        // acceleration (a = (0,1,0) collapses the formulas to single matrix elements).
+        let north: Double, west: Double
+        if abs(gUpCol) >= abs(gUpRow) {
+            north = m.m21; west = m.m22
+        } else {
+            north = m.m12; west = m.m22
+        }
+        // Nearly-flat phone edge case: if +Y is close to vertical (phone upright/face down
+        // pointing at sky), its horizontal projection is meaningless — skip the update and
+        // keep the last good value rather than injecting noise.
+        guard north * north + west * west > 0.05 else { return nil }
+        var heading = atan2(-west, north) * 180 / .pi   // east = −west axis
+        if motionReferenceFrameIsAbsolute { heading += magneticDeclinationDegrees }
+        if heading < 0 { heading += 360 } else if heading >= 360 { heading -= 360 }
+        return heading
     }
 
     /// Per-sample world-frame horizontal acceleration (north, east, dt) for inertial

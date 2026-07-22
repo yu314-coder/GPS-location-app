@@ -152,6 +152,12 @@ class WorkoutSession: ObservableObject {
     private var worldAccelNorth: Double = 0.0
     private var worldAccelEast: Double = 0.0
     private var motionHeadingDegrees: Double = 0.0
+    /// Constant offset between the device's attitude-yaw heading and the actual direction of
+    /// travel, captured when dead reckoning engages (travel course − device yaw). While the
+    /// phone rides fixed in a pocket/mount, travel heading = device yaw + this offset — and
+    /// attitude yaw tracks every turn via the gyro with NO dependence on acceleration, which
+    /// is what makes direction work while walking (zero net accel) as well as in vehicles.
+    private var yawHeadingOffset: Double?
     // ZERO-VELOCITY UPDATE (ZUPT) state. This REPLACES the old per-second velocity leak and
     // the "settle to rest" damping. Those two heuristics decayed velocity continuously, which
     // is wrong: a steady cruise has ~zero acceleration, so a leak silently bleeds away real
@@ -1586,17 +1592,35 @@ class WorkoutSession: ObservableObject {
         // alone) and caused distance to be systematically under-reported.
         // NO speed cap — speed is simply the magnitude of the velocity vector.
         let nextSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
-        if nextSpeed > 0.1 {
-            motionHeadingDegrees = normalizedHeading(atan2(motionVelEast, motionVelNorth) * 180 / .pi)
+        let velHeading = nextSpeed > 0.1
+            ? normalizedHeading(atan2(motionVelEast, motionVelNorth) * 180 / .pi)
+            : nil
+
+        // HEADING: attitude yaw + anchored offset is PRIMARY. The gyro-fused attitude tracks
+        // every turn with no dependence on acceleration — walking has ~zero net forward
+        // acceleration, so the velocity-vector bearing has no signal there and drifts off the
+        // seed. The velocity vector is demoted to slowly RE-CALIBRATING the offset, and only
+        // when there is strong sustained horizontal acceleration (vehicle start / takeoff),
+        // where its bearing is actually informative.
+        let rNh = worldAccelNorth - accelBiasNorth
+        let rEh = worldAccelEast - accelBiasEast
+        let horizAccelMag = sqrt(rNh * rNh + rEh * rEh)
+        var yawHeading: Double? = nil
+        if let deviceYaw = locationManager.currentDeviceYawHeading, let offset = yawHeadingOffset {
+            yawHeading = normalizedHeading(deviceYaw + offset)
+            if let vh = velHeading, nextSpeed > 5.0, horizAccelMag > 0.5 {
+                var err = vh - yawHeading!
+                if err > 180 { err -= 360 } else if err < -180 { err += 360 }
+                yawHeadingOffset = normalizedHeading(offset + 0.1 * err)
+                yawHeading = normalizedHeading(deviceYaw + yawHeadingOffset!)
+            }
         }
-        // The integrated velocity vector only gives a real bearing when the attitude frame is
-        // anchored to magnetic north. With `.xArbitraryZVertical` the world X axis points in
-        // an unknown direction, so the SPEED (and hence distance) is still usable but the
-        // direction is not — fall back to compass/GPS course for the bearing in that case.
-        let canUseInertialHeading = nextSpeed > 0.1 && locationManager.motionReferenceFrameIsAbsolute
-        let headingDegrees = canUseInertialHeading
-            ? normalizedHeading(motionHeadingDegrees)
-            : normalizedHeading(
+        if let yh = yawHeading { motionHeadingDegrees = yh }
+        else if let vh = velHeading, locationManager.motionReferenceFrameIsAbsolute { motionHeadingDegrees = vh }
+
+        let headingDegrees = yawHeading
+            ?? (locationManager.motionReferenceFrameIsAbsolute ? velHeading : nil)
+            ?? normalizedHeading(
                 // Prefer GPS COURSE (true direction of travel) over the compass: inside a
                 // vehicle — especially an aircraft — the magnetometer reads the metal shell
                 // and local EMI, not the heading, so course-over-ground is far more reliable.
@@ -1643,7 +1667,14 @@ class WorkoutSession: ObservableObject {
             ?? locationManager.currentMotionDirectionDegrees
             ?? 0.0
         resetInertialState(seedSpeed: seed, courseDegrees: course)
-        print("📍 Estimated-location fallback started after \(String(format: "%.1f", gapSeconds))s without GPS (seed \(String(format: "%.1f", seed * 3.6))km/h @ \(Int(course))°)")
+        // Anchor the yaw-relative heading: from here on, travel heading = device yaw + offset,
+        // so the gyro-fused attitude carries every subsequent turn.
+        if let deviceYaw = locationManager.currentDeviceYawHeading {
+            yawHeadingOffset = normalizedHeading(course - deviceYaw)
+        } else {
+            yawHeadingOffset = nil
+        }
+        print("📍 Estimated-location fallback started after \(String(format: "%.1f", gapSeconds))s without GPS (seed \(String(format: "%.1f", seed * 3.6))km/h @ \(Int(course))°, yawAnchor=\(yawHeadingOffset.map { String(Int($0)) } ?? "none"))")
     }
 
     private func endEstimatedLocationFallback(reason: String) {
@@ -1653,6 +1684,7 @@ class WorkoutSession: ObservableObject {
         lastEstimatedFallbackTick = nil
         estimatedFallbackSpeed = 0.0
         estimatedFallbackDistanceAdded = 0.0
+        yawHeadingOffset = nil
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
     }
