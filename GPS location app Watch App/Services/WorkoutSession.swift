@@ -1563,12 +1563,24 @@ class WorkoutSession: NSObject, ObservableObject {
             prevResidualY = 0
             return
         }
+        // FAST-ROTATION GUARD: during quick wrist/hand rotation the attitude lags and gravity
+        // leaks into the horizontal axes; integrating that produced phantom multi-thousand-
+        // km/h speeds. Vehicle turns are ≤ ~0.5 rad/s, hand/wrist manipulation 2–5 rad/s —
+        // freeze integration (hold velocity) above 1.5 rad/s.
+        if rotMag > 1.5 {
+            prevResidualX = 0
+            prevResidualY = 0
+            return
+        }
         if sqrt(rX * rX + rY * rY) < MOTION_BIAS_GATE {
             accelBiasX += rX * MOTION_BIAS_RATE
             accelBiasY += rY * MOTION_BIAS_RATE
         }
-        let iX = worldAccelX - accelBiasX
-        let iY = worldAccelY - accelBiasY
+        // Residual CLAMPED to a physical bound (no vehicle sustains |a| > 6 m/s²; a jet
+        // takeoff is ~3) so attitude/sensor spikes clip instead of integrating.
+        func clamped(_ v: Double) -> Double { Swift.max(-6.0, Swift.min(6.0, v)) }
+        let iX = clamped(worldAccelX - accelBiasX)
+        let iY = clamped(worldAccelY - accelBiasY)
         motionVelX += ((prevResidualX + iX) / 2.0) * dtS
         motionVelY += ((prevResidualY + iY) / 2.0) * dtS
         prevResidualX = iX

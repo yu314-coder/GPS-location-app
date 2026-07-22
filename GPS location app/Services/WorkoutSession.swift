@@ -1415,6 +1415,17 @@ class WorkoutSession: ObservableObject {
             return
         }
 
+        // FAST-ROTATION GUARD: while the device is being rotated quickly (handled, flipped,
+        // swung — indoors especially), the attitude estimate lags and GRAVITY leaks into the
+        // "horizontal" axes; integrating that produced multi-thousand-km/h phantom speed.
+        // Vehicle/aircraft turns are ≤ ~0.5 rad/s, hand manipulation is 2–5 rad/s, so freeze
+        // integration (hold velocity) above 1.5 rad/s rather than integrate garbage.
+        if rotationRate > 1.5 {
+            prevResidualNorth = 0
+            prevResidualEast = 0
+            return
+        }
+
         // Moving: keep learning the bias whenever residual acceleration is small (this is what
         // cancels gravity leakage during a long cruise), but FREEZE it during genuine
         // acceleration or braking so it cannot absorb real motion.
@@ -1423,9 +1434,12 @@ class WorkoutSession: ObservableObject {
             accelBiasEast += rE * MOTION_BIAS_RATE
         }
 
-        // Honest trapezoidal integration — no leak, no cap, no damping.
-        let iN = worldAccelNorth - accelBiasNorth
-        let iE = worldAccelEast - accelBiasEast
+        // Trapezoidal integration — no leak, no damping, but the residual is CLAMPED to a
+        // physical bound: no ground or air vehicle sustains |a| > 6 m/s² horizontally (a jet
+        // takeoff is ~3), so anything larger is sensor/attitude noise and is clipped.
+        func clamped(_ v: Double) -> Double { max(-6.0, min(6.0, v)) }
+        let iN = clamped(worldAccelNorth - accelBiasNorth)
+        let iE = clamped(worldAccelEast - accelBiasEast)
         motionVelNorth += ((prevResidualNorth + iN) / 2.0) * dt
         motionVelEast += ((prevResidualEast + iE) / 2.0) * dt
         prevResidualNorth = iN
