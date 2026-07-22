@@ -139,6 +139,8 @@ class WorkoutSession: NSObject, ObservableObject {
     /// device yaw + offset; the gyro carries every turn, with no acceleration needed —
     /// which is why direction works while walking, where the velocity vector has no signal.
     private var yawHeadingOffset: Double?
+    /// Pedometer cumulative-distance baseline for the PDR distance path (step activities).
+    private var lastPedometerDistanceForDR: Double?
     private var zuptWindow: [(t: TimeInterval, accel: Double, rotation: Double)] = []
     private var zuptWindowFilled = false
     private var isInertialStationary = false
@@ -1520,6 +1522,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionFallbackSpeed = 0.0
         motionFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
+        lastPedometerDistanceForDR = nil
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0
@@ -1811,11 +1814,28 @@ class WorkoutSession: NSObject, ObservableObject {
         } else if let vh = velHeading, motionFrameIsAbsolute {
             motionHeadingDegrees = vh
         }
-        let distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
-        motionFallbackSpeed = nextSpeed
+        // DISTANCE: for step-based activities use the PEDOMETER (already tracking since
+        // workout start — step detection + Apple's stride model is accurate to a few %,
+        // whereas steps sum to ~zero net acceleration and defeat the integrator). The
+        // accelerometer integration is the distance source only for vehicle/flight types.
+        let distance: Double
+        if isStepBased, pedometerManager.isDistanceAvailable {
+            let pedometerTotal = pedometerManager.currentDistance
+            if let last = lastPedometerDistanceForDR {
+                distance = max(pedometerTotal - last, 0)
+            } else {
+                distance = 0   // first tick: establish the baseline, add nothing
+            }
+            lastPedometerDistanceForDR = pedometerTotal
+            motionFallbackSpeed = distance / dt
+        } else {
+            distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
+            motionFallbackSpeed = nextSpeed
+        }
 
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.
+        if isStepBased && pedometerManager.isDistanceAvailable { accelSource = "PDR" }
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         fallbackDebugStatus = String(
             format: "DR[%@]%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
@@ -1874,6 +1894,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionFallbackSpeed = 0.0
         motionFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
+        lastPedometerDistanceForDR = nil
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0

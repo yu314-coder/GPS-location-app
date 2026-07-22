@@ -1,6 +1,7 @@
 import Foundation
 import HealthKit
 import CoreLocation
+import CoreMotion
 import Combine
 import ActivityKit
 import UIKit
@@ -158,6 +159,18 @@ class WorkoutSession: ObservableObject {
     /// attitude yaw tracks every turn via the gyro with NO dependence on acceleration, which
     /// is what makes direction work while walking (zero net accel) as well as in vehicles.
     private var yawHeadingOffset: Double?
+    // PEDESTRIAN DEAD RECKONING (PDR): for step-based activities the accelerometer cannot
+    // recover distance (steps sum to ~zero net acceleration), but Apple's pedometer — step
+    // detection + stride model — measures walking distance to within a few percent. So in a
+    // GPS gap the DR tick uses PEDOMETER DISTANCE + YAW HEADING for walk/run/hike, and
+    // accelerometer integration only for vehicle/flight types where there are no steps.
+    private let fallbackPedometer = CMPedometer()
+    private var fallbackPedometerDistance: Double?      // cumulative metres since fallback start
+    private var lastFallbackPedometerDistance: Double = 0
+    private var fallbackPedometerActive = false
+    private var isStepBasedWorkout: Bool {
+        workoutType == .walking || workoutType == .running || workoutType == .hiking
+    }
     // ZERO-VELOCITY UPDATE (ZUPT) state. This REPLACES the old per-second velocity leak and
     // the "settle to rest" damping. Those two heuristics decayed velocity continuously, which
     // is wrong: a steady cruise has ~zero acceleration, so a leak silently bleeds away real
@@ -1644,17 +1657,30 @@ class WorkoutSession: ObservableObject {
                     ?? 0.0
               )
 
-        let distance = ((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt
-        estimatedFallbackSpeed = nextSpeed
+        // DISTANCE: pedometer for step activities (PDR — accurate to a few %), accelerometer
+        // integration only for vehicle/flight where there are no steps to count.
+        let distance: Double
+        var sourceTag = "DR"
+        if isStepBasedWorkout, let pedometerTotal = fallbackPedometerDistance {
+            let delta = pedometerTotal - lastFallbackPedometerDistance
+            lastFallbackPedometerDistance = pedometerTotal
+            distance = max(delta, 0)
+            estimatedFallbackSpeed = distance / dt
+            sourceTag = "PDR"
+        } else {
+            distance = ((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt
+            estimatedFallbackSpeed = nextSpeed
+        }
         // Live diagnostic: computed travel heading (from the integrated velocity vector) vs
         // the magnetometer. During a ground test, drive a KNOWN compass direction and check
         // that the computed heading (→) matches it — if it instead tracks the compass/phone
         // orientation, the inertial signal is too weak to establish direction (expected when
         // walking; a car/plane's sustained acceleration fixes it).
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
-        motionFallbackStatus = String(format: "DR%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
+        motionFallbackStatus = String(format: "%@%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
+                                      sourceTag,
                                       forceMotionFallback ? " FORCED" : "",
-                                      nextSpeed * 3.6,
+                                      estimatedFallbackSpeed * 3.6,
                                       headingDegrees,
                                       compassText,
                                       estimatedFallbackDistanceAdded)
@@ -1680,6 +1706,17 @@ class WorkoutSession: ObservableObject {
             ?? locationManager.currentCompassHeading
             ?? locationManager.currentMotionDirectionDegrees
             ?? 0.0
+        // PDR distance source for step activities: pedometer from the start of the gap.
+        fallbackPedometerDistance = nil
+        lastFallbackPedometerDistance = 0
+        if isStepBasedWorkout && CMPedometer.isDistanceAvailable() && !fallbackPedometerActive {
+            fallbackPedometerActive = true
+            fallbackPedometer.startUpdates(from: Date()) { [weak self] data, _ in
+                guard let self, let distance = data?.distance?.doubleValue else { return }
+                DispatchQueue.main.async { self.fallbackPedometerDistance = distance }
+            }
+            print("📍 👟 PDR: pedometer engaged as gap distance source")
+        }
         resetInertialState(seedSpeed: seed, courseDegrees: course)
         // Anchor the yaw-relative heading: from here on, travel heading = device yaw + offset,
         // so the gyro-fused attitude carries every subsequent turn.
@@ -1699,6 +1736,12 @@ class WorkoutSession: ObservableObject {
         estimatedFallbackSpeed = 0.0
         estimatedFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
+        if fallbackPedometerActive {
+            fallbackPedometer.stopUpdates()
+            fallbackPedometerActive = false
+        }
+        fallbackPedometerDistance = nil
+        lastFallbackPedometerDistance = 0
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
     }
