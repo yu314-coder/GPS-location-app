@@ -1482,65 +1482,11 @@ class WorkoutSession: NSObject, ObservableObject {
             // Integrate the acceleration VECTOR into the velocity VECTOR every sample while
             // the velocity fallback owns distance in an accel-integrating mode (forced, or
             // any non-step activity). Signed ⇒ deceleration subtracts and bumps cancel.
-            guard self.isUsingMotionFallback else { return }
-            let isStep = (self.workoutType == .walking || self.workoutType == .running || self.workoutType == .hiking)
-            guard self.forceMotionFallback || !isStep else { return }
-            // dt comes from the sample timestamps, NOT deviceMotionUpdateInterval: that is
-            // the REQUESTED rate, actual delivery jitters around it, and any mismatch feeds
-            // straight into velocity and (doubly) into distance.
-            let dtS = sampleDt
-            let rX = self.worldAccelX - self.accelBiasX
-            let rY = self.worldAccelY - self.accelBiasY
-
-            // ZERO-VELOCITY UPDATE, replacing the old velocity leak and settle damping.
-            // Those decayed velocity continuously, but a steady cruise has ~zero acceleration
-            // and is indistinguishable from drift by magnitude alone — so they bled away real
-            // speed and under-reported distance. Instead, detect genuine stationarity from
-            // the FULL 3-axis residual plus the gyro, and only then zero velocity and re-learn
-            // the bias. Between those moments the integration runs untouched.
-            let accelMag3D = sqrt(rX * rX + rY * rY + azW * azW)
             let rot = motion.rotationRate
             let rotMag = sqrt(rot.x*rot.x + rot.y*rot.y + rot.z*rot.z)
-            let sampleTime = (self.zuptWindow.last?.t ?? 0) + dtS
-            self.zuptWindow.append((t: sampleTime, accel: accelMag3D, rotation: rotMag))
-            // Trimming keeps only samples INSIDE the window, so the retained span is always a
-            // little SHORTER than ZUPT_WINDOW and a `span >= ZUPT_WINDOW` test would never
-            // pass (verified in simulation: the detector fired on 0.0% of samples). Having
-            // trimmed at all is the correct proof that a full window has accumulated.
-            while let first = self.zuptWindow.first, sampleTime - first.t > self.ZUPT_WINDOW {
-                self.zuptWindow.removeFirst()
-                self.zuptWindowFilled = true
-            }
-            let peakAccel = self.zuptWindow.map(\.accel).max() ?? 0
-            let peakRotation = self.zuptWindow.map(\.rotation).max() ?? 0
-            let stationary = self.zuptWindowFilled
-                && peakAccel < self.ZUPT_ACCEL_THRESHOLD
-                && peakRotation < self.ZUPT_ROTATION_THRESHOLD
-            self.isInertialStationary = stationary
-            if stationary {
-                self.motionVelX = 0
-                self.motionVelY = 0
-                self.accelBiasX += rX * self.ZUPT_BIAS_RATE
-                self.accelBiasY += rY * self.ZUPT_BIAS_RATE
-                self.prevResidualX = 0
-                self.prevResidualY = 0
-                return
-            }
-            // Keep learning the bias while moving whenever residual acceleration is small —
-            // this is what cancels gravity leakage over a long cruise — but freeze it during
-            // genuine acceleration or braking so it cannot absorb real motion.
-            if sqrt(rX * rX + rY * rY) < self.MOTION_BIAS_GATE {
-                self.accelBiasX += rX * self.MOTION_BIAS_RATE
-                self.accelBiasY += rY * self.MOTION_BIAS_RATE
-            }
-            // Trapezoidal integration (average of consecutive samples) — more accurate
-            // than plain Euler for a changing acceleration signal.
-            let iX = self.worldAccelX - self.accelBiasX
-            let iY = self.worldAccelY - self.accelBiasY
-            self.motionVelX += ((self.prevResidualX + iX) / 2.0) * dtS
-            self.motionVelY += ((self.prevResidualY + iY) / 2.0) * dtS
-            self.prevResidualX = iX
-            self.prevResidualY = iY
+            // The residual integration (ZUPT + gated bias + trapezoid) is factored into a
+            // shared method so the synthetic-flight replay drives the EXACT same code path.
+            self.integrateWorldMotionResidual(dt: sampleDt, up: azW, rotationRate: rotMag)
         }
         motionManager.startDeviceMotionUpdates(using: refFrame, to: OperationQueue.main, withHandler: handler)
         print("⌚ 🧭 Device motion updates started (world-frame dead reckoning armed, ref=\(refFrame.rawValue))")
@@ -1561,6 +1507,146 @@ class WorkoutSession: NSObject, ObservableObject {
         motionAttitudeReady = false
         lastMotionFallbackTick = nil
         lastMotionForwardAccel = 0.0
+    }
+
+    /// Residual integration shared by the real device-motion handler and the synthetic-flight
+    /// replay: gates on forced/non-step mode, runs the ZUPT stationarity check, learns the
+    /// gated bias, and trapezoidally integrates the world-frame residual into the velocity
+    /// vector. Operates on the already-low-passed `worldAccelX/Y` (X≈north, Y≈west).
+    private func integrateWorldMotionResidual(dt dtS: Double, up azW: Double, rotationRate rotMag: Double) {
+        guard isUsingMotionFallback else { return }
+        let isStep = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
+        guard forceMotionFallback || !isStep else { return }
+
+        let rX = worldAccelX - accelBiasX
+        let rY = worldAccelY - accelBiasY
+        let accelMag3D = sqrt(rX * rX + rY * rY + azW * azW)
+        let sampleTime = (zuptWindow.last?.t ?? 0) + dtS
+        zuptWindow.append((t: sampleTime, accel: accelMag3D, rotation: rotMag))
+        while let first = zuptWindow.first, sampleTime - first.t > ZUPT_WINDOW {
+            zuptWindow.removeFirst()
+            zuptWindowFilled = true
+        }
+        let peakAccel = zuptWindow.map(\.accel).max() ?? 0
+        let peakRotation = zuptWindow.map(\.rotation).max() ?? 0
+        let stationary = zuptWindowFilled
+            && peakAccel < ZUPT_ACCEL_THRESHOLD
+            && peakRotation < ZUPT_ROTATION_THRESHOLD
+        isInertialStationary = stationary
+        if stationary {
+            motionVelX = 0
+            motionVelY = 0
+            accelBiasX += rX * ZUPT_BIAS_RATE
+            accelBiasY += rY * ZUPT_BIAS_RATE
+            prevResidualX = 0
+            prevResidualY = 0
+            return
+        }
+        if sqrt(rX * rX + rY * rY) < MOTION_BIAS_GATE {
+            accelBiasX += rX * MOTION_BIAS_RATE
+            accelBiasY += rY * MOTION_BIAS_RATE
+        }
+        let iX = worldAccelX - accelBiasX
+        let iY = worldAccelY - accelBiasY
+        motionVelX += ((prevResidualX + iX) / 2.0) * dtS
+        motionVelY += ((prevResidualY + iY) / 2.0) * dtS
+        prevResidualX = iX
+        prevResidualY = iY
+    }
+
+    // MARK: - DEBUG: synthetic flight replay (simulator has no Core Motion)
+    // Mirrors the iPhone hook: pushes a synthesized flight's WORLD-frame acceleration through
+    // the low-pass + the shared integrateWorldMotionResidual + the 1 Hz motion-fallback tick,
+    // so the reconstructed route can be seen on the watch simulator (which supplies no
+    // Core Motion). Reached ONLY via the `-replayFlight` launch argument — inert otherwise.
+    private var debugReplayTimer: Timer?
+    private var debugReplayT: Double = 0
+
+    private func debugFlightHeadingSpeed(_ t: Double) -> (spd: Double, hdg: Double) {
+        let legs: [(Double, Double, Double)] = [
+            (8, 60, 90), (25, 60, 90),
+            (33, 60, 180), (50, 60, 180),
+            (58, 60, 90), (66, 60, 90),
+        ]
+        var prevEnd = 0.0, prevSpd = 0.0, prevHdg = 90.0
+        for leg in legs {
+            if t < leg.0 {
+                let f = (t - prevEnd) / (leg.0 - prevEnd)
+                var dh = leg.2 - prevHdg
+                if dh > 180 { dh -= 360 } else if dh < -180 { dh += 360 }
+                return (prevSpd + (leg.1 - prevSpd) * f, prevHdg + dh * f)
+            }
+            prevEnd = leg.0; prevSpd = leg.1; prevHdg = leg.2
+        }
+        return (prevSpd, prevHdg)
+    }
+
+    private func debugFlightVel(_ t: Double) -> (Double, Double) {
+        let s = debugFlightHeadingSpeed(t)
+        let h = s.hdg * .pi / 180
+        return (s.spd * cos(h), s.spd * sin(h))
+    }
+
+    private func debugFlightSample(_ t: Double) -> (north: Double, east: Double, rot: Double) {
+        let dh = 0.05
+        let a = debugFlightVel(t + dh), b = debugFlightVel(t - dh)
+        let aN = (a.0 - b.0) / (2 * dh), aE = (a.1 - b.1) / (2 * dh)
+        let vib = 0.32
+        let noiseN = vib * sin(t * 37.0), noiseE = vib * cos(t * 41.0)
+        let hs0 = debugFlightHeadingSpeed(t - dh), hs1 = debugFlightHeadingSpeed(t + dh)
+        var dHdg = (hs1.hdg - hs0.hdg)
+        if dHdg > 180 { dHdg -= 360 } else if dHdg < -180 { dHdg += 360 }
+        let turnRate = abs(dHdg * .pi / 180 / (2 * dh)) + 0.02
+        return (aN + noiseN, aE + noiseE, turnRate)
+    }
+
+    func debugReplaySyntheticFlight() {
+        guard !isActive else { return }
+        print("⌚ 🧪 DEBUG: synthetic flight replay starting (simulator has no Core Motion)")
+        workoutType = .other
+        let startDate = Date()
+        flight = Flight(startDate: startDate)
+        flight.workoutType = workoutType.rawValue
+        isActive = true
+        isPaused = false
+        lastLocationTime = startDate
+
+        let seed = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 25.0330, longitude: 121.5645),
+            altitude: 3000, horizontalAccuracy: 5, verticalAccuracy: 5,
+            course: 90, speed: 0, timestamp: startDate)
+        flight.locations.append(FlightLocation(from: seed, isValid: true))
+
+        forceMotionFallback = true
+        motionFrameIsAbsolute = true
+        motionAttitudeReady = true
+        motionHeadingDegrees = 90
+        startMotionFallback()          // sets isUsingMotionFallback, seeds velocity (0)
+
+        debugReplayT = 0
+        var lastTick = -1.0
+        debugReplayTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let s = self.debugFlightSample(self.debugReplayT)
+            // Feed world-frame (north, west=-east) through the same low-pass the handler uses.
+            let dt = 0.02, tau = 0.15, alpha = min(dt / (tau + dt), 1.0)
+            self.worldAccelX += (s.north - self.worldAccelX) * alpha
+            self.worldAccelY += ((-s.east) - self.worldAccelY) * alpha
+            self.integrateWorldMotionResidual(dt: dt, up: 0, rotationRate: s.rot)
+            if self.debugReplayT - lastTick >= 1.0 {
+                lastTick = self.debugReplayT
+                self.checkMotionFallback()   // velocity → distance → appended route point
+            }
+            self.debugReplayT += dt
+            if self.debugReplayT >= 66 {
+                self.debugReplayTimer?.invalidate(); self.debugReplayTimer = nil
+                print("⌚ 🧪 DEBUG replay complete: \(self.flight.locations.count) pts, " +
+                      "\(String(format: "%.2f", self.currentMetrics.totalDistance / 1000))km")
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        debugReplayTimer = timer
     }
 
     /// Debounced driver for the GPS-gap fallbacks. Called from BOTH the session's

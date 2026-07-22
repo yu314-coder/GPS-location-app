@@ -37,6 +37,14 @@ struct ContentView: View {
         }
         .onAppear {
             requestPermissions()
+            // DEBUG: `-replayFlight` drives a synthesized flight through the real dead-reckoning
+            // pipeline and opens the live view, so Force Velocity can be seen on the watch
+            // simulator (which has no Core Motion). Inert without the argument.
+            if ProcessInfo.processInfo.arguments.contains("-replayFlight") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    showLiveSession = true   // the live view's own session runs the replay
+                }
+            }
         }
     }
 

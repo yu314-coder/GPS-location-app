@@ -342,6 +342,12 @@ struct LiveSessionView: View {
         .onAppear {
             print("⌚ LiveSessionView appeared")
 
+            // DEBUG: drive the synthetic-flight replay through this view's own session so the
+            // reconstructed route shows on the watch simulator (no Core Motion there).
+            if ProcessInfo.processInfo.arguments.contains("-replayFlight") {
+                workoutSession.debugReplaySyntheticFlight()
+            }
+
             // Request permissions on appear
             let locationStatus = workoutSession.locationManager.authorizationStatus
             if locationStatus == .notDetermined {

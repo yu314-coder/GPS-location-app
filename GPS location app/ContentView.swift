@@ -69,6 +69,15 @@ struct ContentView: View {
         }
         .onAppear {
             print("✅ ContentView appeared successfully")
+            // DEBUG: `-replayFlight` launch arg drives a synthesized flight through the real
+            // dead-reckoning pipeline and opens the live map, so Force Velocity can be seen on
+            // the simulator (which has no Core Motion). Inert without the argument.
+            if ProcessInfo.processInfo.arguments.contains("-replayFlight") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    WorkoutSession.shared.debugReplaySyntheticFlight()
+                    showLiveSession = true
+                }
+            }
         }
         .onOpenURL { url in
             handleDeepLink(url)

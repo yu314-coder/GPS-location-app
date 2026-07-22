@@ -1426,6 +1426,100 @@ class WorkoutSession: ObservableObject {
         prevResidualEast = iE
     }
 
+    // MARK: - DEBUG: synthetic flight replay (simulator has no Core Motion)
+    // The iOS Simulator cannot supply accelerometer/gyro/attitude, so Force Velocity gets no
+    // input there. This replay pushes a synthesized flight's WORLD-frame acceleration straight
+    // into the real integrateWorldAccelSample + estimated-fallback tick, so the reconstructed
+    // route draws on the live map exactly as production would. Reached ONLY via the
+    // `-replayFlight` launch argument — inert in normal use.
+    private var debugReplayTimer: Timer?
+    private var debugReplayT: Double = 0
+
+    private func debugFlightHeadingSpeed(_ t: Double) -> (spd: Double, hdg: Double) {
+        // (endTime, targetSpeed m/s, targetHeadingDeg); values ramp linearly within each leg.
+        let legs: [(Double, Double, Double)] = [
+            (8, 60, 90), (25, 60, 90),      // takeoff east, cruise east
+            (33, 60, 180), (50, 60, 180),   // turn right to south, cruise south
+            (58, 60, 90), (66, 60, 90),     // turn left to east, cruise east
+        ]
+        var prevEnd = 0.0, prevSpd = 0.0, prevHdg = 90.0
+        for leg in legs {
+            if t < leg.0 {
+                let f = (t - prevEnd) / (leg.0 - prevEnd)
+                var dh = leg.2 - prevHdg
+                if dh > 180 { dh -= 360 } else if dh < -180 { dh += 360 }
+                return (prevSpd + (leg.1 - prevSpd) * f, prevHdg + dh * f)
+            }
+            prevEnd = leg.0; prevSpd = leg.1; prevHdg = leg.2
+        }
+        return (prevSpd, prevHdg)
+    }
+
+    private func debugFlightVel(_ t: Double) -> (Double, Double) {
+        let s = debugFlightHeadingSpeed(t)
+        let h = s.hdg * .pi / 180
+        return (s.spd * cos(h), s.spd * sin(h))
+    }
+
+    /// Synthetic world-frame (north, east) acceleration + turn rate at time t, with a small
+    /// vibration term so the ZUPT detector behaves as it would in a real (never perfectly
+    /// still) aircraft rather than false-triggering during smooth cruise.
+    private func debugFlightSample(_ t: Double) -> (north: Double, east: Double, rot: Double) {
+        let dh = 0.05
+        let a = debugFlightVel(t + dh), b = debugFlightVel(t - dh)
+        let aN = (a.0 - b.0) / (2 * dh), aE = (a.1 - b.1) / (2 * dh)
+        let vib = 0.32
+        let noiseN = vib * sin(t * 37.0), noiseE = vib * cos(t * 41.0)
+        let hs0 = debugFlightHeadingSpeed(t - dh), hs1 = debugFlightHeadingSpeed(t + dh)
+        var dHdg = (hs1.hdg - hs0.hdg)
+        if dHdg > 180 { dHdg -= 360 } else if dHdg < -180 { dHdg += 360 }
+        let turnRate = abs(dHdg * .pi / 180 / (2 * dh)) + 0.02
+        return (aN + noiseN, aE + noiseE, turnRate)
+    }
+
+    func debugReplaySyntheticFlight() {
+        guard !isActive else { return }
+        print("🧪 DEBUG: synthetic flight replay starting (simulator has no Core Motion)")
+        workoutType = .other
+        let startDate = Date()
+        flight = Flight(startDate: startDate)
+        flight.workoutType = workoutType.rawValue
+        isActive = true
+        isPaused = false
+        lastRealLocationTime = startDate
+
+        // Seed a real starting fix so the estimated points have an anchor to project from.
+        let seed = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 25.0330, longitude: 121.5645),
+            altitude: 3000, horizontalAccuracy: 5, verticalAccuracy: 5,
+            course: 90, speed: 0, timestamp: startDate)
+        flight.locations.append(FlightLocation(from: seed, isValid: true))
+
+        forceMotionFallback = true
+        resetInertialState(seedSpeed: 0, courseDegrees: 90)
+        // Begin the fallback explicitly so the 1 Hz tick does not re-seed velocity to zero.
+        startEstimatedLocationFallback(anchor: flight.locations.last, gapSeconds: 0)
+        startEstimatedFallbackTimer()
+        NotificationCenter.default.post(name: .workoutDidStart, object: nil)
+
+        debugReplayT = 0
+        debugReplayTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let s = self.debugFlightSample(self.debugReplayT)
+            self.integrateWorldAccelSample(north: s.north, east: s.east, up: 0,
+                                           rotationRate: s.rot, dt: 0.02)
+            self.debugReplayT += 0.02
+            if self.debugReplayT >= 66 {
+                self.debugReplayTimer?.invalidate(); self.debugReplayTimer = nil
+                print("🧪 DEBUG replay complete: \(self.flight.locations.count) pts, " +
+                      "\(String(format: "%.2f", self.currentMetrics.totalDistance / 1000))km")
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        debugReplayTimer = timer
+    }
+
     private func resetInertialState(seedSpeed: Double, courseDegrees: Double) {
         let c = courseDegrees * .pi / 180
         motionVelNorth = seedSpeed * cos(c)
