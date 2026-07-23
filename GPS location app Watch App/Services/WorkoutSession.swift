@@ -1959,6 +1959,16 @@ class WorkoutSession: NSObject, ObservableObject {
     private func startMotionFallback() {
         isUsingMotionFallback = true
         motionFallbackDistanceAdded = 0.0
+        // Ask the iPhone to start sharing the moment dead reckoning engages. It is the watch's
+        // only usable source of HEADING here — a watch cannot resolve walking direction by
+        // itself. This works with the iPhone merely nearby: sharing does not require an iPhone
+        // workout, and it relays motion-derived heading even with no GPS (aircraft, tunnel).
+        // Without this, Force Velocity never triggers the GPS-failure path that requests it,
+        // so the watch held one heading and drew a straight line.
+        if !connectivityManager.isUsingIPhoneGPS && !connectivityManager.isIPhoneGPSRequestPending {
+            print("⌚ 📱 DR engaged — requesting iPhone as motion/heading source")
+            connectivityManager.requestIPhoneGPS()
+        }
         // Seed from the best available speed so we keep moving through the gap:
         // smoothed speed → last GPS point's speed → average speed.
         let lastPointSpeed = flight.locations.last.map { max($0.speed, 0.0) } ?? 0.0

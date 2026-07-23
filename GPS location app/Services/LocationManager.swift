@@ -692,6 +692,11 @@ class LocationManager: NSObject, ObservableObject {
                                          referenceAcceleration.up,
                                          rotationMagnitude,
                                          sampleDt)
+                self.onWorldAccelSampleSecondary?(referenceAcceleration.north,
+                                                  referenceAcceleration.east,
+                                                  referenceAcceleration.up,
+                                                  rotationMagnitude,
+                                                  sampleDt)
             }
             self.onMotionAccelerationUpdate?(
                 acceleration,
@@ -816,6 +821,10 @@ class LocationManager: NSObject, ObservableObject {
     /// (north, east, up, rotationRateMagnitude, dt) — up and rotation rate feed the ZUPT
     /// stationarity detector.
     var onWorldAccelSample: ((Double, Double, Double, Double, TimeInterval) -> Void)?
+    /// Secondary consumer of the same samples. Lets the iPhone act as a MOTION SOURCE for the
+    /// watch while running no workout of its own — the primary callback is owned by
+    /// WorkoutSession and only exists during an iPhone workout.
+    var onWorldAccelSampleSecondary: ((Double, Double, Double, Double, TimeInterval) -> Void)?
 
     /// Raise the device-motion rate for accurate velocity integration while the user has
     /// forced velocity mode on; drop back to the thermal-friendly rate otherwise.

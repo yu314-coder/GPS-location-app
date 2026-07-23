@@ -1,6 +1,123 @@
 import Foundation
 import WatchConnectivity
 import Combine
+import CoreLocation
+
+/// Derives heading and speed from the iPhone's motion so the phone can act as a MOTION SOURCE
+/// for the watch while running no workout of its own (phone simply nearby in a pocket, watch
+/// recording in Force Velocity). A watch cannot resolve walking direction alone — arm swing
+/// defeats the acceleration-axis method — so without this the watch holds one heading and
+/// draws a straight line.
+///
+/// Same maths as the in-workout pipeline: low-pass, gated bias, ZUPT, clamped integration,
+/// plus PCA of world-frame horizontal acceleration for the walking axis. World-frame
+/// acceleration already has device orientation removed, so none of this assumes the phone
+/// points where you are going.
+final class PhoneMotionRelayEstimator {
+    private var velNorth = 0.0, velEast = 0.0
+    private var biasNorth = 0.0, biasEast = 0.0
+    private var prevResidualNorth = 0.0, prevResidualEast = 0.0
+    private var lpNorth = 0.0, lpEast = 0.0
+    private var zuptWindow: [(t: TimeInterval, accel: Double, rotation: Double)] = []
+    private var zuptWindowFilled = false
+    private var walkWindow: [(north: Double, east: Double)] = []
+    private var headingDegrees: Double = 0
+    private var hasHeading = false
+
+    private let ZUPT_ACCEL = 0.25, ZUPT_ROT = 0.35, ZUPT_WINDOW: TimeInterval = 0.75
+    private let ZUPT_BIAS_RATE = 0.05, BIAS_RATE = 0.01, BIAS_GATE = 0.3
+    private let WALK_SAMPLES = 150
+
+    func reset(seedHeading: Double?) {
+        velNorth = 0; velEast = 0; biasNorth = 0; biasEast = 0
+        prevResidualNorth = 0; prevResidualEast = 0; lpNorth = 0; lpEast = 0
+        zuptWindow.removeAll(); zuptWindowFilled = false; walkWindow.removeAll()
+        if let seedHeading { headingDegrees = seedHeading; hasHeading = true } else { hasHeading = false }
+    }
+
+    /// Feed one world-frame sample (north, east, up in m/s², rotation rate in rad/s).
+    func ingest(north: Double, east: Double, up: Double, rotationRate: Double, dt: TimeInterval) {
+        guard dt > 0 else { return }
+        let tau = 0.15, alpha = min(dt / (tau + dt), 1.0)
+        lpNorth += (north - lpNorth) * alpha
+        lpEast += (east - lpEast) * alpha
+
+        let rN = lpNorth - biasNorth, rE = lpEast - biasEast
+        walkWindow.append((north: rN, east: rE))
+        if walkWindow.count > WALK_SAMPLES { walkWindow.removeFirst() }
+
+        let sampleTime = (zuptWindow.last?.t ?? 0) + dt
+        zuptWindow.append((t: sampleTime, accel: sqrt(rN*rN + rE*rE + up*up), rotation: rotationRate))
+        while let first = zuptWindow.first, sampleTime - first.t > ZUPT_WINDOW {
+            zuptWindow.removeFirst(); zuptWindowFilled = true
+        }
+        let peakAccel = zuptWindow.map(\.accel).max() ?? 0
+        let peakRotation = zuptWindow.map(\.rotation).max() ?? 0
+        if zuptWindowFilled && peakAccel < ZUPT_ACCEL && peakRotation < ZUPT_ROT {
+            velNorth = 0; velEast = 0
+            biasNorth += rN * ZUPT_BIAS_RATE; biasEast += rE * ZUPT_BIAS_RATE
+            prevResidualNorth = 0; prevResidualEast = 0
+            return
+        }
+        if rotationRate > 4.0 { prevResidualNorth = 0; prevResidualEast = 0; return }
+        if sqrt(rN*rN + rE*rE) < BIAS_GATE {
+            biasNorth += rN * BIAS_RATE; biasEast += rE * BIAS_RATE
+        }
+        func clamped(_ v: Double) -> Double { Swift.max(-4.0, Swift.min(4.0, v)) }
+        let iN = clamped(lpNorth - biasNorth), iE = clamped(lpEast - biasEast)
+        velNorth += ((prevResidualNorth + iN) / 2.0) * dt
+        velEast += ((prevResidualEast + iE) / 2.0) * dt
+        prevResidualNorth = iN; prevResidualEast = iE
+    }
+
+    /// Principal axis of recent horizontal acceleration (walking axis), or nil when the axis
+    /// is not clearly dominant — it is meaningless when lateral sway rivals the forward push.
+    private func walkingAxisDegrees() -> Double? {
+        guard walkWindow.count >= 40 else { return nil }
+        let n = Double(walkWindow.count)
+        let mN = walkWindow.reduce(0.0) { $0 + $1.north } / n
+        let mE = walkWindow.reduce(0.0) { $0 + $1.east } / n
+        var cnn = 0.0, cee = 0.0, cne = 0.0
+        for s in walkWindow {
+            let dn = s.north - mN, de = s.east - mE
+            cnn += dn*dn; cee += de*de; cne += dn*de
+        }
+        let trace = cnn + cee, det = cnn*cee - cne*cne
+        let disc = Swift.max(trace*trace/4 - det, 0)
+        let l1 = trace/2 + sqrt(disc), l2 = trace/2 - sqrt(disc)
+        guard l1 > 0, l2 >= 0, l1 / Swift.max(l2, 1e-9) >= 4.0 else { return nil }
+        var deg = 0.5 * atan2(2*cne, cnn - cee) * 180 / .pi
+        if deg < 0 { deg += 360 }
+        return deg
+    }
+
+    /// Current best heading + speed, or nil if nothing trustworthy is available yet.
+    func currentState() -> (heading: Double, speed: Double, velNorth: Double, velEast: Double)? {
+        let speed = sqrt(velNorth*velNorth + velEast*velEast)
+        let residual = sqrt(prevResidualNorth*prevResidualNorth + prevResidualEast*prevResidualEast)
+        if speed > 3.0 && residual > 0.4 {
+            // Real sustained acceleration ⇒ the velocity vector is a trustworthy bearing.
+            var deg = atan2(velEast, velNorth) * 180 / .pi
+            if deg < 0 { deg += 360 }
+            headingDegrees = deg; hasHeading = true
+        } else if let axis = walkingAxisDegrees() {
+            // Resolve the axis's 180° ambiguity toward what we already believe.
+            let opposite = (axis + 180).truncatingRemainder(dividingBy: 360)
+            func diff(_ a: Double, _ b: Double) -> Double {
+                var d = abs(a - b).truncatingRemainder(dividingBy: 360)
+                if d > 180 { d = 360 - d }
+                return d
+            }
+            if hasHeading {
+                headingDegrees = diff(axis, headingDegrees) <= diff(opposite, headingDegrees) ? axis : opposite
+            } else {
+                headingDegrees = axis; hasHeading = true
+            }
+        }
+        guard hasHeading else { return nil }
+        return (headingDegrees, speed, velNorth, velEast)
+    }
+}
 
 struct FlightCheckpointPayload: Codable {
     let flightID: UUID
@@ -40,6 +157,9 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     @Published var isSharingGPS = false
     private var gpsSharingTimer: Timer?
     private let locationManager = LocationManager.shared
+    /// Derives heading/speed from iPhone motion so the phone can serve the watch even with no
+    /// iPhone workout running.
+    private let motionRelay = PhoneMotionRelayEstimator()
     private var cancellables = Set<AnyCancellable>()
     private var isMirroringWatchLiveActivity = false
     private var isLocalWorkoutActive = false
@@ -195,10 +315,42 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         }
         locationManager.requestImmediateLocationFix()
 
+        // Act as a MOTION SOURCE for the watch too, not just a GPS source. This runs with NO
+        // iPhone workout — the watch may be recording in Force Velocity with the phone merely
+        // nearby, and a watch alone cannot resolve walking direction. startTracking() above
+        // already started device motion, so we only need to consume and relay it.
+        motionRelay.reset(seedHeading: locationManager.currentLocation.flatMap {
+            $0.course >= 0 && $0.speed > 0.5 ? $0.course : nil
+        })
+        locationManager.onWorldAccelSampleSecondary = { [weak self] north, east, up, rotationRate, dt in
+            self?.motionRelay.ingest(north: north, east: east, up: up,
+                                     rotationRate: rotationRate, dt: dt)
+        }
+
         // Send GPS locations at 1Hz (every 1.0 second) to match watch GPS frequency
         gpsSharingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.sendCurrentLocationToWatch()
+            guard let self else { return }
+            self.sendCurrentLocationToWatch()
+            self.relayMotionDerivedStateIfNeeded()
         }
+    }
+
+    /// Relay motion-derived heading/speed when GPS cannot supply a usable heading. With a
+    /// moving GPS fix, sendCurrentLocationToWatch already carries course-over-ground, which is
+    /// better; this covers the no-GPS case (aircraft, tunnel, indoors) where the watch would
+    /// otherwise have no way to turn.
+    private func relayMotionDerivedStateIfNeeded() {
+        let fix = locationManager.currentLocation
+        let gpsUsableForHeading: Bool = {
+            guard let fix else { return false }
+            return Date().timeIntervalSince(fix.timestamp) < 5.0 && fix.course >= 0 && fix.speed > 0.5
+        }()
+        guard !gpsUsableForHeading, let state = motionRelay.currentState() else { return }
+        relayDeadReckoningState(speed: state.speed,
+                                headingDegrees: state.heading,
+                                velocityNorth: state.velNorth,
+                                velocityEast: state.velEast,
+                                isDeadReckoning: true)
     }
 
     func stopGPSSharing() {
@@ -208,6 +360,8 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         isSharingGPS = false
         gpsSharingTimer?.invalidate()
         gpsSharingTimer = nil
+        locationManager.onWorldAccelSampleSecondary = nil
+        motionRelay.reset(seedHeading: nil)
     }
 
     /// Relay the iPhone's computed dead-reckoning state to the watch, INDEPENDENT of GPS.
