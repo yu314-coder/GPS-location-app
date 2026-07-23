@@ -175,6 +175,9 @@ class WorkoutSession: ObservableObject {
     /// now — it is not, in a vehicle or aircraft, whatever activity the user selected.
     private var lastFallbackStepCount: Int = 0
     private var lastStepIncrementTime: Date?
+    /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
+    private var walkAccelWindow: [(north: Double, east: Double)] = []
+    private let WALK_WINDOW_SAMPLES = 150
     private var isStepBasedWorkout: Bool {
         workoutType == .walking || workoutType == .running || workoutType == .hiking
     }
@@ -1400,6 +1403,10 @@ class WorkoutSession: ObservableObject {
         let rN = worldAccelNorth - accelBiasNorth
         let rE = worldAccelEast - accelBiasEast
 
+        // Feed the walking-axis PCA window (world frame ⇒ independent of device orientation).
+        walkAccelWindow.append((north: rN, east: rE))
+        if walkAccelWindow.count > WALK_WINDOW_SAMPLES { walkAccelWindow.removeFirst() }
+
         // --- Stationarity detection over a sliding window ---------------------------------
         // Use the FULL 3-axis residual plus the gyro: a device at rest is quiet on every
         // axis and is not rotating. Judging by horizontal magnitude alone would call a
@@ -1565,6 +1572,45 @@ class WorkoutSession: ObservableObject {
         debugReplayTimer = timer
     }
 
+    /// Angular distance between two bearings, 0…180.
+    private func angularDistance(_ a: Double, _ b: Double) -> Double {
+        var d = abs(a - b).truncatingRemainder(dividingBy: 360)
+        if d > 180 { d = 360 - d }
+        return d
+    }
+
+    /// Walking axis (degrees from north, modulo 180) from the principal component of recent
+    /// WORLD-frame horizontal acceleration. World-frame acceleration has device orientation
+    /// already removed, so this measures how the BODY is moving, not how the device is held.
+    ///
+    /// Returns nil unless the principal axis is clearly dominant: when lateral sway rivals
+    /// the forward push the axis is meaningless, and on a wrist (arm swing dominant) it comes
+    /// out roughly perpendicular to the true direction. Better to return nothing than a
+    /// confident right angle.
+    private func walkingAxisHeading() -> Double? {
+        guard walkAccelWindow.count >= 40 else { return nil }
+        let n = Double(walkAccelWindow.count)
+        let meanN = walkAccelWindow.reduce(0.0) { $0 + $1.north } / n
+        let meanE = walkAccelWindow.reduce(0.0) { $0 + $1.east } / n
+        var cnn = 0.0, cee = 0.0, cne = 0.0
+        for s in walkAccelWindow {
+            let dn = s.north - meanN, de = s.east - meanE
+            cnn += dn * dn; cee += de * de; cne += dn * de
+        }
+        // Eigenvalues of the 2x2 covariance matrix.
+        let trace = cnn + cee
+        let det = cnn * cee - cne * cne
+        let disc = max(trace * trace / 4 - det, 0)
+        let lambda1 = trace / 2 + sqrt(disc)
+        let lambda2 = trace / 2 - sqrt(disc)
+        guard lambda1 > 0, lambda2 >= 0 else { return nil }
+        // Require the principal axis to carry clearly more variance than the orthogonal one.
+        guard lambda1 / max(lambda2, 1e-9) >= 4.0 else { return nil }
+        var deg = 0.5 * atan2(2 * cne, cnn - cee) * 180 / .pi
+        if deg < 0 { deg += 360 }
+        return deg
+    }
+
     private func resetInertialState(seedSpeed: Double, courseDegrees: Double) {
         let c = courseDegrees * .pi / 180
         motionVelNorth = seedSpeed * cos(c)
@@ -1635,33 +1681,46 @@ class WorkoutSession: ObservableObject {
         // alone) and caused distance to be systematically under-reported.
         // NO speed cap — speed is simply the magnitude of the velocity vector.
         let nextSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
+        // Whether steps are genuinely being counted right now (drives both the heading source
+        // and the distance source); computed before the heading block that consumes it.
+        let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 5.0 } ?? false
         let velHeading = nextSpeed > 0.1
             ? normalizedHeading(atan2(motionVelEast, motionVelNorth) * 180 / .pi)
             : nil
 
-        // HEADING: attitude yaw + anchored offset is PRIMARY. The gyro-fused attitude tracks
-        // every turn with no dependence on acceleration — walking has ~zero net forward
-        // acceleration, so the velocity-vector bearing has no signal there and drifts off the
-        // seed. The velocity vector is demoted to slowly RE-CALIBRATING the offset, and only
-        // when there is strong sustained horizontal acceleration (vehicle start / takeoff),
-        // where its bearing is actually informative.
+        // HEADING. Device ORIENTATION is deliberately NOT used as a proxy for direction of
+        // travel: nothing keeps a phone in a pocket, a phone in a hand, or a watch on a
+        // swinging wrist at a fixed angle to the body, so "travel = device yaw + offset" is
+        // an invalid assumption (it produced confidently wrong routes). Heading is derived
+        // only from measurements of MOTION, in priority order:
+        //
+        //   1. Velocity vector — valid when there is genuine sustained acceleration
+        //      (vehicle pulling away, aircraft takeoff/turn).
+        //   2. PCA of world-frame horizontal acceleration while stepping — the walking axis.
+        //      World-frame acceleration already has device orientation removed, so this is
+        //      independent of how the device is carried. Gated on a confidence check because
+        //      it is only trustworthy when the forward push dominates lateral sway: measured
+        //      ~1° error for a trunk/pocket carry, but ~88° (perpendicular) on a wrist where
+        //      arm swing dominates.
+        //   3. Otherwise hold the last known course rather than inventing a direction.
         let rNh = worldAccelNorth - accelBiasNorth
         let rEh = worldAccelEast - accelBiasEast
         let horizAccelMag = sqrt(rNh * rNh + rEh * rEh)
-        var yawHeading: Double? = nil
-        if let deviceYaw = locationManager.currentDeviceYawHeading, let offset = yawHeadingOffset {
-            yawHeading = normalizedHeading(deviceYaw + offset)
-            if let vh = velHeading, nextSpeed > 5.0, horizAccelMag > 0.5 {
-                var err = vh - yawHeading!
-                if err > 180 { err -= 360 } else if err < -180 { err += 360 }
-                yawHeadingOffset = normalizedHeading(offset + 0.1 * err)
-                yawHeading = normalizedHeading(deviceYaw + yawHeadingOffset!)
-            }
-        }
-        if let yh = yawHeading { motionHeadingDegrees = yh }
-        else if let vh = velHeading, locationManager.motionReferenceFrameIsAbsolute { motionHeadingDegrees = vh }
 
-        let headingDegrees = yawHeading
+        var resolvedHeading: Double? = nil
+        if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4,
+           locationManager.motionReferenceFrameIsAbsolute {
+            resolvedHeading = vh                       // real acceleration ⇒ trustworthy
+        } else if pedometerIsCounting, let axis = walkingAxisHeading() {
+            // Resolve the axis's 180° ambiguity toward the heading we already believe.
+            let opposite = normalizedHeading(axis + 180)
+            let keepAxis = angularDistance(axis, motionHeadingDegrees)
+                <= angularDistance(opposite, motionHeadingDegrees)
+            resolvedHeading = keepAxis ? axis : opposite
+        }
+        if let rh = resolvedHeading { motionHeadingDegrees = rh }
+
+        let headingDegrees = resolvedHeading
             ?? (locationManager.motionReferenceFrameIsAbsolute ? velHeading : nil)
             ?? normalizedHeading(
                 // Prefer GPS COURSE (true direction of travel) over the compass: inside a
@@ -1678,7 +1737,6 @@ class WorkoutSession: ObservableObject {
         // Route by what the sensors ACTUALLY detect, never by the activity label: the user
         // selects "Walking" while sitting in an aircraft, where the pedometer counts zero
         // steps — routing on the label alone yields zero distance and NO TRACK.
-        let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 5.0 } ?? false
         let distance: Double
         var sourceTag = "DR"
         if isStepBasedWorkout, pedometerIsCounting, let pedometerTotal = fallbackPedometerDistance {

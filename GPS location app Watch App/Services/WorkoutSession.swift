@@ -1858,21 +1858,23 @@ class WorkoutSession: NSObject, ObservableObject {
         let velHeading: Double? = nextSpeed > 0.1
             ? normalizedHeading(atan2(-motionVelY, motionVelX) * 180 / .pi)  // north=+X, east=−Y
             : nil
+        // Device ORIENTATION is deliberately NOT used as a proxy for travel direction: a watch
+        // rides a swinging wrist, so nothing holds it at a fixed angle to the body and
+        // "travel = yaw + offset" is invalid. Heading comes only from motion measurements —
+        // the velocity vector when there is genuine sustained acceleration (vehicle/aircraft).
+        //
+        // NOTE: no PCA walking-axis path on the WRIST. Measured in simulation, arm swing makes
+        // lateral sway dominate the forward push, so the principal axis lands roughly
+        // PERPENDICULAR to the true direction (~88° error). Holding the last known course is
+        // far better than confidently drawing a right angle. The iPhone (trunk/pocket carry,
+        // ~1° error) does use it.
         let rXh = worldAccelX - accelBiasX
         let rYh = worldAccelY - accelBiasY
         let horizAccelMag = sqrt(rXh * rXh + rYh * rYh)
-        if let deviceYaw = deviceYawHeadingDegrees, let offset = yawHeadingOffset {
-            var yawHeading = normalizedHeading(deviceYaw + offset)
-            if let vh = velHeading, nextSpeed > 5.0, horizAccelMag > 0.5, motionFrameIsAbsolute {
-                var err = vh - yawHeading
-                if err > 180 { err -= 360 } else if err < -180 { err += 360 }
-                yawHeadingOffset = normalizedHeading(offset + 0.1 * err)
-                yawHeading = normalizedHeading(deviceYaw + yawHeadingOffset!)
-            }
-            motionHeadingDegrees = yawHeading
-        } else if let vh = velHeading, motionFrameIsAbsolute {
+        if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4, motionFrameIsAbsolute {
             motionHeadingDegrees = vh
         }
+        // else: hold the last known heading (GPS course at engage, or the iPhone relay).
         // DISTANCE: for step-based activities use the PEDOMETER (already tracking since
         // workout start — step detection + Apple's stride model is accurate to a few %,
         // whereas steps sum to ~zero net acceleration and defeat the integrator). The
