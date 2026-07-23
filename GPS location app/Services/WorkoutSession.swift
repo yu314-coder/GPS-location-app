@@ -175,6 +175,12 @@ class WorkoutSession: ObservableObject {
     /// now — it is not, in a vehicle or aircraft, whatever activity the user selected.
     private var lastFallbackStepCount: Int = 0
     private var lastStepIncrementTime: Date?
+    /// Last heading backed by a real measurement (GPS course, or the velocity vector under
+    /// genuine acceleration), plus the device yaw at that moment. Used ONLY to decide which
+    /// end of the PCA walking axis we are travelling along — a binary choice, so gyro drift
+    /// is harmless here even though it would ruin an absolute heading.
+    private var trustedHeading: Double?
+    private var trustedHeadingYaw: Double?
     /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
     private var walkAccelWindow: [(north: Double, east: Double)] = []
     private let WALK_WINDOW_SAMPLES = 150
@@ -1712,13 +1718,31 @@ class WorkoutSession: ObservableObject {
            locationManager.motionReferenceFrameIsAbsolute {
             resolvedHeading = vh                       // real acceleration ⇒ trustworthy
         } else if pedometerIsCounting, let axis = walkingAxisHeading() {
-            // Resolve the axis's 180° ambiguity toward the heading we already believe.
+            // PCA yields an AXIS (a line), not a direction, so which END we travel along has
+            // to be decided separately. Comparing against the heading we already believe can
+            // never detect a REVERSAL — walking back the way you came lies on the same axis,
+            // so the old direction always won and the route kept going forward.
+            //
+            // Resolve it instead against the last TRUSTED heading rotated by how far the
+            // device has turned since. Note this uses gyro rotation only for a BINARY choice:
+            // even tens of degrees of drift cannot flip it, whereas the same signal would be
+            // useless as an absolute heading (which is why device pointing is not used as one).
+            var expected = motionHeadingDegrees
+            if let yawNow = locationManager.currentDeviceYawHeading,
+               let anchorYaw = trustedHeadingYaw, let anchorHeading = trustedHeading {
+                expected = normalizedHeading(anchorHeading + (yawNow - anchorYaw))
+            }
             let opposite = normalizedHeading(axis + 180)
-            let keepAxis = angularDistance(axis, motionHeadingDegrees)
-                <= angularDistance(opposite, motionHeadingDegrees)
+            let keepAxis = angularDistance(axis, expected) <= angularDistance(opposite, expected)
             resolvedHeading = keepAxis ? axis : opposite
         }
         if let rh = resolvedHeading { motionHeadingDegrees = rh }
+        // A heading backed by real acceleration is trustworthy; re-anchor the gyro reference
+        // to it so drift cannot accumulate between reversals.
+        if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4 {
+            trustedHeading = vh
+            trustedHeadingYaw = locationManager.currentDeviceYawHeading
+        }
 
         let headingDegrees = resolvedHeading
             ?? (locationManager.motionReferenceFrameIsAbsolute ? velHeading : nil)
@@ -1833,6 +1857,9 @@ class WorkoutSession: ObservableObject {
         } else {
             yawHeadingOffset = nil
         }
+        // Anchor the reversal reference: the seed course is a real measurement.
+        trustedHeading = course
+        trustedHeadingYaw = locationManager.currentDeviceYawHeading
         print("📍 Estimated-location fallback started after \(String(format: "%.1f", gapSeconds))s without GPS (seed \(String(format: "%.1f", seed * 3.6))km/h @ \(Int(course))°, yawAnchor=\(yawHeadingOffset.map { String(Int($0)) } ?? "none"))")
     }
 

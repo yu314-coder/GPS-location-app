@@ -23,6 +23,10 @@ final class PhoneMotionRelayEstimator {
     private var walkWindow: [(north: Double, east: Double)] = []
     private var headingDegrees: Double = 0
     private var hasHeading = false
+    /// Last heading backed by a real measurement, plus the device yaw then. Used ONLY to pick
+    /// which end of the PCA axis we travel along — a binary choice, so gyro drift is harmless.
+    private var trustedHeading: Double?
+    private var trustedHeadingYaw: Double?
 
     private let ZUPT_ACCEL = 0.25, ZUPT_ROT = 0.35, ZUPT_WINDOW: TimeInterval = 0.75
     private let ZUPT_BIAS_RATE = 0.05, BIAS_RATE = 0.01, BIAS_GATE = 0.3
@@ -32,7 +36,13 @@ final class PhoneMotionRelayEstimator {
         velNorth = 0; velEast = 0; biasNorth = 0; biasEast = 0
         prevResidualNorth = 0; prevResidualEast = 0; lpNorth = 0; lpEast = 0
         zuptWindow.removeAll(); zuptWindowFilled = false; walkWindow.removeAll()
-        if let seedHeading { headingDegrees = seedHeading; hasHeading = true } else { hasHeading = false }
+        if let seedHeading {
+            headingDegrees = seedHeading; hasHeading = true
+            trustedHeading = seedHeading
+            trustedHeadingYaw = LocationManager.shared.currentDeviceYawHeading
+        } else {
+            hasHeading = false; trustedHeading = nil; trustedHeadingYaw = nil
+        }
     }
 
     /// Feed one world-frame sample (north, east, up in m/s², rotation rate in rad/s).
@@ -95,24 +105,37 @@ final class PhoneMotionRelayEstimator {
     func currentState() -> (heading: Double, speed: Double, velNorth: Double, velEast: Double)? {
         let speed = sqrt(velNorth*velNorth + velEast*velEast)
         let residual = sqrt(prevResidualNorth*prevResidualNorth + prevResidualEast*prevResidualEast)
+        func diff(_ a: Double, _ b: Double) -> Double {
+            var d = abs(a - b).truncatingRemainder(dividingBy: 360)
+            if d > 180 { d = 360 - d }
+            return d
+        }
         if speed > 3.0 && residual > 0.4 {
             // Real sustained acceleration ⇒ the velocity vector is a trustworthy bearing.
             var deg = atan2(velEast, velNorth) * 180 / .pi
             if deg < 0 { deg += 360 }
             headingDegrees = deg; hasHeading = true
+            trustedHeading = deg
+            trustedHeadingYaw = LocationManager.shared.currentDeviceYawHeading
         } else if let axis = walkingAxisDegrees() {
-            // Resolve the axis's 180° ambiguity toward what we already believe.
+            // PCA gives an AXIS, not a direction. Comparing against the CURRENT belief can
+            // never detect a REVERSAL (walking back lies on the same axis), so resolve
+            // against the last trusted heading rotated by how far the device has turned
+            // since. Gyro rotation is used only for this binary end-of-axis choice.
+            var expected = headingDegrees
+            if let yawNow = LocationManager.shared.currentDeviceYawHeading,
+               let anchorYaw = trustedHeadingYaw, let anchorHeading = trustedHeading {
+                var e = anchorHeading + (yawNow - anchorYaw)
+                e = e.truncatingRemainder(dividingBy: 360); if e < 0 { e += 360 }
+                expected = e
+            }
             let opposite = (axis + 180).truncatingRemainder(dividingBy: 360)
-            func diff(_ a: Double, _ b: Double) -> Double {
-                var d = abs(a - b).truncatingRemainder(dividingBy: 360)
-                if d > 180 { d = 360 - d }
-                return d
-            }
-            if hasHeading {
-                headingDegrees = diff(axis, headingDegrees) <= diff(opposite, headingDegrees) ? axis : opposite
+            if hasHeading || trustedHeading != nil {
+                headingDegrees = diff(axis, expected) <= diff(opposite, expected) ? axis : opposite
             } else {
-                headingDegrees = axis; hasHeading = true
+                headingDegrees = axis
             }
+            hasHeading = true
         }
         guard hasHeading else { return nil }
         return (headingDegrees, speed, velNorth, velEast)
