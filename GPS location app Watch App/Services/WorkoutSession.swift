@@ -143,6 +143,10 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastPedometerDistanceForDR: Double?
     /// Distance measured but not yet long enough to justify a route point; carried forward.
     private var pendingMotionDistance: Double = 0
+    /// Step-count tracking used to decide whether the pedometer is a VALID distance source
+    /// right now (it is not, in a vehicle or aircraft, whatever the activity label says).
+    private var lastPedometerStepCountForDR: Int = 0
+    private var lastStepIncrementTime: Date?
     // iPhone's relayed dead-reckoning answer. The watch's own device motion is often
     // suppressed (memory pressure / power), and the old assist only arrived attached to a GPS
     // relay — so with no GPS the watch had nothing and its speed froze. The iPhone runs the
@@ -1861,8 +1865,17 @@ class WorkoutSession: NSObject, ObservableObject {
         // workout start — step detection + Apple's stride model is accurate to a few %,
         // whereas steps sum to ~zero net acceleration and defeat the integrator). The
         // accelerometer integration is the distance source only for vehicle/flight types.
+        // Decide by what the sensors ACTUALLY detect, never by the activity label. The user
+        // selects "Walking" while sitting in an aircraft, where the pedometer counts zero
+        // steps — routing on the label alone produced zero distance and NO TRACK AT ALL.
+        // Steps are only a valid distance source while steps are genuinely being counted.
+        let steps = pedometerManager.currentStepCount
+        if steps > lastPedometerStepCountForDR { lastStepIncrementTime = now }
+        lastPedometerStepCountForDR = steps
+        let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 5.0 } ?? false
+
         let distance: Double
-        if isStepBased, pedometerManager.isDistanceAvailable {
+        if isStepBased, pedometerManager.isDistanceAvailable, pedometerIsCounting {
             let pedometerTotal = pedometerManager.currentDistance
             if let last = lastPedometerDistanceForDR {
                 distance = max(pedometerTotal - last, 0)
@@ -1872,6 +1885,9 @@ class WorkoutSession: NSObject, ObservableObject {
             lastPedometerDistanceForDR = pedometerTotal
             motionFallbackSpeed = distance / dt
         } else {
+            // Not actually stepping (vehicle / aircraft / stationary): integrate acceleration,
+            // and drop the stale pedometer baseline so a later walk re-anchors cleanly.
+            lastPedometerDistanceForDR = nil
             distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
             motionFallbackSpeed = nextSpeed
         }

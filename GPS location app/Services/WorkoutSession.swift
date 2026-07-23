@@ -171,6 +171,10 @@ class WorkoutSession: ObservableObject {
     /// Distance measured but not yet long enough to justify a route point; carried forward so
     /// short ticks accumulate rather than being thrown away.
     private var pendingEstimatedDistance: Double = 0
+    /// Step tracking used to decide whether the pedometer is a VALID distance source right
+    /// now — it is not, in a vehicle or aircraft, whatever activity the user selected.
+    private var lastFallbackStepCount: Int = 0
+    private var lastStepIncrementTime: Date?
     private var isStepBasedWorkout: Bool {
         workoutType == .walking || workoutType == .running || workoutType == .hiking
     }
@@ -1667,15 +1671,22 @@ class WorkoutSession: ObservableObject {
 
         // DISTANCE: pedometer for step activities (PDR — accurate to a few %), accelerometer
         // integration only for vehicle/flight where there are no steps to count.
+        // Route by what the sensors ACTUALLY detect, never by the activity label: the user
+        // selects "Walking" while sitting in an aircraft, where the pedometer counts zero
+        // steps — routing on the label alone yields zero distance and NO TRACK.
+        let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 5.0 } ?? false
         let distance: Double
         var sourceTag = "DR"
-        if isStepBasedWorkout, let pedometerTotal = fallbackPedometerDistance {
+        if isStepBasedWorkout, pedometerIsCounting, let pedometerTotal = fallbackPedometerDistance {
             let delta = pedometerTotal - lastFallbackPedometerDistance
             lastFallbackPedometerDistance = pedometerTotal
             distance = max(delta, 0)
             estimatedFallbackSpeed = distance / dt
             sourceTag = "PDR"
         } else {
+            // Not actually stepping: integrate acceleration, and drop the stale pedometer
+            // baseline so a later real walk re-anchors cleanly instead of dumping a jump.
+            lastFallbackPedometerDistance = fallbackPedometerDistance ?? lastFallbackPedometerDistance
             distance = ((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt
             estimatedFallbackSpeed = nextSpeed
         }
@@ -1735,11 +1746,19 @@ class WorkoutSession: ObservableObject {
         fallbackPedometerDistance = nil
         lastFallbackPedometerDistance = 0
         pendingEstimatedDistance = 0
+        lastFallbackStepCount = 0
+        lastStepIncrementTime = nil
         if isStepBasedWorkout && CMPedometer.isDistanceAvailable() && !fallbackPedometerActive {
             fallbackPedometerActive = true
             fallbackPedometer.startUpdates(from: Date()) { [weak self] data, _ in
-                guard let self, let distance = data?.distance?.doubleValue else { return }
-                DispatchQueue.main.async { self.fallbackPedometerDistance = distance }
+                guard let self, let data else { return }
+                let distance = data.distance?.doubleValue
+                let steps = data.numberOfSteps.intValue
+                DispatchQueue.main.async {
+                    if let distance { self.fallbackPedometerDistance = distance }
+                    if steps > self.lastFallbackStepCount { self.lastStepIncrementTime = Date() }
+                    self.lastFallbackStepCount = steps
+                }
             }
             print("📍 👟 PDR: pedometer engaged as gap distance source")
         }
@@ -1769,6 +1788,8 @@ class WorkoutSession: ObservableObject {
         fallbackPedometerDistance = nil
         lastFallbackPedometerDistance = 0
         pendingEstimatedDistance = 0
+        lastFallbackStepCount = 0
+        lastStepIncrementTime = nil
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
     }
