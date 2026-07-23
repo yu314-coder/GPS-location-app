@@ -1873,8 +1873,16 @@ class WorkoutSession: NSObject, ObservableObject {
         let horizAccelMag = sqrt(rXh * rXh + rYh * rYh)
         if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4, motionFrameIsAbsolute {
             motionHeadingDegrees = vh
+        } else if let relayedHeading = iPhoneDRHeading, let ts = iPhoneDRTimestamp,
+                  now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
+            // Prefer the iPhone's heading over holding a stale course. The watch has NO way to
+            // determine walking direction on its own (arm swing defeats the acceleration-axis
+            // method, and device orientation is not a motion measurement), whereas an iPhone
+            // carried on the trunk/in a pocket recovers the walking axis to ~1°. Bluetooth
+            // relay, so this works with no internet.
+            motionHeadingDegrees = normalizedHeading(relayedHeading)
         }
-        // else: hold the last known heading (GPS course at engage, or the iPhone relay).
+        // else: hold the last known heading (GPS course at engage).
         // DISTANCE: for step-based activities use the PEDOMETER (already tracking since
         // workout start — step detection + Apple's stride model is accurate to a few %,
         // whereas steps sum to ~zero net acceleration and defeat the integrator). The
