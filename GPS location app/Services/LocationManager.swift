@@ -53,6 +53,15 @@ class LocationManager: NSObject, ObservableObject {
     /// World-frame heading of the device's +Y axis from the gyro-fused attitude. Changes in
     /// this value track turns regardless of acceleration; see deviceYawHeading(from:).
     private(set) var currentDeviceYawHeading: Double?
+    /// UNWRAPPED cumulative device rotation in degrees, accumulated at SENSOR rate.
+    ///
+    /// Consumers need the total angle turned between two moments. Taking that from the wrapped
+    /// heading once per second cannot distinguish a fast 180° about-face from a sensor glitch,
+    /// and any "implausible jump" filter then discards the very reversal it needs to see. At
+    /// 50 Hz even a violent 5 rad/s turn moves under 6° per sample, so genuine motion is always
+    /// small and continuous here while true discontinuities remain rejectable.
+    private(set) var cumulativeDeviceYawRotation: Double = 0
+    private var lastRawYawForAccumulation: Double?
     private let standardGravity = 9.80665
 
     // GPS reconnection logic
@@ -602,6 +611,7 @@ class LocationManager: NSObject, ObservableObject {
 
         motionManager.deviceMotionUpdateInterval = 0.5
         lastMotionSampleTimestamp = nil
+        lastRawYawForAccumulation = nil
         print("📈 Starting device-motion acceleration recording")
 
         // Whether the attitude frame is geographically anchored. `.xArbitraryZVertical` has a
@@ -638,6 +648,15 @@ class LocationManager: NSObject, ObservableObject {
             let referenceAcceleration = self.trueNorthAcceleration(from: motion)
             if let yawHeading = self.deviceYawHeading(from: motion) {
                 self.currentDeviceYawHeading = yawHeading
+                // Accumulate unwrapped rotation. Per-sample deltas are small for any real
+                // motion, so a 30° ceiling rejects only genuine discontinuities and never
+                // clips a fast turn — which a per-second delta cannot do.
+                if let previous = self.lastRawYawForAccumulation {
+                    var delta = yawHeading - previous
+                    if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
+                    if abs(delta) < 30 { self.cumulativeDeviceYawRotation += delta }
+                }
+                self.lastRawYawForAccumulation = yawHeading
             }
             let horizontalAcceleration = sqrt(
                 referenceAcceleration.north * referenceAcceleration.north +
@@ -717,6 +736,7 @@ class LocationManager: NSObject, ObservableObject {
     private func stopMotionTracking() {
         motionManager.stopDeviceMotionUpdates()
         lastMotionSampleTimestamp = nil
+        lastRawYawForAccumulation = nil
         DispatchQueue.main.async { [weak self] in
             self?.currentMotionAcceleration = nil
             self?.currentPitch = nil

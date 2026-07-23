@@ -1729,17 +1729,17 @@ class WorkoutSession: ObservableObject {
             // 1) Propagate by how far the DEVICE turned since the last tick. Attitude yaw is
             //    gyro-fused and absolute, so its DELTA is an accurate turn angle. This is a
             //    rotation measurement, not an assumption that the device points where you go.
-            if let yawNow = locationManager.currentDeviceYawHeading {
-                if let yawPrev = lastDeviceYawForHeading {
-                    var dYaw = yawNow - yawPrev
-                    if dYaw > 180 { dYaw -= 360 } else if dYaw < -180 { dYaw += 360 }
-                    // Reject implausible jumps (device re-gripped / pulled from a pocket).
-                    if abs(dYaw) < 120 {
-                        motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
-                    }
-                }
-                lastDeviceYawForHeading = yawNow
+            // Use the UNWRAPPED cumulative rotation, not a per-tick wrapped delta. A brisk
+            // about-face turns ~180° within one tick, which the previous "implausible jump"
+            // guard discarded outright — so reversals were never propagated and the 180°
+            // ambiguity could not resolve. Sensor-rate accumulation makes a fast turn a run of
+            // small deltas, so nothing legitimate is ever clipped.
+            let cumulativeYaw = locationManager.cumulativeDeviceYawRotation
+            if let previousCumulative = lastDeviceYawForHeading {
+                let dYaw = cumulativeYaw - previousCumulative
+                motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
             }
+            lastDeviceYawForHeading = cumulativeYaw
             // 2) Pull slowly toward the PCA walking axis, which is absolute and orientation-
             //    independent. This removes the drift the gyro accumulates, without letting a
             //    slow window dictate fast turn dynamics. The axis's 180° ambiguity resolves
@@ -1761,7 +1761,7 @@ class WorkoutSession: ObservableObject {
             motionHeadingDegrees = vh
             trustedHeading = vh
             trustedHeadingYaw = locationManager.currentDeviceYawHeading
-            lastDeviceYawForHeading = locationManager.currentDeviceYawHeading
+            lastDeviceYawForHeading = locationManager.cumulativeDeviceYawRotation
         }
 
         let headingDegrees = resolvedHeading
@@ -1880,7 +1880,7 @@ class WorkoutSession: ObservableObject {
         // Anchor the reversal reference: the seed course is a real measurement.
         trustedHeading = course
         trustedHeadingYaw = locationManager.currentDeviceYawHeading
-        lastDeviceYawForHeading = locationManager.currentDeviceYawHeading
+        lastDeviceYawForHeading = locationManager.cumulativeDeviceYawRotation
         motionHeadingDegrees = course
         print("📍 Estimated-location fallback started after \(String(format: "%.1f", gapSeconds))s without GPS (seed \(String(format: "%.1f", seed * 3.6))km/h @ \(Int(course))°, yawAnchor=\(yawHeadingOffset.map { String(Int($0)) } ?? "none"))")
     }

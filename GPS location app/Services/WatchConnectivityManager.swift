@@ -42,7 +42,7 @@ final class PhoneMotionRelayEstimator {
             headingDegrees = seedHeading; hasHeading = true
             trustedHeading = seedHeading
             trustedHeadingYaw = LocationManager.shared.currentDeviceYawHeading
-            lastDeviceYaw = LocationManager.shared.currentDeviceYawHeading
+            lastDeviceYaw = LocationManager.shared.cumulativeDeviceYawRotation
         } else {
             hasHeading = false; trustedHeading = nil; trustedHeadingYaw = nil; lastDeviceYaw = nil
         }
@@ -121,24 +121,26 @@ final class PhoneMotionRelayEstimator {
             headingDegrees = deg; hasHeading = true
             trustedHeading = deg
             trustedHeadingYaw = yawNow
-            lastDeviceYaw = yawNow
+            lastDeviceYaw = LocationManager.shared.cumulativeDeviceYawRotation
         } else {
             // COMPLEMENTARY FILTER: turn ANGLE from the gyro, absolute direction from PCA.
             // Taking heading straight from the PCA axis made turns shallow and late, because
             // that axis averages a multi-second window spanning both sides of the turn.
             // 1) Propagate by the device's yaw DELTA — an accurate turn angle, and a rotation
             //    measurement rather than an assumption about where the device points.
-            if let yawNow, let yawPrev = lastDeviceYaw {
-                var dYaw = yawNow - yawPrev
-                if dYaw > 180 { dYaw -= 360 } else if dYaw < -180 { dYaw += 360 }
-                if abs(dYaw) < 120 {   // reject re-grip / pocket-extraction jumps
-                    headingDegrees = headingDegrees + dYaw
-                    headingDegrees = headingDegrees.truncatingRemainder(dividingBy: 360)
-                    if headingDegrees < 0 { headingDegrees += 360 }
-                    hasHeading = hasHeading || trustedHeading != nil
-                }
+            // UNWRAPPED cumulative rotation, not a per-tick wrapped delta: a brisk about-face
+            // turns ~180° inside one tick, and the old "implausible jump" guard discarded
+            // exactly that — so reversals never propagated. Sensor-rate accumulation makes a
+            // fast turn a run of small deltas, so nothing legitimate is clipped.
+            let cumulativeYaw = LocationManager.shared.cumulativeDeviceYawRotation
+            if let previousCumulative = lastDeviceYaw {
+                let dYaw = cumulativeYaw - previousCumulative
+                headingDegrees = headingDegrees + dYaw
+                headingDegrees = headingDegrees.truncatingRemainder(dividingBy: 360)
+                if headingDegrees < 0 { headingDegrees += 360 }
+                hasHeading = hasHeading || trustedHeading != nil
             }
-            if let yawNow { lastDeviceYaw = yawNow }
+            lastDeviceYaw = cumulativeYaw
             // 2) Pull slowly toward the absolute PCA axis to shed gyro drift. The 180°
             //    ambiguity resolves against the gyro-propagated heading, so reversals still
             //    register.
