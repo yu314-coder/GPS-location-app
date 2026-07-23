@@ -168,6 +168,9 @@ class WorkoutSession: ObservableObject {
     private var fallbackPedometerDistance: Double?      // cumulative metres since fallback start
     private var lastFallbackPedometerDistance: Double = 0
     private var fallbackPedometerActive = false
+    /// Distance measured but not yet long enough to justify a route point; carried forward so
+    /// short ticks accumulate rather than being thrown away.
+    private var pendingEstimatedDistance: Double = 0
     private var isStepBasedWorkout: Bool {
         workoutType == .walking || workoutType == .running || workoutType == .hiking
     }
@@ -1428,12 +1431,17 @@ class WorkoutSession: ObservableObject {
             return
         }
 
-        // FAST-ROTATION GUARD: while the device is being rotated quickly (handled, flipped,
-        // swung — indoors especially), the attitude estimate lags and GRAVITY leaks into the
-        // "horizontal" axes; integrating that produced multi-thousand-km/h phantom speed.
-        // Vehicle/aircraft turns are ≤ ~0.5 rad/s, hand manipulation is 2–5 rad/s, so freeze
-        // integration (hold velocity) above 1.5 rad/s rather than integrate garbage.
-        if rotationRate > 1.5 {
+        // VIOLENT-ROTATION GUARD: when the device is whipped around, the attitude estimate
+        // lags and GRAVITY leaks into the "horizontal" axes, which integrates into absurd
+        // speed. Freeze integration only for genuinely violent rotation.
+        //
+        // THRESHOLD HISTORY: this was 1.5 rad/s, which broke recording entirely — ordinary
+        // WALKING (arm swing, body sway, phone shifting in a pocket) routinely exceeds
+        // 1.5 rad/s, so integration froze on nearly every sample, velocity never built, and
+        // no route point ever cleared the append threshold. Body motion runs ~1–3 rad/s, so
+        // the freeze must sit above that; the residual clamp below does the everyday
+        // spike-bounding work.
+        if rotationRate > 4.0 {
             prevResidualNorth = 0
             prevResidualEast = 0
             return
@@ -1450,7 +1458,7 @@ class WorkoutSession: ObservableObject {
         // Trapezoidal integration — no leak, no damping, but the residual is CLAMPED to a
         // physical bound: no ground or air vehicle sustains |a| > 6 m/s² horizontally (a jet
         // takeoff is ~3), so anything larger is sensor/attitude noise and is clipped.
-        func clamped(_ v: Double) -> Double { max(-6.0, min(6.0, v)) }
+        func clamped(_ v: Double) -> Double { max(-4.0, min(4.0, v)) }
         let iN = clamped(worldAccelNorth - accelBiasNorth)
         let iE = clamped(worldAccelEast - accelBiasEast)
         motionVelNorth += ((prevResidualNorth + iN) / 2.0) * dt
@@ -1695,9 +1703,16 @@ class WorkoutSession: ObservableObject {
             velocityEast: motionVelEast,
             isDeadReckoning: true)
 
-        guard distance >= 0.25 else { return }
-        appendEstimatedLocation(distanceMeters: distance, headingDegrees: headingDegrees, timestamp: now)
-        estimatedFallbackDistanceAdded += distance
+        // Accumulate below the append threshold instead of DISCARDING. Previously a tick
+        // under 0.25 m returned early and the distance was lost for good — the pedometer's
+        // cumulative baseline had already advanced — so slow walking silently dropped
+        // distance and appended nothing.
+        pendingEstimatedDistance += distance
+        guard pendingEstimatedDistance >= 0.25 else { return }
+        let appendDistance = pendingEstimatedDistance
+        pendingEstimatedDistance = 0
+        appendEstimatedLocation(distanceMeters: appendDistance, headingDegrees: headingDegrees, timestamp: now)
+        estimatedFallbackDistanceAdded += appendDistance
     }
 
     private func startEstimatedLocationFallback(anchor: FlightLocation?, gapSeconds: TimeInterval) {
@@ -1719,6 +1734,7 @@ class WorkoutSession: ObservableObject {
         // PDR distance source for step activities: pedometer from the start of the gap.
         fallbackPedometerDistance = nil
         lastFallbackPedometerDistance = 0
+        pendingEstimatedDistance = 0
         if isStepBasedWorkout && CMPedometer.isDistanceAvailable() && !fallbackPedometerActive {
             fallbackPedometerActive = true
             fallbackPedometer.startUpdates(from: Date()) { [weak self] data, _ in
@@ -1752,6 +1768,7 @@ class WorkoutSession: ObservableObject {
         }
         fallbackPedometerDistance = nil
         lastFallbackPedometerDistance = 0
+        pendingEstimatedDistance = 0
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
     }

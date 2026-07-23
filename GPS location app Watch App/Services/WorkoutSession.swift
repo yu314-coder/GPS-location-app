@@ -141,6 +141,8 @@ class WorkoutSession: NSObject, ObservableObject {
     private var yawHeadingOffset: Double?
     /// Pedometer cumulative-distance baseline for the PDR distance path (step activities).
     private var lastPedometerDistanceForDR: Double?
+    /// Distance measured but not yet long enough to justify a route point; carried forward.
+    private var pendingMotionDistance: Double = 0
     // iPhone's relayed dead-reckoning answer. The watch's own device motion is often
     // suppressed (memory pressure / power), and the old assist only arrived attached to a GPS
     // relay — so with no GPS the watch had nothing and its speed froze. The iPhone runs the
@@ -1542,6 +1544,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
         lastPedometerDistanceForDR = nil
+        pendingMotionDistance = 0
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0
@@ -1585,11 +1588,15 @@ class WorkoutSession: NSObject, ObservableObject {
             prevResidualY = 0
             return
         }
-        // FAST-ROTATION GUARD: during quick wrist/hand rotation the attitude lags and gravity
-        // leaks into the horizontal axes; integrating that produced phantom multi-thousand-
-        // km/h speeds. Vehicle turns are ≤ ~0.5 rad/s, hand/wrist manipulation 2–5 rad/s —
-        // freeze integration (hold velocity) above 1.5 rad/s.
-        if rotMag > 1.5 {
+        // VIOLENT-ROTATION GUARD: whipping the device around makes the attitude lag, leaking
+        // gravity into the horizontal axes and integrating into absurd speed.
+        //
+        // THRESHOLD HISTORY: this was 1.5 rad/s and broke recording — ordinary walking (arm
+        // swing especially, on a WRIST) exceeds that constantly, so integration froze on
+        // nearly every sample and no route point was ever produced. Body motion is
+        // ~1–3 rad/s, so the freeze must sit above it; the residual clamp handles everyday
+        // spikes.
+        if rotMag > 4.0 {
             prevResidualX = 0
             prevResidualY = 0
             return
@@ -1600,7 +1607,7 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         // Residual CLAMPED to a physical bound (no vehicle sustains |a| > 6 m/s²; a jet
         // takeoff is ~3) so attitude/sensor spikes clip instead of integrating.
-        func clamped(_ v: Double) -> Double { Swift.max(-6.0, Swift.min(6.0, v)) }
+        func clamped(_ v: Double) -> Double { Swift.max(-4.0, Swift.min(4.0, v)) }
         let iX = clamped(worldAccelX - accelBiasX)
         let iY = clamped(worldAccelY - accelBiasY)
         motionVelX += ((prevResidualX + iX) / 2.0) * dtS
@@ -1883,10 +1890,16 @@ class WorkoutSession: NSObject, ObservableObject {
             motionFallbackDistanceAdded
         )
 
-        guard distance >= 0.1 else { return }
+        // Accumulate rather than discard: a sub-threshold tick used to be dropped outright
+        // even though the pedometer baseline had already advanced, permanently losing that
+        // distance.
+        pendingMotionDistance += distance
+        guard pendingMotionDistance >= 0.1 else { return }
+        let appendDistance = pendingMotionDistance
+        pendingMotionDistance = 0
 
-        appendEstimatedPedometerFallbackLocation(distanceMeters: distance, timestamp: now)
-        motionFallbackDistanceAdded += distance
+        appendEstimatedPedometerFallbackLocation(distanceMeters: appendDistance, timestamp: now)
+        motionFallbackDistanceAdded += appendDistance
 
         let now2 = Date()
         if now2.timeIntervalSince(lastMotionFallbackLogTime) >= 5.0 {
@@ -1931,6 +1944,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
         lastPedometerDistanceForDR = nil
+        pendingMotionDistance = 0
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0
