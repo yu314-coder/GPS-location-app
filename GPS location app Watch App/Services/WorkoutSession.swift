@@ -292,6 +292,15 @@ class WorkoutSession: NSObject, ObservableObject {
         // Set up iPhone GPS fallback callback
         connectivityManager.onIPhoneLocationReceived = { [weak self] location, mode in
             guard let self = self else { return }
+            // Any relayed iPhone fix also supplies a HEADING for dead reckoning. This path
+            // runs off the iPhone's GPS-sharing timer, so it does not depend on the iPhone
+            // being in a workout or in dead-reckoning itself — which is why the watch used to
+            // sit on one heading and draw a straight line. Course-over-ground from a moving
+            // fix is the most reliable heading available.
+            if let course = self.validCourse(location.course), location.speed > 0.5 {
+                self.iPhoneDRHeading = course
+                self.iPhoneDRTimestamp = Date()
+            }
             switch mode {
             case .fallback:
                 print("⌚ 📱 Received GPS from iPhone (fallback mode)")

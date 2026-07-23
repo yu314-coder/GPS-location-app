@@ -2133,6 +2133,22 @@ class WorkoutSession: ObservableObject {
         currentMetrics.updateSplits(startDate: flight.startDate)
         persistActiveWorkoutSnapshot(force: false, reason: "locationTick")
 
+        // Relay the iPhone's BEST-KNOWN heading to the watch on every fix, not only from the
+        // dead-reckoning tick. A watch cannot resolve walking direction by itself (arm swing
+        // defeats the acceleration-axis method), so it depends on this. Previously the relay
+        // fired only while the iPhone was ITSELF dead reckoning — so on a normal walk, where
+        // the iPhone still has GPS, the watch received nothing, held one course and drew a
+        // STRAIGHT LINE. With GPS present, course-over-ground is the best heading there is.
+        if let course = validCourse(location.course) {
+            let speed = max(location.speed, 0)
+            WatchConnectivityManager.shared.relayDeadReckoningState(
+                speed: speed,
+                headingDegrees: course,
+                velocityNorth: speed * cos(course * .pi / 180),
+                velocityEast: speed * sin(course * .pi / 180),
+                isDeadReckoning: false)
+        }
+
         // Update Live Activity (throttled to every 2 seconds)
         let now = Date()
         if lastLiveActivityUpdate == nil || now.timeIntervalSince(lastLiveActivityUpdate!) >= LIVE_ACTIVITY_UPDATE_INTERVAL {
