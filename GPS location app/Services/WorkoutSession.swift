@@ -181,9 +181,11 @@ class WorkoutSession: ObservableObject {
     /// is harmless here even though it would ruin an absolute heading.
     private var trustedHeading: Double?
     private var trustedHeadingYaw: Double?
+    /// Device yaw at the previous heading tick; its DELTA gives the turn angle.
+    private var lastDeviceYawForHeading: Double?
     /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
     private var walkAccelWindow: [(north: Double, east: Double)] = []
-    private let WALK_WINDOW_SAMPLES = 150
+    private let WALK_WINDOW_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
     private var isStepBasedWorkout: Bool {
         workoutType == .walking || workoutType == .running || workoutType == .hiking
     }
@@ -1717,31 +1719,49 @@ class WorkoutSession: ObservableObject {
         if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4,
            locationManager.motionReferenceFrameIsAbsolute {
             resolvedHeading = vh                       // real acceleration ⇒ trustworthy
-        } else if pedometerIsCounting, let axis = walkingAxisHeading() {
-            // PCA yields an AXIS (a line), not a direction, so which END we travel along has
-            // to be decided separately. Comparing against the heading we already believe can
-            // never detect a REVERSAL — walking back the way you came lies on the same axis,
-            // so the old direction always won and the route kept going forward.
+        } else {
+            // COMPLEMENTARY FILTER. Turn ANGLE comes from the gyro, absolute direction from
+            // PCA. Previously heading was taken straight from the PCA axis, but that axis is
+            // computed over a ~3 s window, so during a turn it averages acceleration from
+            // before AND after — turns came out shallow and late, and the confidence gate
+            // froze the heading mid-turn entirely.
             //
-            // Resolve it instead against the last TRUSTED heading rotated by how far the
-            // device has turned since. Note this uses gyro rotation only for a BINARY choice:
-            // even tens of degrees of drift cannot flip it, whereas the same signal would be
-            // useless as an absolute heading (which is why device pointing is not used as one).
-            var expected = motionHeadingDegrees
-            if let yawNow = locationManager.currentDeviceYawHeading,
-               let anchorYaw = trustedHeadingYaw, let anchorHeading = trustedHeading {
-                expected = normalizedHeading(anchorHeading + (yawNow - anchorYaw))
+            // 1) Propagate by how far the DEVICE turned since the last tick. Attitude yaw is
+            //    gyro-fused and absolute, so its DELTA is an accurate turn angle. This is a
+            //    rotation measurement, not an assumption that the device points where you go.
+            if let yawNow = locationManager.currentDeviceYawHeading {
+                if let yawPrev = lastDeviceYawForHeading {
+                    var dYaw = yawNow - yawPrev
+                    if dYaw > 180 { dYaw -= 360 } else if dYaw < -180 { dYaw += 360 }
+                    // Reject implausible jumps (device re-gripped / pulled from a pocket).
+                    if abs(dYaw) < 120 {
+                        motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
+                    }
+                }
+                lastDeviceYawForHeading = yawNow
             }
-            let opposite = normalizedHeading(axis + 180)
-            let keepAxis = angularDistance(axis, expected) <= angularDistance(opposite, expected)
-            resolvedHeading = keepAxis ? axis : opposite
+            // 2) Pull slowly toward the PCA walking axis, which is absolute and orientation-
+            //    independent. This removes the drift the gyro accumulates, without letting a
+            //    slow window dictate fast turn dynamics. The axis's 180° ambiguity resolves
+            //    against the now gyro-propagated heading, so reversals are still detected.
+            if pedometerIsCounting, let axis = walkingAxisHeading() {
+                let opposite = normalizedHeading(axis + 180)
+                let target = angularDistance(axis, motionHeadingDegrees)
+                    <= angularDistance(opposite, motionHeadingDegrees) ? axis : opposite
+                var err = target - motionHeadingDegrees
+                if err > 180 { err -= 360 } else if err < -180 { err += 360 }
+                motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + 0.25 * err)
+            }
+            resolvedHeading = motionHeadingDegrees
         }
         if let rh = resolvedHeading { motionHeadingDegrees = rh }
-        // A heading backed by real acceleration is trustworthy; re-anchor the gyro reference
-        // to it so drift cannot accumulate between reversals.
+        // A heading backed by real acceleration is authoritative: snap to it and re-anchor the
+        // gyro reference so drift cannot accumulate across it.
         if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4 {
+            motionHeadingDegrees = vh
             trustedHeading = vh
             trustedHeadingYaw = locationManager.currentDeviceYawHeading
+            lastDeviceYawForHeading = locationManager.currentDeviceYawHeading
         }
 
         let headingDegrees = resolvedHeading
@@ -1860,6 +1880,8 @@ class WorkoutSession: ObservableObject {
         // Anchor the reversal reference: the seed course is a real measurement.
         trustedHeading = course
         trustedHeadingYaw = locationManager.currentDeviceYawHeading
+        lastDeviceYawForHeading = locationManager.currentDeviceYawHeading
+        motionHeadingDegrees = course
         print("📍 Estimated-location fallback started after \(String(format: "%.1f", gapSeconds))s without GPS (seed \(String(format: "%.1f", seed * 3.6))km/h @ \(Int(course))°, yawAnchor=\(yawHeadingOffset.map { String(Int($0)) } ?? "none"))")
     }
 

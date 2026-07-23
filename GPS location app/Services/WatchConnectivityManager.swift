@@ -27,10 +27,12 @@ final class PhoneMotionRelayEstimator {
     /// which end of the PCA axis we travel along — a binary choice, so gyro drift is harmless.
     private var trustedHeading: Double?
     private var trustedHeadingYaw: Double?
+    /// Device yaw at the previous state query; its DELTA gives the turn angle.
+    private var lastDeviceYaw: Double?
 
     private let ZUPT_ACCEL = 0.25, ZUPT_ROT = 0.35, ZUPT_WINDOW: TimeInterval = 0.75
     private let ZUPT_BIAS_RATE = 0.05, BIAS_RATE = 0.01, BIAS_GATE = 0.3
-    private let WALK_SAMPLES = 150
+    private let WALK_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
 
     func reset(seedHeading: Double?) {
         velNorth = 0; velEast = 0; biasNorth = 0; biasEast = 0
@@ -40,8 +42,9 @@ final class PhoneMotionRelayEstimator {
             headingDegrees = seedHeading; hasHeading = true
             trustedHeading = seedHeading
             trustedHeadingYaw = LocationManager.shared.currentDeviceYawHeading
+            lastDeviceYaw = LocationManager.shared.currentDeviceYawHeading
         } else {
-            hasHeading = false; trustedHeading = nil; trustedHeadingYaw = nil
+            hasHeading = false; trustedHeading = nil; trustedHeadingYaw = nil; lastDeviceYaw = nil
         }
     }
 
@@ -110,32 +113,48 @@ final class PhoneMotionRelayEstimator {
             if d > 180 { d = 360 - d }
             return d
         }
+        let yawNow = LocationManager.shared.currentDeviceYawHeading
         if speed > 3.0 && residual > 0.4 {
-            // Real sustained acceleration ⇒ the velocity vector is a trustworthy bearing.
+            // Real sustained acceleration ⇒ the velocity vector is authoritative.
             var deg = atan2(velEast, velNorth) * 180 / .pi
             if deg < 0 { deg += 360 }
             headingDegrees = deg; hasHeading = true
             trustedHeading = deg
-            trustedHeadingYaw = LocationManager.shared.currentDeviceYawHeading
-        } else if let axis = walkingAxisDegrees() {
-            // PCA gives an AXIS, not a direction. Comparing against the CURRENT belief can
-            // never detect a REVERSAL (walking back lies on the same axis), so resolve
-            // against the last trusted heading rotated by how far the device has turned
-            // since. Gyro rotation is used only for this binary end-of-axis choice.
-            var expected = headingDegrees
-            if let yawNow = LocationManager.shared.currentDeviceYawHeading,
-               let anchorYaw = trustedHeadingYaw, let anchorHeading = trustedHeading {
-                var e = anchorHeading + (yawNow - anchorYaw)
-                e = e.truncatingRemainder(dividingBy: 360); if e < 0 { e += 360 }
-                expected = e
+            trustedHeadingYaw = yawNow
+            lastDeviceYaw = yawNow
+        } else {
+            // COMPLEMENTARY FILTER: turn ANGLE from the gyro, absolute direction from PCA.
+            // Taking heading straight from the PCA axis made turns shallow and late, because
+            // that axis averages a multi-second window spanning both sides of the turn.
+            // 1) Propagate by the device's yaw DELTA — an accurate turn angle, and a rotation
+            //    measurement rather than an assumption about where the device points.
+            if let yawNow, let yawPrev = lastDeviceYaw {
+                var dYaw = yawNow - yawPrev
+                if dYaw > 180 { dYaw -= 360 } else if dYaw < -180 { dYaw += 360 }
+                if abs(dYaw) < 120 {   // reject re-grip / pocket-extraction jumps
+                    headingDegrees = headingDegrees + dYaw
+                    headingDegrees = headingDegrees.truncatingRemainder(dividingBy: 360)
+                    if headingDegrees < 0 { headingDegrees += 360 }
+                    hasHeading = hasHeading || trustedHeading != nil
+                }
             }
-            let opposite = (axis + 180).truncatingRemainder(dividingBy: 360)
-            if hasHeading || trustedHeading != nil {
-                headingDegrees = diff(axis, expected) <= diff(opposite, expected) ? axis : opposite
-            } else {
-                headingDegrees = axis
+            if let yawNow { lastDeviceYaw = yawNow }
+            // 2) Pull slowly toward the absolute PCA axis to shed gyro drift. The 180°
+            //    ambiguity resolves against the gyro-propagated heading, so reversals still
+            //    register.
+            if let axis = walkingAxisDegrees() {
+                let opposite = (axis + 180).truncatingRemainder(dividingBy: 360)
+                if hasHeading {
+                    let target = diff(axis, headingDegrees) <= diff(opposite, headingDegrees) ? axis : opposite
+                    var err = target - headingDegrees
+                    if err > 180 { err -= 360 } else if err < -180 { err += 360 }
+                    headingDegrees = headingDegrees + 0.25 * err
+                    headingDegrees = headingDegrees.truncatingRemainder(dividingBy: 360)
+                    if headingDegrees < 0 { headingDegrees += 360 }
+                } else {
+                    headingDegrees = axis; hasHeading = true
+                }
             }
-            hasHeading = true
         }
         guard hasHeading else { return nil }
         return (headingDegrees, speed, velNorth, velEast)
