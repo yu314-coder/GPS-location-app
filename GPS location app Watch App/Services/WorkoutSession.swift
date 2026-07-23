@@ -1322,7 +1322,8 @@ class WorkoutSession: NSObject, ObservableObject {
         print("⌚ 📍 Rubber-sheet: warped \(n) DR points onto GPS (drift \(String(format: "%.0f", driftMagnitude))m, Δdist \(String(format: "%+.0f", newGapLength - oldGapLength))m)")
     }
 
-    private func appendEstimatedPedometerFallbackLocation(distanceMeters: Double, timestamp: Date) {
+    private func appendEstimatedPedometerFallbackLocation(distanceMeters: Double, timestamp: Date,
+                                                          speedMetersPerSecond: Double? = nil) {
         guard distanceMeters > 0.0 else { return }
 
         // Resolve the point to dead-reckon FROM. Normally the last recorded location.
@@ -1395,11 +1396,22 @@ class WorkoutSession: NSObject, ObservableObject {
         )
 
         flight.locations.append(estimatedLocation)
+        let maxSpeedBeforeUpdate = currentMetrics.maxSpeed
         currentMetrics.updateWithLocation(
             estimatedLocation,
             previousLocation: previousLocation,
             elapsedTime: Date().timeIntervalSince(flight.startDate)
         )
+        // The dead-reckoning speed is authoritative. FlightMetrics otherwise RE-DERIVES speed
+        // from point geometry (distance ÷ timeDelta) — a different calculation from the DR
+        // estimate, so the Speed display and the Velocity Mode status line disagreed. It is
+        // also spiky when several ticks batch into one point, which produced absurd max
+        // speeds. Never let a geometric spike raise max speed.
+        if let drSpeed = speedMetersPerSecond {
+            currentMetrics.currentSpeed = drSpeed
+            currentMetrics.smoothedSpeed = drSpeed
+            currentMetrics.maxSpeed = max(maxSpeedBeforeUpdate, drSpeed)
+        }
         currentMetrics.currentPressure = locationManager.currentPressure
         currentMetrics.updateSplits(startDate: flight.startDate)
         pruneWatchMemoryIfNeeded(reason: "estimatedLocation")
@@ -1914,7 +1926,8 @@ class WorkoutSession: NSObject, ObservableObject {
         let appendDistance = pendingMotionDistance
         pendingMotionDistance = 0
 
-        appendEstimatedPedometerFallbackLocation(distanceMeters: appendDistance, timestamp: now)
+        appendEstimatedPedometerFallbackLocation(distanceMeters: appendDistance, timestamp: now,
+                                                 speedMetersPerSecond: motionFallbackSpeed)
         motionFallbackDistanceAdded += appendDistance
 
         let now2 = Date()

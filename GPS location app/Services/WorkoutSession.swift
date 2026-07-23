@@ -1726,7 +1726,8 @@ class WorkoutSession: ObservableObject {
         guard pendingEstimatedDistance >= 0.25 else { return }
         let appendDistance = pendingEstimatedDistance
         pendingEstimatedDistance = 0
-        appendEstimatedLocation(distanceMeters: appendDistance, headingDegrees: headingDegrees, timestamp: now)
+        appendEstimatedLocation(distanceMeters: appendDistance, headingDegrees: headingDegrees,
+                                speedMetersPerSecond: estimatedFallbackSpeed, timestamp: now)
         estimatedFallbackDistanceAdded += appendDistance
     }
 
@@ -1892,7 +1893,8 @@ class WorkoutSession: ObservableObject {
                               isEstimated: true)
     }
 
-    private func appendEstimatedLocation(distanceMeters: Double, headingDegrees: Double, timestamp: Date) {
+    private func appendEstimatedLocation(distanceMeters: Double, headingDegrees: Double,
+                                         speedMetersPerSecond: Double, timestamp: Date) {
         let previousLocation: FlightLocation
         if let last = flight.locations.last {
             previousLocation = last
@@ -1937,7 +1939,17 @@ class WorkoutSession: ObservableObject {
             object: nil,
             userInfo: ["location": estimatedLocation.toCLLocation()]
         )
+        let maxSpeedBeforeUpdate = currentMetrics.maxSpeed
         currentMetrics.updateWithLocation(estimatedLocation, previousLocation: previousLocation, elapsedTime: activeDuration)
+        // The DEAD-RECKONING speed is authoritative for estimated points. FlightMetrics
+        // otherwise RE-DERIVES speed from point geometry (distance ÷ timeDelta), which is a
+        // different calculation from the DR estimate — so the Speed card and the Velocity
+        // Mode status line disagreed. Geometry is also spiky when several ticks are batched
+        // into one appended point, which is where absurd max speeds came from. Override with
+        // the single authoritative value, and never let a geometric spike raise max speed.
+        currentMetrics.currentSpeed = speedMetersPerSecond
+        currentMetrics.smoothedSpeed = speedMetersPerSecond
+        currentMetrics.maxSpeed = max(maxSpeedBeforeUpdate, speedMetersPerSecond)
         currentMetrics.currentPressure = locationManager.currentPressure
         currentMetrics.updateSplits(startDate: flight.startDate)
         persistActiveWorkoutSnapshot(force: false, reason: "estimatedLocationTick")
