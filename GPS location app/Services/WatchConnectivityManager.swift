@@ -210,6 +210,36 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         gpsSharingTimer = nil
     }
 
+    /// Relay the iPhone's computed dead-reckoning state to the watch, INDEPENDENT of GPS.
+    ///
+    /// Motion assist used to ride along only with a relayed GPS fix, so in the one situation
+    /// the watch needs it most — no GPS — nothing was sent and the watch's assist data went
+    /// stale, freezing its speed. This sends the iPhone's already-integrated ANSWER (speed,
+    /// heading, world velocity) rather than raw accelerations for the watch to re-integrate:
+    /// the iPhone runs the full ZUPT/bias/yaw pipeline, so the watch should simply adopt it.
+    /// WatchConnectivity works over Bluetooth/peer-WiFi, so this needs no internet.
+    func relayDeadReckoningState(speed: Double, headingDegrees: Double,
+                                 velocityNorth: Double, velocityEast: Double,
+                                 isDeadReckoning: Bool) {
+        guard let session = session, session.activationState == .activated else { return }
+        let payload: [String: Any] = [
+            "action": "drState",
+            "drSpeed": speed,
+            "drHeading": headingDegrees,
+            "drVelNorth": velocityNorth,
+            "drVelEast": velocityEast,
+            "drActive": isDeadReckoning,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil) { _ in }
+        } else {
+            // Not reachable: application context always holds the LATEST state (it coalesces),
+            // which is exactly the semantics we want for a live speed/heading value.
+            try? session.updateApplicationContext(payload)
+        }
+    }
+
     private func sendCurrentLocationToWatch() {
         guard let session = session else {
             print("📱 ⚠️ WCSession unavailable for GPS sharing")

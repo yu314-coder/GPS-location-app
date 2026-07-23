@@ -1685,6 +1685,16 @@ class WorkoutSession: ObservableObject {
                                       compassText,
                                       estimatedFallbackDistanceAdded)
 
+        // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
+        // the watch's own device motion is frequently suppressed, and without this its assist
+        // data goes stale and its speed freezes.
+        WatchConnectivityManager.shared.relayDeadReckoningState(
+            speed: estimatedFallbackSpeed,
+            headingDegrees: headingDegrees,
+            velocityNorth: motionVelNorth,
+            velocityEast: motionVelEast,
+            isDeadReckoning: true)
+
         guard distance >= 0.25 else { return }
         appendEstimatedLocation(distanceMeters: distance, headingDegrees: headingDegrees, timestamp: now)
         estimatedFallbackDistanceAdded += distance

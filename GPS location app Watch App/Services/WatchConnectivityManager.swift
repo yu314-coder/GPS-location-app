@@ -51,6 +51,18 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     var onIPhoneLocationReceived: ((FlightLocation, IPhoneLocationFeedMode) -> Void)?
     var onIPhoneMotionAccelerationReceived: ((Double, Date) -> Void)?
     var onIPhoneMotionAssistReceived: ((IPhoneMotionAssist) -> Void)?
+    /// iPhone's integrated dead-reckoning answer (speed m/s, heading°, velocity N/E, time).
+    /// Arrives independently of GPS, so it keeps flowing when the watch needs it most.
+    var onIPhoneDeadReckoningReceived: ((Double, Double, Double, Double, Date) -> Void)?
+
+    fileprivate func handleIPhoneDeadReckoningState(_ message: [String: Any]) {
+        guard let speed = message["drSpeed"] as? Double,
+              let heading = message["drHeading"] as? Double else { return }
+        let velN = message["drVelNorth"] as? Double ?? 0
+        let velE = message["drVelEast"] as? Double ?? 0
+        let ts = (message["timestamp"] as? TimeInterval).map { Date(timeIntervalSince1970: $0) } ?? Date()
+        onIPhoneDeadReckoningReceived?(speed, heading, velN, velE, ts)
+    }
     private var dualSourceAssistEnabled = false
     var isDualSourceAssistEnabled: Bool { dualSourceAssistEnabled }
 
@@ -343,6 +355,8 @@ extension WatchConnectivityManager: WCSessionDelegate {
                     // Received GPS location from iPhone
                     self.handleIPhoneGPSLocation(message)
                     // No reply needed for location updates (fire-and-forget for performance)
+                case "drState":
+                    self.handleIPhoneDeadReckoningState(message)
                 default:
                     print("⌚ Received unknown message from iPhone: \(message)")
                     replyHandler(["status": "unknown action"])
@@ -359,6 +373,8 @@ extension WatchConnectivityManager: WCSessionDelegate {
                 case "gpsLocation":
                     // Received GPS location from iPhone
                     self.handleIPhoneGPSLocation(message)
+                case "drState":
+                    self.handleIPhoneDeadReckoningState(message)
                 default:
                     print("⌚ Received fire-and-forget message: \(action)")
                 }
@@ -459,6 +475,8 @@ extension WatchConnectivityManager: WCSessionDelegate {
                 switch action {
                 case "gpsLocation":
                     self.handleIPhoneGPSLocation(applicationContext)
+                case "drState":
+                    self.handleIPhoneDeadReckoningState(applicationContext)
                 default:
                     print("⌚ Received application-context action: \(action)")
                 }
@@ -498,6 +516,8 @@ extension WatchConnectivityManager: WCSessionDelegate {
             switch action {
             case "gpsLocation":
                 self.handleIPhoneGPSLocation(userInfo)
+            case "drState":
+                self.handleIPhoneDeadReckoningState(userInfo)
             default:
                 print("⌚ Received userInfo action: \(action)")
             }

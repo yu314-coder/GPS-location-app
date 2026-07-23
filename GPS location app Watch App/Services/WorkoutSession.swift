@@ -141,6 +141,17 @@ class WorkoutSession: NSObject, ObservableObject {
     private var yawHeadingOffset: Double?
     /// Pedometer cumulative-distance baseline for the PDR distance path (step activities).
     private var lastPedometerDistanceForDR: Double?
+    // iPhone's relayed dead-reckoning answer. The watch's own device motion is often
+    // suppressed (memory pressure / power), and the old assist only arrived attached to a GPS
+    // relay — so with no GPS the watch had nothing and its speed froze. The iPhone runs the
+    // full ZUPT/bias/yaw pipeline, so when the watch can't integrate for itself it simply
+    // ADOPTS the iPhone's speed and heading. Bluetooth/peer-WiFi: no internet required.
+    private var iPhoneDRSpeed: Double?
+    private var iPhoneDRHeading: Double?
+    private var iPhoneDRVelocity: (north: Double, east: Double)?
+    private var iPhoneDRTimestamp: Date?
+    /// Relayed DR state older than this is stale and must not be used.
+    private let IPHONE_DR_MAX_AGE: TimeInterval = 6.0
     private var zuptWindow: [(t: TimeInterval, accel: Double, rotation: Double)] = []
     private var zuptWindowFilled = false
     private var isInertialStationary = false
@@ -254,6 +265,14 @@ class WorkoutSession: NSObject, ObservableObject {
         connectivityManager.onIPhoneMotionAssistReceived = { [weak self] assist in
             guard let self = self, self.isActive, !self.isPaused else { return }
             self.latestIPhoneMotionAssist = assist
+        }
+        // The iPhone's fully-integrated dead-reckoning answer, relayed independently of GPS.
+        connectivityManager.onIPhoneDeadReckoningReceived = { [weak self] speed, heading, velN, velE, timestamp in
+            guard let self = self, self.isActive, !self.isPaused else { return }
+            self.iPhoneDRSpeed = speed
+            self.iPhoneDRHeading = heading
+            self.iPhoneDRVelocity = (velN, velE)
+            self.iPhoneDRTimestamp = timestamp
         }
         locationManager.onBarometricAltitudeUpdate = { [weak self] relativeAltitude, pressure, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
@@ -1769,17 +1788,34 @@ class WorkoutSession: NSObject, ObservableObject {
         // the settle-to-rest check, and converts velocity → distance.
         var accelSource = "watch"
         if !motionManager.isDeviceMotionAvailable || !motionAttitudeReady {
-            // Device motion suppressed (memory pressure): no sensor-rate path available,
-            // so integrate the iPhone-relayed acceleration MAGNITUDE along the current
-            // heading here at tick rate (best effort).
-            accelSource = "iPhone-accel"
-            if forceMotionFallback || !isStepBased,
-               let assist = recentIPhoneMotionAssist(near: now) {
+            // Watch device motion is suppressed, so there is no sensor-rate integration here.
+            // PREFER the iPhone's fully-integrated DR state when it is fresh: adopting its
+            // velocity vector outright is strictly better than re-integrating a relayed
+            // acceleration magnitude, and it keeps arriving with no GPS (which is exactly
+            // when the watch used to freeze).
+            if let speed = iPhoneDRSpeed, let heading = iPhoneDRHeading,
+               let ts = iPhoneDRTimestamp, now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
+                accelSource = "iPhone-DR"
+                if let v = iPhoneDRVelocity, v.north != 0 || v.east != 0 {
+                    motionVelX = v.north          // world X = north
+                    motionVelY = -v.east          // world Y = west (east = −Y)
+                } else {
+                    let h = heading * .pi / 180
+                    motionVelX = speed * cos(h)
+                    motionVelY = -speed * sin(h)
+                }
+                motionHeadingDegrees = normalizedHeading(heading)
+            } else if forceMotionFallback || !isStepBased,
+                      let assist = recentIPhoneMotionAssist(near: now) {
+                // Legacy path: only a relayed acceleration magnitude is available.
+                accelSource = "iPhone-accel"
                 let mag = max(assist.forwardAcceleration.map { abs($0) } ?? 0.0,
                               assist.horizontalAcceleration ?? 0.0)
                 let h = motionHeadingDegrees * .pi / 180
                 motionVelX += mag * cos(h) * dt          // north component
                 motionVelY += -mag * sin(h) * dt         // west component (east = −Y)
+            } else {
+                accelSource = "no-motion"
             }
         }
 
