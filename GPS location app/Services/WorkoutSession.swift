@@ -1606,7 +1606,11 @@ class WorkoutSession: ObservableObject {
         // UNCONDITIONALLY — it does not wait for a GPS gap. GPS is ignored for distance
         // while forced (see processNewLocation), so there is no double-counting.
         if !forceMotionFallback {
-            guard anchor != nil else { return }
+            // NOTE: deliberately NOT requiring a prior real GPS fix. A workout that begins
+            // with no GPS at all (already airborne, basement, airplane mode) has no anchor,
+            // and the old `guard anchor != nil` meant dead reckoning NEVER engaged — the
+            // exact case where it is needed most. appendEstimatedLocation seeds a synthetic
+            // anchor from the last-known position instead (mirrors the watch).
             guard timeSinceRealFix >= ESTIMATED_LOCATION_GAP_THRESHOLD else {
                 if isUsingEstimatedLocationFallback {
                     endEstimatedLocationFallback(reason: "GPS returned")
@@ -1866,8 +1870,44 @@ class WorkoutSession: ObservableObject {
         print("📍 Rubber-sheet: warped \(n) DR points onto GPS (drift \(String(format: "%.0f", driftMagnitude))m, Δdist \(String(format: "%+.0f", newGapLength - oldGapLength))m)")
     }
 
+    /// Best-effort origin for dead reckoning when the workout has recorded no point yet
+    /// (started with no GPS: airborne, basement, airplane mode). Uses the last position Core
+    /// Location knows about, even a stale one — a route needs SOME geographic reference.
+    private func syntheticFallbackAnchor(at timestamp: Date) -> FlightLocation? {
+        guard let known = locationManager.currentLocation ?? locationManager.latestRawLocation else {
+            return nil
+        }
+        let seed = CLLocation(
+            coordinate: known.coordinate,
+            altitude: known.altitude,
+            horizontalAccuracy: ESTIMATED_LOCATION_HORIZONTAL_ACCURACY,
+            verticalAccuracy: ESTIMATED_LOCATION_VERTICAL_ACCURACY,
+            course: 0,
+            speed: 0,
+            // Slightly earlier so the first dead-reckoned point sorts strictly after it.
+            timestamp: timestamp.addingTimeInterval(-0.5)
+        )
+        return FlightLocation(from: seed, isFiltered: false, isValid: true,
+                              signalStrength: 20.0, pressure: locationManager.currentPressure,
+                              isEstimated: true)
+    }
+
     private func appendEstimatedLocation(distanceMeters: Double, headingDegrees: Double, timestamp: Date) {
-        guard let previousLocation = flight.locations.last else { return }
+        let previousLocation: FlightLocation
+        if let last = flight.locations.last {
+            previousLocation = last
+        } else if let seed = syntheticFallbackAnchor(at: timestamp) {
+            // No point recorded yet (workout began without GPS): lay down an origin so the
+            // dead-reckoned route can be drawn instead of silently producing nothing.
+            flight.locations.append(seed)
+            previousLocation = seed
+            print("📍 🧭 Fallback seeded synthetic anchor (no GPS yet) at \(String(format: "%.5f", seed.latitude)),\(String(format: "%.5f", seed.longitude))")
+        } else {
+            // No geographic reference anywhere — still record the distance so the workout
+            // reflects real progress; a coordinate is impossible without any origin.
+            currentMetrics.totalDistance += distanceMeters
+            return
+        }
         let coordinate = projectedCoordinate(
             from: CLLocationCoordinate2D(latitude: previousLocation.latitude, longitude: previousLocation.longitude),
             distanceMeters: distanceMeters,
