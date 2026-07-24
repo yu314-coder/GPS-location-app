@@ -820,6 +820,8 @@ class WorkoutSession: ObservableObject {
 
     func stopWorkout(completion: @escaping (Bool) -> Void) {
         persistActiveWorkoutSnapshot(force: true, reason: "stopWorkoutRequested", shouldLog: true)
+        // The manual velocity override is a per-workout choice; never let it leak forward.
+        forceMotionFallback = false
         stopEstimatedFallbackTimer()
 
         // Stop location tracking
@@ -1735,16 +1737,22 @@ class WorkoutSession: ObservableObject {
             // ambiguity could not resolve. Sensor-rate accumulation makes a fast turn a run of
             // small deltas, so nothing legitimate is ever clipped.
             let cumulativeYaw = locationManager.cumulativeDeviceYawRotation
+            var turningNow = false
             if let previousCumulative = lastDeviceYawForHeading {
                 let dYaw = cumulativeYaw - previousCumulative
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
+                turningNow = abs(dYaw) > 8   // deg per tick — actively turning
             }
             lastDeviceYawForHeading = cumulativeYaw
             // 2) Pull slowly toward the PCA walking axis, which is absolute and orientation-
             //    independent. This removes the drift the gyro accumulates, without letting a
             //    slow window dictate fast turn dynamics. The axis's 180° ambiguity resolves
             //    against the now gyro-propagated heading, so reversals are still detected.
-            if pedometerIsCounting, let axis = walkingAxisHeading() {
+            // The PCA pull is SUSPENDED while actively turning: the axis is computed over a
+            // trailing window, so mid-turn it still points at the pre-turn direction and the
+            // pull dragged the heading BACKWARDS against the gyro — the visible turn lag.
+            // Drift correction only needs the straight stretches, where the axis is honest.
+            if !turningNow, pedometerIsCounting, let axis = walkingAxisHeading() {
                 let opposite = normalizedHeading(axis + 180)
                 let target = angularDistance(axis, motionHeadingDegrees)
                     <= angularDistance(opposite, motionHeadingDegrees) ? axis : opposite

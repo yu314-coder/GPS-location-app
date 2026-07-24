@@ -133,18 +133,22 @@ final class PhoneMotionRelayEstimator {
             // exactly that — so reversals never propagated. Sensor-rate accumulation makes a
             // fast turn a run of small deltas, so nothing legitimate is clipped.
             let cumulativeYaw = LocationManager.shared.cumulativeDeviceYawRotation
+            var turningNow = false
             if let previousCumulative = lastDeviceYaw {
                 let dYaw = cumulativeYaw - previousCumulative
                 headingDegrees = headingDegrees + dYaw
                 headingDegrees = headingDegrees.truncatingRemainder(dividingBy: 360)
                 if headingDegrees < 0 { headingDegrees += 360 }
                 hasHeading = hasHeading || trustedHeading != nil
+                turningNow = abs(dYaw) > 8
             }
             lastDeviceYaw = cumulativeYaw
             // 2) Pull slowly toward the absolute PCA axis to shed gyro drift. The 180°
             //    ambiguity resolves against the gyro-propagated heading, so reversals still
             //    register.
-            if let axis = walkingAxisDegrees() {
+            // Suspended while turning: the trailing-window axis lags mid-turn and the pull
+            // would drag the heading backwards against the gyro (visible turn lag).
+            if !turningNow, let axis = walkingAxisDegrees() {
                 let opposite = (axis + 180).truncatingRemainder(dividingBy: 360)
                 if hasHeading {
                     let target = diff(axis, headingDegrees) <= diff(opposite, headingDegrees) ? axis : opposite

@@ -545,8 +545,46 @@ class WorkoutSession: NSObject, ObservableObject {
         }
     }
 
+    /// Everything that must stop when a workout ends, regardless of HOW it ends. Runs on
+    /// EVERY stop path — including the no-session/no-builder early exit, which previously
+    /// stopped NOTHING: timers kept firing, the motion fallback kept appending points,
+    /// isActive stayed true (so the workout could not actually stop), and forceMotionFallback
+    /// stayed latched ON into the next workout.
+    private func teardownActiveWorkoutState() {
+        // The manual velocity override is a per-workout choice; never let it leak forward.
+        forceMotionFallback = false
+        if isUsingMotionFallback {
+            endMotionFallback(reason: "workout stopped")
+        }
+        if isUsingPedometerFallback {
+            endPedometerFallback(reason: "workout stopped")
+        }
+        stopSessionHealthMonitoring()
+        stopKeepAliveTimer()
+        stopWatchdogTimer()
+        stopForceRestartTimer()
+        stopPhoneCheckpointTimer()
+        if connectivityManager.isUsingIPhoneGPS || connectivityManager.isIPhoneGPSRequestPending {
+            print("⌚ 📱 Stopping iPhone GPS relay")
+            connectivityManager.stopIPhoneGPS()
+        }
+        connectivityManager.setDualSourceAssistEnabled(false)
+        latestIPhoneMotionAssist = nil
+        locationManager.stopTracking()
+    }
+
     func stopWorkout(completion: @escaping (Bool) -> Void) {
         guard let session = workoutSession, let builder = workoutBuilder else {
+            // No HK session/builder (start raced or failed) — the workout must STILL fully
+            // stop: tear down timers/fallbacks/motion and clear isActive before saving.
+            print("⌚ ⚠️ Stopping workout without HK session/builder — running full teardown")
+            teardownActiveWorkoutState()
+            pedometerManager.stopTracking()
+            stopMotionUpdates()
+            flight.endDate = Date()
+            flight.metrics = currentMetrics
+            isActive = false
+            isPaused = false
             fallbackSaveToHealthKit(locations: flight.locations, endDate: Date()) { success in
                 if !success {
                     self.connectivityManager.transferFlightToPhone(self.flight)
@@ -558,27 +596,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         print("⌚ Stopping workout...")
         print("⌚ 🛑 Stopping all monitoring and recovery systems...")
-
-        // Stop ALL timers and monitoring
-        if isUsingPedometerFallback {
-            endPedometerFallback(reason: "workout stopped")
-        }
-        stopSessionHealthMonitoring()
-        stopKeepAliveTimer()
-        stopWatchdogTimer()
-        stopForceRestartTimer()
-        stopPhoneCheckpointTimer()
-
-        // Stop iPhone relay/fallback commands
-        if connectivityManager.isUsingIPhoneGPS || connectivityManager.isIPhoneGPSRequestPending {
-            print("⌚ 📱 Stopping iPhone GPS relay")
-            connectivityManager.stopIPhoneGPS()
-        }
-        connectivityManager.setDualSourceAssistEnabled(false)
-        latestIPhoneMotionAssist = nil
-
-        // Stop location tracking
-        locationManager.stopTracking()
+        teardownActiveWorkoutState()
 
         // Stop pedometer and get final step count
         pedometerManager.stopTracking()
