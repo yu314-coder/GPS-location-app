@@ -141,6 +141,10 @@ class WorkoutSession: NSObject, ObservableObject {
     private var yawHeadingOffset: Double?
     /// Pedometer cumulative-distance baseline for the PDR distance path (step activities).
     private var lastPedometerDistanceForDR: Double?
+    /// Unwrapped cumulative heading change from the watch gyro (vertical-axis integration),
+    /// and the value consumed at the previous heading tick.
+    private var cumulativeYawRotationDeg: Double = 0
+    private var lastCumulativeYawForHeading: Double?
     /// Distance measured but not yet long enough to justify a route point; carried forward.
     private var pendingMotionDistance: Double = 0
     /// Step-count tracking used to decide whether the pedometer is a VALID distance source
@@ -1576,6 +1580,17 @@ class WorkoutSession: NSObject, ObservableObject {
 
             let rot = motion.rotationRate
             let rotMag = sqrt(rot.x*rot.x + rot.y*rot.y + rot.z*rot.z)
+            // Heading-change from the gyro's component about the world-VERTICAL (gravity) axis
+            // — no singularity, orientation-independent (see the iPhone LocationManager). Arm
+            // swing oscillates and averages out; the NET rotation over a turn is the body's
+            // heading change. This lets the watch turn on its OWN sensors, not only via the
+            // relay.
+            let gg = motion.gravity
+            let ggMag = sqrt(gg.x*gg.x + gg.y*gg.y + gg.z*gg.z)
+            if ggMag > 0.1 {
+                let verticalRate = (rot.x*gg.x + rot.y*gg.y + rot.z*gg.z) / ggMag
+                self.cumulativeYawRotationDeg += verticalRate * sampleDt * 180.0 / .pi
+            }
             // The residual integration (ZUPT + gated bias + trapezoid) is factored into a
             // shared method so the synthetic-flight replay drives the EXACT same code path.
             self.integrateWorldMotionResidual(dt: sampleDt, up: azW, rotationRate: rotMag)
@@ -1593,6 +1608,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
         lastPedometerDistanceForDR = nil
+        lastCumulativeYawForHeading = nil
         pendingMotionDistance = 0
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
@@ -1925,18 +1941,23 @@ class WorkoutSession: NSObject, ObservableObject {
         let rXh = worldAccelX - accelBiasX
         let rYh = worldAccelY - accelBiasY
         let horizAccelMag = sqrt(rXh * rXh + rYh * rYh)
+        // TURN with the watch's own gyro (vertical-axis integration) every tick, so the route
+        // is no longer a straight line even between absolute-heading corrections.
+        if let prev = lastCumulativeYawForHeading {
+            let dYaw = cumulativeYawRotationDeg - prev
+            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
+        }
+        lastCumulativeYawForHeading = cumulativeYawRotationDeg
+        // Correct the ABSOLUTE heading toward the best available reference (the gyro only gives
+        // relative turn). Velocity vector under real acceleration is best; else the iPhone's
+        // relayed heading (it recovers absolute direction the watch cannot).
         if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4, motionFrameIsAbsolute {
             motionHeadingDegrees = vh
         } else if let relayedHeading = iPhoneDRHeading, let ts = iPhoneDRTimestamp,
                   now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
-            // Prefer the iPhone's heading over holding a stale course. The watch has NO way to
-            // determine walking direction on its own (arm swing defeats the acceleration-axis
-            // method, and device orientation is not a motion measurement), whereas an iPhone
-            // carried on the trunk/in a pocket recovers the walking axis to ~1°. Bluetooth
-            // relay, so this works with no internet.
             motionHeadingDegrees = normalizedHeading(relayedHeading)
         }
-        // else: hold the last known heading (GPS course at engage).
+        // else: gyro-propagated heading stands (turns preserved even with no relay).
         // DISTANCE: for step-based activities use the PEDOMETER (already tracking since
         // workout start — step detection + Apple's stride model is accurate to a few %,
         // whereas steps sum to ~zero net acceleration and defeat the integrator). The
@@ -1964,6 +1985,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // Not actually stepping (vehicle / aircraft / stationary): integrate acceleration,
             // and drop the stale pedometer baseline so a later walk re-anchors cleanly.
             lastPedometerDistanceForDR = nil
+        lastCumulativeYawForHeading = nil
             distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
             motionFallbackSpeed = nextSpeed
         }
@@ -2052,6 +2074,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
         lastPedometerDistanceForDR = nil
+        lastCumulativeYawForHeading = nil
         pendingMotionDistance = 0
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0

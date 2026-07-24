@@ -646,17 +646,31 @@ class LocationManager: NSObject, ObservableObject {
             let accelerationY = userAcceleration.y * self.standardGravity
             let accelerationZ = userAcceleration.z * self.standardGravity
             let referenceAcceleration = self.trueNorthAcceleration(from: motion)
+            // Keep the coarse absolute yaw for reference where it is valid.
             if let yawHeading = self.deviceYawHeading(from: motion) {
                 self.currentDeviceYawHeading = yawHeading
-                // Accumulate unwrapped rotation. Per-sample deltas are small for any real
-                // motion, so a 30° ceiling rejects only genuine discontinuities and never
-                // clips a fast turn — which a per-second delta cannot do.
+            }
+            // HEADING-CHANGE MEASUREMENT — the robust way. Integrate the gyro's component about
+            // the world-VERTICAL (gravity) axis. Deriving heading from the device +Y axis (the
+            // old method) collapses when the phone is upright or flat — +Y points nearly
+            // vertical, its ground projection is tiny and noisy, and turns were dropped or
+            // mis-scaled, so a walked loop never closed. Projecting angular velocity onto the
+            // gravity axis has no such singularity and is independent of how the device is
+            // held. Sign: rotating clockwise (heading increasing) about the DOWN axis is
+            // positive, matching compass convention.
+            let grav = motion.gravity
+            let gMag = sqrt(grav.x*grav.x + grav.y*grav.y + grav.z*grav.z)
+            if gMag > 0.1 {
+                let rr = motion.rotationRate
+                let verticalRate = (rr.x*grav.x + rr.y*grav.y + rr.z*grav.z) / gMag  // rad/s
+                let dtForRotation: TimeInterval
                 if let previous = self.lastRawYawForAccumulation {
-                    var delta = yawHeading - previous
-                    if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
-                    if abs(delta) < 30 { self.cumulativeDeviceYawRotation += delta }
+                    dtForRotation = min(max(motion.timestamp - previous, 0.0), 1.0)
+                } else {
+                    dtForRotation = 0.0
                 }
-                self.lastRawYawForAccumulation = yawHeading
+                self.lastRawYawForAccumulation = motion.timestamp
+                self.cumulativeDeviceYawRotation += verticalRate * dtForRotation * 180.0 / .pi
             }
             let horizontalAcceleration = sqrt(
                 referenceAcceleration.north * referenceAcceleration.north +
