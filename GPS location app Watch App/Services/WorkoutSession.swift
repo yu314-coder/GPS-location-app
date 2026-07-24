@@ -1971,8 +1971,10 @@ class WorkoutSession: NSObject, ObservableObject {
         lastPedometerStepCountForDR = steps
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 5.0 } ?? false
 
+        // Route by DETECTED stepping, not the activity label: if steps are being counted you
+        // are walking and the pedometer is right; integrating walking accel diverges.
         let distance: Double
-        if isStepBased, pedometerManager.isDistanceAvailable, pedometerIsCounting {
+        if pedometerManager.isDistanceAvailable, pedometerIsCounting {
             let pedometerTotal = pedometerManager.currentDistance
             if let last = lastPedometerDistanceForDR {
                 distance = max(pedometerTotal - last, 0)
@@ -1997,7 +1999,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.
-        if isStepBased && pedometerManager.isDistanceAvailable { accelSource = "PDR" }
+        if pedometerManager.isDistanceAvailable && pedometerManager.currentStepCount > 0 { accelSource = "PDR" }
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         fallbackDebugStatus = String(
             format: "DR[%@]%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",

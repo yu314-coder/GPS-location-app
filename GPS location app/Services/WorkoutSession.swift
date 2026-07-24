@@ -1836,7 +1836,11 @@ class WorkoutSession: ObservableObject {
         // steps — routing on the label alone yields zero distance and NO TRACK.
         let distance: Double
         var sourceTag = "DR"
-        if isStepBasedWorkout, pedometerIsCounting, let pedometerTotal = fallbackPedometerDistance {
+        // Route by DETECTED stepping, never the activity label: if the pedometer is counting
+        // steps you are walking, and its stride-model distance is right, whereas integrating
+        // walking acceleration diverges. Only a genuinely stepless vehicle/aircraft falls
+        // through to integration.
+        if pedometerIsCounting, let pedometerTotal = fallbackPedometerDistance {
             let delta = pedometerTotal - lastFallbackPedometerDistance
             lastFallbackPedometerDistance = pedometerTotal
             distance = max(delta, 0)
@@ -1916,7 +1920,11 @@ class WorkoutSession: ObservableObject {
         pendingEstimatedDistance = 0
         lastFallbackStepCount = 0
         lastStepIncrementTime = nil
-        if isStepBasedWorkout && CMPedometer.isDistanceAvailable() && !fallbackPedometerActive {
+        // Start the pedometer REGARDLESS of the selected activity type. Distance is routed by
+        // whether steps are actually being counted, not by the label — the user selects a
+        // vehicle/flight type but may still be walking on the ground, where accelerometer
+        // integration diverges (observed: 121 km/h while walking) and the pedometer is correct.
+        if CMPedometer.isDistanceAvailable() && !fallbackPedometerActive {
             fallbackPedometerActive = true
             fallbackPedometer.startUpdates(from: Date()) { [weak self] data, _ in
                 guard let self, let data else { return }
