@@ -31,6 +31,7 @@ final class PhoneMotionRelayEstimator {
     private var lastDeviceYaw: Double?
 
     private let ZUPT_ACCEL = 0.25, ZUPT_ROT = 0.35, ZUPT_WINDOW: TimeInterval = 0.75
+    private let ZUPT_MAX_SPEED = 2.5, DR_MAX_SPEED = 360.0
     private let ZUPT_BIAS_RATE = 0.05, BIAS_RATE = 0.01, BIAS_GATE = 0.3
     private let WALK_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
 
@@ -66,7 +67,10 @@ final class PhoneMotionRelayEstimator {
         }
         let peakAccel = zuptWindow.map(\.accel).max() ?? 0
         let peakRotation = zuptWindow.map(\.rotation).max() ?? 0
-        if zuptWindowFilled && peakAccel < ZUPT_ACCEL && peakRotation < ZUPT_ROT {
+        // Speed-gated: coasting (cruise) looks identical to parked to ZUPT; only zero when
+        // also slow, else hold velocity (v = v₀ + a·dt).
+        let currentSpeed = sqrt(velNorth*velNorth + velEast*velEast)
+        if zuptWindowFilled && peakAccel < ZUPT_ACCEL && peakRotation < ZUPT_ROT && currentSpeed < ZUPT_MAX_SPEED {
             velNorth = 0; velEast = 0
             biasNorth += rN * ZUPT_BIAS_RATE; biasEast += rE * ZUPT_BIAS_RATE
             prevResidualNorth = 0; prevResidualEast = 0
@@ -81,6 +85,8 @@ final class PhoneMotionRelayEstimator {
         velNorth += ((prevResidualNorth + iN) / 2.0) * dt
         velEast += ((prevResidualEast + iE) / 2.0) * dt
         prevResidualNorth = iN; prevResidualEast = iE
+        let speedNow = sqrt(velNorth*velNorth + velEast*velEast)
+        if speedNow > DR_MAX_SPEED { let sc = DR_MAX_SPEED / speedNow; velNorth *= sc; velEast *= sc }
     }
 
     /// Principal axis of recent horizontal acceleration (walking axis), or nil when the axis

@@ -202,6 +202,13 @@ class WorkoutSession: ObservableObject {
     /// Peak residual acceleration allowed within the window for it to count as stationary.
     /// Tuned by simulation: above ~0.35 the detector starts firing during a genuine smooth
     /// cruise and destroys real velocity (a 0.5 threshold lost 80% of the distance).
+    /// Above this speed, low accel + low rotation means COASTING, not stopped, so ZUPT is
+    /// inhibited and velocity is held. Below it, the device may genuinely be at rest.
+    private let ZUPT_MAX_SPEED: Double = 2.5            // m/s (~9 km/h)
+    /// Divergence backstop: no vehicle a phone rides sustains this speed (an airliner cruises
+    /// ~250 m/s), so anything beyond it is integration runaway and the velocity is rescaled
+    /// back to the ceiling rather than allowed to reach thousands of km/h.
+    private let DR_MAX_SPEED: Double = 360.0            // m/s (~1300 km/h)
     private let ZUPT_ACCEL_THRESHOLD: Double = 0.25     // m/s²
     /// Gyro magnitude ceiling — a stationary device is not rotating either.
     private let ZUPT_ROTATION_THRESHOLD: Double = 0.35  // rad/s
@@ -1436,9 +1443,17 @@ class WorkoutSession: ObservableObject {
         // vetoes the ZUPT.
         let peakAccel = zuptWindow.map(\.accel).max() ?? 0
         let peakRotation = zuptWindow.map(\.rotation).max() ?? 0
+        // CRITICAL for cruise (aircraft, highway): a body coasting at constant velocity has
+        // ~zero acceleration and ~zero rotation — identical to being parked. ZUPT alone
+        // cannot tell them apart and was zeroing real cruise velocity, so a plane at 900 km/h
+        // read as stopped. Only treat low accel + low rotation as STOPPED when the current
+        // SPEED is also low; otherwise it is coasting and velocity is HELD (v = v₀ + a·dt with
+        // a ≈ 0 keeps v₀), exactly as physics requires.
+        let currentSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
         isInertialStationary = zuptWindowFilled
             && peakAccel < ZUPT_ACCEL_THRESHOLD
             && peakRotation < ZUPT_ROTATION_THRESHOLD
+            && currentSpeed < ZUPT_MAX_SPEED
 
         if isInertialStationary {
             // Truly at rest: the velocity IS zero, so assert it rather than nudging it, and
@@ -1486,6 +1501,16 @@ class WorkoutSession: ObservableObject {
         motionVelEast += ((prevResidualEast + iE) / 2.0) * dt
         prevResidualNorth = iN
         prevResidualEast = iE
+
+        // Divergence backstop: rescale (preserving direction) if integration has run away past
+        // any speed a real vehicle sustains. This bounds the absurd multi-thousand-km/h
+        // readings without touching the coast behaviour below the ceiling.
+        let speedNow = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
+        if speedNow > DR_MAX_SPEED {
+            let scale = DR_MAX_SPEED / speedNow
+            motionVelNorth *= scale
+            motionVelEast *= scale
+        }
     }
 
     // MARK: - DEBUG: synthetic flight replay (simulator has no Core Motion)

@@ -164,6 +164,8 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastMotionSampleTimestamp: TimeInterval?
     /// Tuned by simulation: above ~0.35 the detector fires during a genuine smooth cruise and
     /// destroys real velocity.
+    private let ZUPT_MAX_SPEED: Double = 2.5                // m/s: above this, low accel = COAST not stop
+    private let DR_MAX_SPEED: Double = 360.0               // m/s: divergence backstop (~1300 km/h)
     private let ZUPT_ACCEL_THRESHOLD: Double = 0.25         // m/s² peak residual within window
     private let ZUPT_ROTATION_THRESHOLD: Double = 0.35      // rad/s — a resting device is not rotating
     private let ZUPT_WINDOW: TimeInterval = 0.75            // s of quiet before velocity is zeroed
@@ -1618,9 +1620,14 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         let peakAccel = zuptWindow.map(\.accel).max() ?? 0
         let peakRotation = zuptWindow.map(\.rotation).max() ?? 0
+        // Only STOPPED when also slow. A body coasting at constant velocity (cruise) has ~zero
+        // accel and rotation too, so without the speed gate ZUPT zeroed real cruise velocity —
+        // a plane at 900 km/h read as stopped. Above the gate, hold velocity (v = v₀ + a·dt).
+        let currentSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
         let stationary = zuptWindowFilled
             && peakAccel < ZUPT_ACCEL_THRESHOLD
             && peakRotation < ZUPT_ROTATION_THRESHOLD
+            && currentSpeed < ZUPT_MAX_SPEED
         isInertialStationary = stationary
         if stationary {
             motionVelX = 0
@@ -1657,6 +1664,13 @@ class WorkoutSession: NSObject, ObservableObject {
         motionVelY += ((prevResidualY + iY) / 2.0) * dtS
         prevResidualX = iX
         prevResidualY = iY
+        // Divergence backstop: rescale (direction preserved) if runaway past any real speed.
+        let speedNow = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
+        if speedNow > DR_MAX_SPEED {
+            let scale = DR_MAX_SPEED / speedNow
+            motionVelX *= scale
+            motionVelY *= scale
+        }
     }
 
     // MARK: - DEBUG: synthetic flight replay (simulator has no Core Motion)
