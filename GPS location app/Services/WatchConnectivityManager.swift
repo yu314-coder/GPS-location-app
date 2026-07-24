@@ -31,7 +31,9 @@ final class PhoneMotionRelayEstimator {
     private var lastDeviceYaw: Double?
 
     private let ZUPT_ACCEL = 0.25, ZUPT_ROT = 0.35, ZUPT_WINDOW: TimeInterval = 0.75
-    private let ZUPT_MAX_SPEED = 2.5, DR_MAX_SPEED = 360.0
+    private let ZUPT_MAX_SPEED = 5.0, DR_MAX_SPEED = 360.0
+    private let HARD_ZUPT_ACCEL = 0.15, HARD_ZUPT_ROTATION = 0.18, HARD_ZUPT_WINDOW = 2.0
+    private var hardQuietDuration: TimeInterval = 0
     private let ZUPT_BIAS_RATE = 0.05, BIAS_RATE = 0.01, BIAS_GATE = 0.3
     private let WALK_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
 
@@ -70,7 +72,9 @@ final class PhoneMotionRelayEstimator {
         // Speed-gated: coasting (cruise) looks identical to parked to ZUPT; only zero when
         // also slow, else hold velocity (v = v₀ + a·dt).
         let currentSpeed = sqrt(velNorth*velNorth + velEast*velEast)
-        if zuptWindowFilled && peakAccel < ZUPT_ACCEL && peakRotation < ZUPT_ROT && currentSpeed < ZUPT_MAX_SPEED {
+        let softStationary = zuptWindowFilled && peakAccel < ZUPT_ACCEL && peakRotation < ZUPT_ROT && currentSpeed < ZUPT_MAX_SPEED
+        if peakAccel < HARD_ZUPT_ACCEL && peakRotation < HARD_ZUPT_ROTATION { hardQuietDuration += dt } else { hardQuietDuration = 0 }
+        if softStationary || hardQuietDuration >= HARD_ZUPT_WINDOW {
             velNorth = 0; velEast = 0
             biasNorth += rN * ZUPT_BIAS_RATE; biasEast += rE * ZUPT_BIAS_RATE
             prevResidualNorth = 0; prevResidualEast = 0

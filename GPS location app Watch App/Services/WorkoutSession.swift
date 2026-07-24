@@ -164,7 +164,11 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastMotionSampleTimestamp: TimeInterval?
     /// Tuned by simulation: above ~0.35 the detector fires during a genuine smooth cruise and
     /// destroys real velocity.
-    private let ZUPT_MAX_SPEED: Double = 2.5                // m/s: above this, low accel = COAST not stop
+    private let ZUPT_MAX_SPEED: Double = 5.0                // m/s: normal-stop tier
+    private let HARD_ZUPT_ACCEL: Double = 0.15             // prolonged-stillness tier (no speed gate)
+    private let HARD_ZUPT_ROTATION: Double = 0.18
+    private let HARD_ZUPT_WINDOW: TimeInterval = 2.0
+    private var hardQuietDuration: TimeInterval = 0
     private let DR_MAX_SPEED: Double = 360.0               // m/s: divergence backstop (~1300 km/h)
     private let ZUPT_ACCEL_THRESHOLD: Double = 0.25         // m/s² peak residual within window
     private let ZUPT_ROTATION_THRESHOLD: Double = 0.35      // rad/s — a resting device is not rotating
@@ -1624,10 +1628,19 @@ class WorkoutSession: NSObject, ObservableObject {
         // accel and rotation too, so without the speed gate ZUPT zeroed real cruise velocity —
         // a plane at 900 km/h read as stopped. Above the gate, hold velocity (v = v₀ + a·dt).
         let currentSpeed = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
-        let stationary = zuptWindowFilled
+        // Tier 1: brief quiet + slow = normal stop.
+        let softStationary = zuptWindowFilled
             && peakAccel < ZUPT_ACCEL_THRESHOLD
             && peakRotation < ZUPT_ROTATION_THRESHOLD
             && currentSpeed < ZUPT_MAX_SPEED
+        // Tier 2: sustained near-total stillness zeroes REGARDLESS of the drifted speed —
+        // otherwise drift above the gate while standing could never be corrected.
+        if peakAccel < HARD_ZUPT_ACCEL && peakRotation < HARD_ZUPT_ROTATION {
+            hardQuietDuration += dtS
+        } else {
+            hardQuietDuration = 0
+        }
+        let stationary = softStationary || hardQuietDuration >= HARD_ZUPT_WINDOW
         isInertialStationary = stationary
         if stationary {
             motionVelX = 0

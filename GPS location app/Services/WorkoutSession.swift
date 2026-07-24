@@ -204,7 +204,13 @@ class WorkoutSession: ObservableObject {
     /// cruise and destroys real velocity (a 0.5 threshold lost 80% of the distance).
     /// Above this speed, low accel + low rotation means COASTING, not stopped, so ZUPT is
     /// inhibited and velocity is held. Below it, the device may genuinely be at rest.
-    private let ZUPT_MAX_SPEED: Double = 2.5            // m/s (~9 km/h)
+    private let ZUPT_MAX_SPEED: Double = 5.0            // m/s (~18 km/h): normal-stop tier
+    // Prolonged-stillness tier: stricter thresholds, longer window, but NO speed gate — this
+    // is what recovers from drift that has climbed above the normal-stop gate while standing.
+    private let HARD_ZUPT_ACCEL: Double = 0.15          // m/s²
+    private let HARD_ZUPT_ROTATION: Double = 0.18       // rad/s
+    private let HARD_ZUPT_WINDOW: TimeInterval = 2.0     // s of near-total stillness
+    private var hardQuietDuration: TimeInterval = 0
     /// Divergence backstop: no vehicle a phone rides sustains this speed (an airliner cruises
     /// ~250 m/s), so anything beyond it is integration runaway and the velocity is rescaled
     /// back to the ceiling rather than allowed to reach thousands of km/h.
@@ -1450,10 +1456,24 @@ class WorkoutSession: ObservableObject {
         // SPEED is also low; otherwise it is coasting and velocity is HELD (v = v₀ + a·dt with
         // a ≈ 0 keeps v₀), exactly as physics requires.
         let currentSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
-        isInertialStationary = zuptWindowFilled
+        // TIER 1 (normal stop): brief quiet + already slow ⇒ stopped.
+        let softStationary = zuptWindowFilled
             && peakAccel < ZUPT_ACCEL_THRESHOLD
             && peakRotation < ZUPT_ROTATION_THRESHOLD
             && currentSpeed < ZUPT_MAX_SPEED
+        // TIER 2 (prolonged stillness): the speed gate alone left a hole — while genuinely
+        // standing still the estimate can DRIFT above the gate (observed: 13 km/h) and then
+        // ZUPT could never pull it back. So when the device is VERY quiet for a sustained
+        // period it is zeroed REGARDLESS of the drifted speed: 2 s of near-total stillness
+        // cannot occur while actually moving (even a smooth cruise has engine/road vibration),
+        // whereas a hand-held phone standing still easily clears it.
+        if peakAccel < HARD_ZUPT_ACCEL && peakRotation < HARD_ZUPT_ROTATION {
+            hardQuietDuration += dt
+        } else {
+            hardQuietDuration = 0
+        }
+        let hardStationary = hardQuietDuration >= HARD_ZUPT_WINDOW
+        isInertialStationary = softStationary || hardStationary
 
         if isInertialStationary {
             // Truly at rest: the velocity IS zero, so assert it rather than nudging it, and
