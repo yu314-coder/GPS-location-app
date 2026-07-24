@@ -63,15 +63,34 @@ class GPXExporter {
 
             """
 
-            // Add extensions for additional data
+            // Add extensions for additional data. Every motion field the sensors captured is
+            // emitted so a dead-reckoned flight can be fully analysed off-device.
+            func ext(_ name: String, _ value: Double?) -> String {
+                guard let value else { return "" }
+                return "                      <\(name)>\(value)</\(name)>\n"
+            }
             gpx += """
                     <extensions>
                       <speed>\(location.speed)</speed>
                       <course>\(location.course)</course>
                       <accuracy>\(location.horizontalAccuracy)</accuracy>
-                    </extensions>
+                      <estimated>\(location.isEstimated)</estimated>
 
             """
+            gpx += ext("acceleration", location.motionAcceleration)
+            gpx += ext("forwardAcceleration", location.forwardAcceleration)
+            gpx += ext("lateralAcceleration", location.lateralAcceleration)
+            gpx += ext("deviceHeading", location.deviceHeading)
+            gpx += ext("compassHeading", location.compassHeading)
+            gpx += ext("movementDirection", location.movementDirection)
+            gpx += ext("pitch", location.pitch)
+            gpx += ext("roll", location.roll)
+            gpx += ext("yaw", location.yaw)
+            gpx += ext("rotationRate", location.rotationRate)
+            gpx += ext("verticalSpeed", location.verticalSpeed)
+            gpx += ext("relativeAltitude", location.relativeAltitude)
+            gpx += ext("pressure", location.pressure)
+            gpx += "                    </extensions>\n\n"
 
             gpx += "      </trkpt>\n"
         }

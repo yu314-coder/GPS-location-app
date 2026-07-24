@@ -2033,6 +2033,26 @@ class WorkoutSession: ObservableObject {
                               isEstimated: true)
     }
 
+    /// Snapshot of every motion sensor at this instant, attached to each recorded point so a
+    /// dead-reckoned flight can be fully diagnosed afterwards (movement direction, device
+    /// heading vs compass, acceleration components, attitude, climb rate).
+    private func currentMotionSnapshot(movementDirection: Double?) -> MotionSnapshot {
+        MotionSnapshot(
+            acceleration: locationManager.currentMotionAcceleration,
+            forwardAcceleration: locationManager.currentMotionForwardAcceleration,
+            lateralAcceleration: locationManager.currentMotionLateralAcceleration,
+            deviceHeading: locationManager.currentDeviceYawHeading,
+            compassHeading: locationManager.currentCompassHeading,
+            movementDirection: movementDirection ?? locationManager.currentMotionDirectionDegrees,
+            pitch: locationManager.currentPitch,
+            roll: locationManager.currentRoll,
+            yaw: locationManager.currentYaw,
+            rotationRate: locationManager.currentRotationRate,
+            verticalSpeed: locationManager.currentVerticalSpeed,
+            relativeAltitude: locationManager.currentRelativeAltitude
+        )
+    }
+
     private func appendEstimatedLocation(distanceMeters: Double, headingDegrees: Double,
                                          speedMetersPerSecond: Double, timestamp: Date) {
         let previousLocation: FlightLocation
@@ -2071,7 +2091,7 @@ class WorkoutSession: ObservableObject {
             signalStrength: 20.0,
             pressure: locationManager.currentPressure,
             isEstimated: true
-        )
+        ).withMotion(currentMotionSnapshot(movementDirection: headingDegrees))
 
         flight.locations.append(estimatedLocation)
         NotificationCenter.default.post(
@@ -2178,8 +2198,8 @@ class WorkoutSession: ObservableObject {
             return
         }
 
-        // Add to flight (after GPS filtering passed)
-        flight.locations.append(location)
+        // Add to flight (after GPS filtering passed), with the current motion snapshot.
+        flight.locations.append(location.withMotion(currentMotionSnapshot(movementDirection: validCourse(location.course))))
         lastRealLocationTime = Date()
         NotificationCenter.default.post(
             name: .workoutLocationUpdated,
