@@ -1854,6 +1854,14 @@ class WorkoutSession: ObservableObject {
         // that the computed heading (→) matches it — if it instead tracks the compass/phone
         // orientation, the inertial signal is too weak to establish direction (expected when
         // walking; a car/plane's sustained acceleration fixes it).
+        // Keep the DISPLAYED speed in sync with the dead-reckoning estimate EVERY tick, not
+        // only when a route point is appended. Appends are gated on distance ≥ 0.25 m, so
+        // while standing still (ZUPT zeroing the velocity, no distance) the metrics card kept
+        // showing its last, stale, high value while the DR status line correctly read 0 — the
+        // mismatch between "the shown one" and "the purple one".
+        currentMetrics.currentSpeed = estimatedFallbackSpeed
+        currentMetrics.smoothedSpeed = estimatedFallbackSpeed
+
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         motionFallbackStatus = String(format: "%@%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
                                       sourceTag,

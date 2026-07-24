@@ -1968,6 +1968,11 @@ class WorkoutSession: NSObject, ObservableObject {
             motionFallbackSpeed = nextSpeed
         }
 
+        // Keep the DISPLAYED speed in sync every tick, not only when a point is appended, so
+        // it matches the DR status and reflects ZUPT zeroing while standing still.
+        currentMetrics.currentSpeed = motionFallbackSpeed
+        currentMetrics.smoothedSpeed = motionFallbackSpeed
+
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.
         if isStepBased && pedometerManager.isDistanceAvailable { accelSource = "PDR" }
