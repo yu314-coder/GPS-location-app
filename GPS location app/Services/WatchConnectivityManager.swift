@@ -34,7 +34,7 @@ final class PhoneMotionRelayEstimator {
     private let ZUPT_MAX_SPEED = 5.0, DR_MAX_SPEED = 360.0
     private let HARD_ZUPT_ACCEL = 0.15, HARD_ZUPT_ROTATION = 0.18, HARD_ZUPT_WINDOW = 2.0
     private var hardQuietDuration: TimeInterval = 0
-    private let ZUPT_BIAS_RATE = 0.05, BIAS_RATE = 0.01, BIAS_GATE = 0.3
+    private let ZUPT_BIAS_RATE = 0.05, BIAS_RATE = 0.02, BIAS_GATE = 1.0
     private let WALK_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
 
     func reset(seedHeading: Double?) {

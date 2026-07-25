@@ -228,8 +228,14 @@ class WorkoutSession: ObservableObject {
     // device never becomes stationary, so ZUPT never fires, and this estimator is the only
     // thing that can cancel that term. Simulation of a 30-minute highway drive: with it,
     // −0.3% distance error; without it, +211%.
-    private let MOTION_BIAS_RATE: Double = 0.01    // learning rate during quiet periods
-    private let MOTION_BIAS_GATE: Double = 0.3     // m/s²: above this = REAL accel → freeze
+    private let MOTION_BIAS_RATE: Double = 0.02    // learning rate during quiet periods
+    // m/s²: above this = REAL sustained acceleration → freeze bias. Raised 0.3 → 1.0: a
+    // hand-held phone standing still reads ~0.5 m/s² of gravity-leakage/tilt, which at 0.3 was
+    // treated as real motion so the bias FROZE and the leakage integrated to phantom speed
+    // (observed: 252 km/h while standing). At 1.0 that leakage is cancelled — which also drops
+    // the residual below the ZUPT threshold so the estimate is zeroed. A vehicle/aircraft
+    // launch (~2–4 m/s²) still stays above 1.0 and is preserved.
+    private let MOTION_BIAS_GATE: Double = 1.0
 
     private var healthKitExportType: HKWorkoutActivityType {
         let preference = UserDefaults.standard.string(forKey: "healthKitExportType") ?? "auto"

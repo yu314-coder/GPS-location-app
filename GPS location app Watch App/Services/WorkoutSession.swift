@@ -182,8 +182,8 @@ class WorkoutSession: NSObject, ObservableObject {
     // error is attitude error tilting GRAVITY into the horizontal axes (0.5° = 0.086 m/s²).
     // On a sustained cruise the device never goes stationary so ZUPT never fires, and this is
     // the only term that can cancel it. Simulated 30-min drive: with it −0.3%, without +211%.
-    private let MOTION_BIAS_RATE: Double = 0.01
-    private let MOTION_BIAS_GATE: Double = 0.3
+    private let MOTION_BIAS_RATE: Double = 0.02
+    private let MOTION_BIAS_GATE: Double = 1.0     // raised from 0.3: cancel gravity-leakage so standing does not diverge
 
     // GPS accuracy thresholds (Modern approach based on Google Maps & fitness apps research)
     private let MAX_HORIZONTAL_ACCURACY: Double = 100.0  // 100m maximum (more lenient to capture more distance points)
