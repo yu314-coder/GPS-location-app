@@ -166,6 +166,7 @@ class WorkoutSession: ObservableObject {
     // accelerometer integration only for vehicle/flight types where there are no steps.
     private let fallbackPedometer = CMPedometer()
     private var fallbackPedometerDistance: Double?      // cumulative metres since fallback start
+    private var fallbackPedometerPace: Double?          // seconds per metre (for smooth speed)
     private var lastFallbackPedometerDistance: Double = 0
     private var fallbackPedometerActive = false
     /// Distance measured but not yet long enough to justify a route point; carried forward so
@@ -1744,7 +1745,9 @@ class WorkoutSession: ObservableObject {
         let nextSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
         // Whether steps are genuinely being counted right now (drives both the heading source
         // and the distance source); computed before the heading block that consumes it.
-        let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 5.0 } ?? false
+        // LONG window: CMPedometer updates are sparse, so 5 s dropped us into integration
+        // between them. 20 s keeps us in the pedometer branch across the gaps.
+        let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false
         let velHeading = nextSpeed > 0.1
             ? normalizedHeading(atan2(motionVelEast, motionVelNorth) * 180 / .pi)
             : nil
@@ -1847,10 +1850,29 @@ class WorkoutSession: ObservableObject {
         // walking acceleration diverges. Only a genuinely stepless vehicle/aircraft falls
         // through to integration.
         if pedometerIsCounting, let pedometerTotal = fallbackPedometerDistance {
+            // PEDOMETER (walking). CMPedometer delivers updates SPARSELY (seconds to tens of
+            // seconds apart), so the cumulative distance jumps when an update lands and holds
+            // flat between. The DELTA is still exactly the distance walked since the last tick
+            // that consumed it, so it is correct regardless of update timing. The `counting`
+            // window is deliberately LONG (see pedometerIsCounting) so we stay in this branch
+            // across the sparse updates instead of dropping into integration and diverging.
             let delta = pedometerTotal - lastFallbackPedometerDistance
             lastFallbackPedometerDistance = pedometerTotal
             distance = max(delta, 0)
-            estimatedFallbackSpeed = distance / dt
+            // Speed from the pedometer's own pace (smooth), not delta/dt (which spikes on each
+            // sparse update). currentPace is seconds-per-metre.
+            if let pace = fallbackPedometerPace, pace > 0 {
+                estimatedFallbackSpeed = 1.0 / pace
+            } else {
+                estimatedFallbackSpeed = estimatedFallbackSpeed * 0.7 + (distance / dt) * 0.3
+            }
+            // CRITICAL: keep the accelerometer integrator from diverging while walking. Its
+            // velocity is unused for distance here, but if left to run it climbs to hundreds
+            // of km/h and then dumps that in the instant stepping stops. Peg it to the real
+            // pedometer speed along the current heading so exiting walking mode is seamless.
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelNorth = estimatedFallbackSpeed * cos(hr)
+            motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
         } else {
             // Not actually stepping: integrate acceleration, and drop the stale pedometer
@@ -1872,6 +1894,11 @@ class WorkoutSession: ObservableObject {
         currentMetrics.currentSpeed = estimatedFallbackSpeed
         currentMetrics.smoothedSpeed = estimatedFallbackSpeed
 
+        // Diagnostic: if the pedometer never delivered any data, Motion & Fitness permission
+        // is likely denied — surface that so it is not mistaken for an algorithm bug.
+        if sourceTag == "DR" && fallbackPedometerActive && fallbackPedometerDistance == nil {
+            sourceTag = "DR(no-pedo)"
+        }
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         motionFallbackStatus = String(format: "%@%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
                                       sourceTag,
@@ -1936,8 +1963,10 @@ class WorkoutSession: ObservableObject {
                 guard let self, let data else { return }
                 let distance = data.distance?.doubleValue
                 let steps = data.numberOfSteps.intValue
+                let pace = data.currentPace?.doubleValue   // s/m
                 DispatchQueue.main.async {
                     if let distance { self.fallbackPedometerDistance = distance }
+                    self.fallbackPedometerPace = pace
                     if steps > self.lastFallbackStepCount { self.lastStepIncrementTime = Date() }
                     self.lastFallbackStepCount = steps
                 }

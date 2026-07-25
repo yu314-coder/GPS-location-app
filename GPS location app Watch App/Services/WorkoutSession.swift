@@ -1969,7 +1969,7 @@ class WorkoutSession: NSObject, ObservableObject {
         let steps = pedometerManager.currentStepCount
         if steps > lastPedometerStepCountForDR { lastStepIncrementTime = now }
         lastPedometerStepCountForDR = steps
-        let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 5.0 } ?? false
+        let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false  // long: CMPedometer updates are sparse
 
         // Route by DETECTED stepping, not the activity label: if steps are being counted you
         // are walking and the pedometer is right; integrating walking accel diverges.
@@ -1982,7 +1982,13 @@ class WorkoutSession: NSObject, ObservableObject {
                 distance = 0   // first tick: establish the baseline, add nothing
             }
             lastPedometerDistanceForDR = pedometerTotal
-            motionFallbackSpeed = distance / dt
+            // Smooth speed; delta/dt spikes on sparse pedometer updates.
+            motionFallbackSpeed = motionFallbackSpeed * 0.7 + (distance / dt) * 0.3
+            // Peg the integrator to the real speed so it cannot diverge while walking and dump
+            // a huge velocity the instant stepping stops (heading = +X north, west = −Y).
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelX = motionFallbackSpeed * cos(hr)
+            motionVelY = -motionFallbackSpeed * sin(hr)
         } else {
             // Not actually stepping (vehicle / aircraft / stationary): integrate acceleration,
             // and drop the stale pedometer baseline so a later walk re-anchors cleanly.
