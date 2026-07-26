@@ -1977,6 +1977,13 @@ class WorkoutSession: NSObject, ObservableObject {
         } else if let relayedHeading = iPhoneDRHeading, let ts = iPhoneDRTimestamp,
                   now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
             motionHeadingDegrees = normalizedHeading(relayedHeading)
+        } else if let compass = locationManager.currentCompassHeading {
+            // ABSOLUTE REFERENCE. Integrated gyro gives turns but no datum, so a seed error
+            // plus residual drift persists all workout. The magnetometer is noisy but has NO
+            // drift — the exact complement. Correct slowly so it never fights a real turn.
+            var err = compass - motionHeadingDegrees
+            if err > 180 { err -= 360 } else if err < -180 { err += 360 }
+            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + 0.08 * err)
         }
         // else: gyro-propagated heading stands (turns preserved even with no relay).
         // DISTANCE: for step-based activities use the PEDOMETER (already tracking since

@@ -189,6 +189,9 @@ class WorkoutSession: ObservableObject {
     private var trustedHeadingYaw: Double?
     /// Device yaw at the previous heading tick; its DELTA gives the turn angle.
     private var lastDeviceYawForHeading: Double?
+    /// Per-tick pull of the dead-reckoned heading toward the compass. The gyro gives turns but
+    /// no absolute datum; the compass has no drift. Small so real turns are never fought.
+    private let COMPASS_CORRECTION_GAIN: Double = 0.08
     /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
     private var walkAccelWindow: [(north: Double, east: Double)] = []
     private let WALK_WINDOW_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
@@ -1839,6 +1842,27 @@ class WorkoutSession: ObservableObject {
                 var err = target - motionHeadingDegrees
                 if err > 180 { err -= 360 } else if err < -180 { err += 360 }
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + 0.25 * err)
+            }
+
+            // ABSOLUTE REFERENCE FROM THE COMPASS.
+            //
+            // The PDR literature is explicit that gyro + acceleration can only give RELATIVE
+            // heading: "we do not address absolute heading angle but merely relative ones,
+            // since the former requires additional information such as pedestrian forward
+            // direction in the sensor frame" (Gravity-Based Methods for Heading Computation in
+            // PDR). Integrated turn rate has no absolute datum, so any seed error — plus the
+            // residual gyro drift — persists for the whole workout. That is why the recorded
+            // direction stayed far from the compass (observed gaps of 40–80°) and whole routes
+            // pointed the wrong way.
+            //
+            // The magnetometer supplies the missing absolute datum. It is noisy instantaneously
+            // but has NO drift, which is the exact complement of the gyro: gyro for fast turns,
+            // compass for the long-run truth. Correct slowly so it never fights a real turn,
+            // and only while NOT turning (a turn swings the compass through its own transient).
+            if !turningNow, let compass = locationManager.currentCompassHeading {
+                var err = compass - motionHeadingDegrees
+                if err > 180 { err -= 360 } else if err < -180 { err += 360 }
+                motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN * err)
             }
             resolvedHeading = motionHeadingDegrees
         }

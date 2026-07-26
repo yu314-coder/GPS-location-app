@@ -62,6 +62,9 @@ class LocationManager: NSObject, ObservableObject {
     /// small and continuous here while true discontinuities remain rejectable.
     private(set) var cumulativeDeviceYawRotation: Double = 0
     private var lastRawYawForAccumulation: Double?
+    /// Slow mean of the vertical gyro rate = gyro bias. Subtracted before integrating so bias
+    /// does not accumulate into heading (0.01 rad/s ≈ 34°/min of drift).
+    private var verticalGyroBias: Double = 0
     private let standardGravity = 9.80665
 
     // GPS reconnection logic
@@ -612,6 +615,7 @@ class LocationManager: NSObject, ObservableObject {
         motionManager.deviceMotionUpdateInterval = 0.5
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
+        verticalGyroBias = 0
         print("📈 Starting device-motion acceleration recording")
 
         // Whether the attitude frame is geographically anchored. `.xArbitraryZVertical` has a
@@ -670,7 +674,16 @@ class LocationManager: NSObject, ObservableObject {
                     dtForRotation = 0.0
                 }
                 self.lastRawYawForAccumulation = motion.timestamp
-                self.cumulativeDeviceYawRotation += verticalRate * dtForRotation * 180.0 / .pi
+                // GYRO BIAS COMPENSATION. Integrating the raw rate lets gyro bias accumulate
+                // straight into heading: a typical 0.01 rad/s bias is 0.57°/s ≈ 34° per
+                // MINUTE, which bends a long route steadily away from truth. Track the slow
+                // mean of the vertical rate and subtract it; real turns are far faster than
+                // this 30 s time constant (as used in the PDR literature) and pass through.
+                if dtForRotation > 0 {
+                    let biasAlpha = min(dtForRotation / (30.0 + dtForRotation), 1.0)
+                    self.verticalGyroBias += (verticalRate - self.verticalGyroBias) * biasAlpha
+                }
+                self.cumulativeDeviceYawRotation += (verticalRate - self.verticalGyroBias) * dtForRotation * 180.0 / .pi
             }
             let horizontalAcceleration = sqrt(
                 referenceAcceleration.north * referenceAcceleration.north +
@@ -751,6 +764,7 @@ class LocationManager: NSObject, ObservableObject {
         motionManager.stopDeviceMotionUpdates()
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
+        verticalGyroBias = 0
         DispatchQueue.main.async { [weak self] in
             self?.currentMotionAcceleration = nil
             self?.currentPitch = nil
