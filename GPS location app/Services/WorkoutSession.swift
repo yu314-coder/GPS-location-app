@@ -179,6 +179,8 @@ class WorkoutSession: ObservableObject {
     /// now — it is not, in a vehicle or aircraft, whatever activity the user selected.
     private var lastFallbackStepCount: Int = 0
     private var lastStepIncrementTime: Date?
+    private var lastStepSampleTime: Date?
+    private var stepCadence: Double = 0    // steps/s, smoothed — distinguishes walking from vehicle vibration
     /// Last heading backed by a real measurement (GPS course, or the velocity vector under
     /// genuine acceleration), plus the device yaw at that moment. Used ONLY to decide which
     /// end of the PCA walking axis we are travelling along — a binary choice, so gyro drift
@@ -1979,6 +1981,8 @@ class WorkoutSession: ObservableObject {
         pendingEstimatedDistance = 0
         lastFallbackStepCount = 0
         lastStepIncrementTime = nil
+        lastStepSampleTime = nil
+        stepCadence = 0
         fallbackPedometerSpeed = 0
         lastPedometerUpdateTime = nil
         pdrAppendedDistance = 0
@@ -2010,7 +2014,23 @@ class WorkoutSession: ObservableObject {
                         self.lastPedometerUpdateTime = now
                     }
                     if let pace, pace > 0 { self.fallbackPedometerSpeed = 1.0 / pace }
-                    if steps > self.lastFallbackStepCount { self.lastStepIncrementTime = now }
+                    // CADENCE, not "any step". Road vibration in a VEHICLE makes CMPedometer
+                    // emit sporadic phantom steps; treating those as walking locked the app
+                    // into pedometer distance and reported ~3 km/h while actually driving.
+                    // Real walking is a sustained 1.5–3 steps/s; phantom steps are sporadic.
+                    if steps > self.lastFallbackStepCount {
+                        let added = steps - self.lastFallbackStepCount
+                        if let prev = self.lastStepSampleTime {
+                            let elapsed = now.timeIntervalSince(prev)
+                            if elapsed > 0.5 {
+                                let cadence = Double(added) / elapsed          // steps/s
+                                self.stepCadence = self.stepCadence * 0.5 + cadence * 0.5
+                                // Only a genuine walking cadence counts as "stepping".
+                                if self.stepCadence >= 1.0 { self.lastStepIncrementTime = now }
+                            }
+                        }
+                        self.lastStepSampleTime = now
+                    }
                     self.lastFallbackStepCount = steps
                 }
             }
@@ -2049,6 +2069,8 @@ class WorkoutSession: ObservableObject {
         pendingEstimatedDistance = 0
         lastFallbackStepCount = 0
         lastStepIncrementTime = nil
+        lastStepSampleTime = nil
+        stepCadence = 0
         fallbackPedometerSpeed = 0
         lastPedometerUpdateTime = nil
         pdrAppendedDistance = 0

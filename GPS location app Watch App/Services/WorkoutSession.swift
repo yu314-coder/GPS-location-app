@@ -154,6 +154,8 @@ class WorkoutSession: NSObject, ObservableObject {
     /// Step-count tracking used to decide whether the pedometer is a VALID distance source
     /// right now (it is not, in a vehicle or aircraft, whatever the activity label says).
     private var lastPedometerStepCountForDR: Int = 0
+    private var lastStepSampleTimeWatch: Date?
+    private var stepCadenceWatch: Double = 0
     private var lastStepIncrementTime: Date?
     // iPhone's relayed dead-reckoning answer. The watch's own device motion is often
     // suppressed (memory pressure / power), and the old assist only arrived attached to a GPS
@@ -1986,7 +1988,20 @@ class WorkoutSession: NSObject, ObservableObject {
         // steps — routing on the label alone produced zero distance and NO TRACK AT ALL.
         // Steps are only a valid distance source while steps are genuinely being counted.
         let steps = pedometerManager.currentStepCount
-        if steps > lastPedometerStepCountForDR { lastStepIncrementTime = now }
+        // CADENCE, not "any step": vehicle vibration produces sporadic phantom steps, which
+        // locked the watch into pedometer distance and reported ~3 km/h while driving.
+        if steps > lastPedometerStepCountForDR {
+            let added = steps - lastPedometerStepCountForDR
+            if let prev = lastStepSampleTimeWatch {
+                let elapsed = now.timeIntervalSince(prev)
+                if elapsed > 0.5 {
+                    let cadence = Double(added) / elapsed
+                    stepCadenceWatch = stepCadenceWatch * 0.5 + cadence * 0.5
+                    if stepCadenceWatch >= 1.0 { lastStepIncrementTime = now }
+                }
+            }
+            lastStepSampleTimeWatch = now
+        }
         lastPedometerStepCountForDR = steps
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false  // long: CMPedometer updates are sparse
 
@@ -2038,7 +2053,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.
-        if pedometerManager.isDistanceAvailable && pedometerManager.currentStepCount > 0 { accelSource = "PDR" }
+        if pedometerIsCounting { accelSource = "PDR" }
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         fallbackDebugStatus = String(
             format: "DR[%@]%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
