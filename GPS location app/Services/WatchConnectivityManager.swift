@@ -34,6 +34,7 @@ final class PhoneMotionRelayEstimator {
     private let ZUPT_MAX_SPEED = 5.0, DR_MAX_SPEED = 360.0
     private let HARD_ZUPT_ACCEL = 0.15, HARD_ZUPT_ROTATION = 0.18, HARD_ZUPT_WINDOW = 2.0
     private var hardQuietDuration: TimeInterval = 0
+    private var longRunMeanNorth = 0.0, longRunMeanEast = 0.0
     private let ZUPT_BIAS_RATE = 0.05, BIAS_RATE = 0.02, BIAS_GATE = 1.0
     private let WALK_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
 
@@ -41,6 +42,7 @@ final class PhoneMotionRelayEstimator {
         velNorth = 0; velEast = 0; biasNorth = 0; biasEast = 0
         prevResidualNorth = 0; prevResidualEast = 0; lpNorth = 0; lpEast = 0
         zuptWindow.removeAll(); zuptWindowFilled = false; walkWindow.removeAll()
+        longRunMeanNorth = 0; longRunMeanEast = 0
         if let seedHeading {
             headingDegrees = seedHeading; hasHeading = true
             trustedHeading = seedHeading
@@ -81,11 +83,16 @@ final class PhoneMotionRelayEstimator {
             return
         }
         if rotationRate > 4.0 { prevResidualNorth = 0; prevResidualEast = 0; return }
+        // Long-window mean removal (see WorkoutSession): bounds a vehicle whose gated bias
+        // estimator is frozen most of the time.
+        let meanAlpha = min(dt / (90.0 + dt), 1.0)
+        longRunMeanNorth += (lpNorth - longRunMeanNorth) * meanAlpha
+        longRunMeanEast += (lpEast - longRunMeanEast) * meanAlpha
         if sqrt(rN*rN + rE*rE) < BIAS_GATE {
             biasNorth += rN * BIAS_RATE; biasEast += rE * BIAS_RATE
         }
         func clamped(_ v: Double) -> Double { Swift.max(-4.0, Swift.min(4.0, v)) }
-        let iN = clamped(lpNorth - biasNorth), iE = clamped(lpEast - biasEast)
+        let iN = clamped(lpNorth - biasNorth - longRunMeanNorth), iE = clamped(lpEast - biasEast - longRunMeanEast)
         velNorth += ((prevResidualNorth + iN) / 2.0) * dt
         velEast += ((prevResidualEast + iE) / 2.0) * dt
         prevResidualNorth = iN; prevResidualEast = iE

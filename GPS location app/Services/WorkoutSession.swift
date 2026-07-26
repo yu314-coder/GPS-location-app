@@ -215,6 +215,10 @@ class WorkoutSession: ObservableObject {
     private let HARD_ZUPT_ROTATION: Double = 0.18       // rad/s
     private let HARD_ZUPT_WINDOW: TimeInterval = 2.0     // s of near-total stillness
     private var hardQuietDuration: TimeInterval = 0
+    /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
+    /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
+    private var longRunMeanNorth: Double = 0
+    private var longRunMeanEast: Double = 0
     /// Divergence backstop: no vehicle a phone rides sustains this speed (an airliner cruises
     /// ~250 m/s), so anything beyond it is integration runaway and the velocity is rescaled
     /// back to the ceiling rather than allowed to reach thousands of km/h.
@@ -1513,6 +1517,25 @@ class WorkoutSession: ObservableObject {
             return
         }
 
+        // LONG-WINDOW MEAN REMOVAL — the constraint that actually bounds a vehicle.
+        //
+        // Over a long window the mean horizontal acceleration of ANY vehicle is ~0: sustained
+        // acceleration would imply impossible speed (1 m/s² held for 60 s is already
+        // 216 km/h). So the long-run mean IS the sensor bias plus gravity leakage, and it can
+        // be removed UNCONDITIONALLY. The gated estimator below cannot do this in a car: it
+        // freezes whenever the residual exceeds the gate, which in traffic (accelerating,
+        // braking, hills, turns) is most of the time — so the leakage was never cancelled and
+        // integrated without bound (observed: 871 km/h in a car).
+        //
+        // Time constant is long (~90 s) so a genuine acceleration burst (a launch lasting a
+        // few seconds) passes through nearly untouched, while any persistent offset is
+        // absorbed. This is a high-pass on acceleration, which is exactly what unaided
+        // inertial navigation needs to stay bounded.
+        let meanTau = 90.0
+        let meanAlpha = min(dt / (meanTau + dt), 1.0)
+        longRunMeanNorth += (worldAccelNorth - longRunMeanNorth) * meanAlpha
+        longRunMeanEast += (worldAccelEast - longRunMeanEast) * meanAlpha
+
         // Moving: keep learning the bias whenever residual acceleration is small (this is what
         // cancels gravity leakage during a long cruise), but FREEZE it during genuine
         // acceleration or braking so it cannot absorb real motion.
@@ -1525,8 +1548,10 @@ class WorkoutSession: ObservableObject {
         // physical bound: no ground or air vehicle sustains |a| > 6 m/s² horizontally (a jet
         // takeoff is ~3), so anything larger is sensor/attitude noise and is clipped.
         func clamped(_ v: Double) -> Double { max(-4.0, min(4.0, v)) }
-        let iN = clamped(worldAccelNorth - accelBiasNorth)
-        let iE = clamped(worldAccelEast - accelBiasEast)
+        // Subtract BOTH the gated bias and the long-run mean. The mean-removal is what keeps a
+        // vehicle bounded when the gated estimator is frozen.
+        let iN = clamped(worldAccelNorth - accelBiasNorth - longRunMeanNorth)
+        let iE = clamped(worldAccelEast - accelBiasEast - longRunMeanEast)
         motionVelNorth += ((prevResidualNorth + iN) / 2.0) * dt
         motionVelEast += ((prevResidualEast + iE) / 2.0) * dt
         prevResidualNorth = iN
@@ -1686,6 +1711,8 @@ class WorkoutSession: ObservableObject {
         zuptWindow.removeAll()
         zuptWindowFilled = false
         isInertialStationary = false
+        longRunMeanNorth = 0
+        longRunMeanEast = 0
     }
 
     private func startEstimatedFallbackTimer() {

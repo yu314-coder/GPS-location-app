@@ -177,6 +177,8 @@ class WorkoutSession: NSObject, ObservableObject {
     private let HARD_ZUPT_ROTATION: Double = 0.18
     private let HARD_ZUPT_WINDOW: TimeInterval = 2.0
     private var hardQuietDuration: TimeInterval = 0
+    private var longRunMeanX: Double = 0
+    private var longRunMeanY: Double = 0
     private let DR_MAX_SPEED: Double = 360.0               // m/s: divergence backstop (~1300 km/h)
     private let ZUPT_ACCEL_THRESHOLD: Double = 0.25         // m/s² peak residual within window
     private let ZUPT_ROTATION_THRESHOLD: Double = 0.35      // rad/s — a resting device is not rotating
@@ -1627,6 +1629,7 @@ class WorkoutSession: NSObject, ObservableObject {
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0
         zuptWindow.removeAll(); zuptWindowFilled = false; isInertialStationary = false; lastMotionSampleTimestamp = nil
+        longRunMeanX = 0; longRunMeanY = 0
         worldAccelX = 0.0; worldAccelY = 0.0
         motionAttitudeReady = false
         lastMotionFallbackTick = nil
@@ -1693,6 +1696,15 @@ class WorkoutSession: NSObject, ObservableObject {
             prevResidualY = 0
             return
         }
+        // LONG-WINDOW MEAN REMOVAL: over ~90 s any vehicle's mean horizontal acceleration is
+        // ~0, so the long-run mean IS bias + gravity leakage and can be removed
+        // unconditionally. The gated estimator freezes during traffic and cannot do this,
+        // which let a car diverge without bound.
+        let meanTau = 90.0
+        let meanAlpha = min(dtS / (meanTau + dtS), 1.0)
+        longRunMeanX += (worldAccelX - longRunMeanX) * meanAlpha
+        longRunMeanY += (worldAccelY - longRunMeanY) * meanAlpha
+
         if sqrt(rX * rX + rY * rY) < MOTION_BIAS_GATE {
             accelBiasX += rX * MOTION_BIAS_RATE
             accelBiasY += rY * MOTION_BIAS_RATE
@@ -1700,8 +1712,8 @@ class WorkoutSession: NSObject, ObservableObject {
         // Residual CLAMPED to a physical bound (no vehicle sustains |a| > 6 m/s²; a jet
         // takeoff is ~3) so attitude/sensor spikes clip instead of integrating.
         func clamped(_ v: Double) -> Double { Swift.max(-4.0, Swift.min(4.0, v)) }
-        let iX = clamped(worldAccelX - accelBiasX)
-        let iY = clamped(worldAccelY - accelBiasY)
+        let iX = clamped(worldAccelX - accelBiasX - longRunMeanX)
+        let iY = clamped(worldAccelY - accelBiasY - longRunMeanY)
         motionVelX += ((prevResidualX + iX) / 2.0) * dtS
         motionVelY += ((prevResidualY + iY) / 2.0) * dtS
         prevResidualX = iX
@@ -2094,6 +2106,7 @@ class WorkoutSession: NSObject, ObservableObject {
         accelBiasX = 0; accelBiasY = 0
         prevResidualX = 0; prevResidualY = 0
         zuptWindow.removeAll(); zuptWindowFilled = false; isInertialStationary = false; lastMotionSampleTimestamp = nil
+        longRunMeanX = 0; longRunMeanY = 0
         lastMotionFallbackTick = nil
         lastMotionFallbackLogTime = Date()
         let gap = Date().timeIntervalSince(lastLocationTime)
@@ -2118,6 +2131,7 @@ class WorkoutSession: NSObject, ObservableObject {
         accelBiasX = 0.0; accelBiasY = 0.0
         prevResidualX = 0.0; prevResidualY = 0.0
         zuptWindow.removeAll(); zuptWindowFilled = false; isInertialStationary = false; lastMotionSampleTimestamp = nil
+        longRunMeanX = 0; longRunMeanY = 0
         lastMotionFallbackTick = nil
         lastAnchorlessFallbackTime = nil
     }
