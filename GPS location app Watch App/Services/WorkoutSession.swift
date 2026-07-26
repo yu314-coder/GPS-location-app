@@ -1718,13 +1718,7 @@ class WorkoutSession: NSObject, ObservableObject {
         motionVelY += ((prevResidualY + iY) / 2.0) * dtS
         prevResidualX = iX
         prevResidualY = iY
-        // Divergence backstop: rescale (direction preserved) if runaway past any real speed.
-        let speedNow = sqrt(motionVelX * motionVelX + motionVelY * motionVelY)
-        if speedNow > DR_MAX_SPEED {
-            let scale = DR_MAX_SPEED / speedNow
-            motionVelX *= scale
-            motionVelY *= scale
-        }
+        // NO SPEED CAP — see iPhone WorkoutSession: correctness by construction, not clamping.
     }
 
     // MARK: - DEBUG: synthetic flight replay (simulator has no Core Motion)

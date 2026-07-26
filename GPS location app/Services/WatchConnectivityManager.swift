@@ -96,8 +96,7 @@ final class PhoneMotionRelayEstimator {
         velNorth += ((prevResidualNorth + iN) / 2.0) * dt
         velEast += ((prevResidualEast + iE) / 2.0) * dt
         prevResidualNorth = iN; prevResidualEast = iE
-        let speedNow = sqrt(velNorth*velNorth + velEast*velEast)
-        if speedNow > DR_MAX_SPEED { let sc = DR_MAX_SPEED / speedNow; velNorth *= sc; velEast *= sc }
+        // NO SPEED CAP — correctness by construction, not clamping.
     }
 
     /// Principal axis of recent horizontal acceleration (walking axis), or nil when the axis

@@ -1557,15 +1557,9 @@ class WorkoutSession: ObservableObject {
         prevResidualNorth = iN
         prevResidualEast = iE
 
-        // Divergence backstop: rescale (preserving direction) if integration has run away past
-        // any speed a real vehicle sustains. This bounds the absurd multi-thousand-km/h
-        // readings without touching the coast behaviour below the ceiling.
-        let speedNow = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
-        if speedNow > DR_MAX_SPEED {
-            let scale = DR_MAX_SPEED / speedNow
-            motionVelNorth *= scale
-            motionVelEast *= scale
-        }
+        // NO SPEED CAP. A ceiling only hides divergence at the display and would clip a
+        // genuinely fast aircraft; the estimate must be correct by construction (bias and
+        // long-run-mean removal above), not clamped after the fact.
     }
 
     // MARK: - DEBUG: synthetic flight replay (simulator has no Core Motion)
