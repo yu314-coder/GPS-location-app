@@ -2089,6 +2089,16 @@ class WorkoutSession: ObservableObject {
         let driftMagnitude = sqrt(driftNorth * driftNorth + driftEast * driftEast)
         // Below GPS noise there is nothing meaningful to correct.
         guard driftMagnitude > 3.0 else { return }
+        // If the drift dwarfs the distance actually travelled, the anchor was wrong (stale
+        // seed / bad fix) rather than the dead reckoning having drifted. Warping the points
+        // onto it would stretch the route across the map as one long straight line. Discard
+        // the mis-anchored estimated run instead, so the track simply resumes at the true fix.
+        if driftMagnitude > max(oldGapLength * 2.0, 200.0) {
+            print("📍 ⚠️ Re-anchor drift \(Int(driftMagnitude))m vs travelled \(Int(oldGapLength))m — dropping mis-anchored DR run (\(n) pts)")
+            flight.locations.removeSubrange(start..<(start + n))
+            currentMetrics.totalDistance = max(0, currentMetrics.totalDistance - oldGapLength)
+            return
+        }
 
         for k in 0..<n {
             let fraction = cumulative[k] / oldGapLength
@@ -2111,7 +2121,16 @@ class WorkoutSession: ObservableObject {
     /// (started with no GPS: airborne, basement, airplane mode). Uses the last position Core
     /// Location knows about, even a stale one — a route needs SOME geographic reference.
     private func syntheticFallbackAnchor(at timestamp: Date) -> FlightLocation? {
-        guard let known = locationManager.currentLocation ?? locationManager.latestRawLocation else {
+        // FRESHNESS IS MANDATORY. This used to accept any last-known location, including one
+        // from a PREVIOUS workout hours ago and kilometres away: the track then started at
+        // that stale point and, once the true position was known, drew a long straight line
+        // across the map to it (observed: a 0.24 km walk rendered as a ~1 km diagonal).
+        // Without a recent position it is better to have no anchor (distance-only) than to
+        // anchor the whole route somewhere wrong.
+        let candidate = locationManager.currentLocation ?? locationManager.latestRawLocation
+        guard let known = candidate,
+              timestamp.timeIntervalSince(known.timestamp) < 120,
+              known.horizontalAccuracy >= 0, known.horizontalAccuracy < 200 else {
             return nil
         }
         let seed = CLLocation(

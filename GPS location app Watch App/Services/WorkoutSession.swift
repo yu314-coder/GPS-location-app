@@ -124,6 +124,7 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastFallbackTickTime: Date?                 // debounce for dual-timer fallback driver
     private var lastAnchorlessFallbackTime: Date?          // for distance-only dead reckoning
     private var lastIPhoneRelayCoord: (lat: Double, lon: Double)?  // detect frozen (stale) iPhone relay
+    private var lastIPhoneRelayTime: Date?                         // freshness for anchoring
     private var frozenIPhoneRelayCount: Int = 0
     private let MOTION_FALLBACK_TICK: TimeInterval = 1.0
     // NOTE: there is deliberately NO speed cap anywhere in the velocity dead reckoning —
@@ -1287,12 +1288,18 @@ class WorkoutSession: NSObject, ObservableObject {
     /// last-known relay position (a real-world coordinate, stale is fine), then the
     /// watch's own last-known GPS. Returns nil only if neither exists anywhere.
     private func syntheticFallbackAnchor(at timestamp: Date) -> FlightLocation? {
+        // FRESHNESS IS MANDATORY: a stale last-known position (previous workout, kilometres
+        // away) anchored the whole route there and then drew a long straight line to the true
+        // position once it was known. No anchor is better than a wrong one.
         let coordinate: CLLocationCoordinate2D
         let altitude: Double
-        if let relay = lastIPhoneRelayCoord {
+        if let relay = lastIPhoneRelayCoord,
+           timestamp.timeIntervalSince(lastIPhoneRelayTime ?? .distantPast) < 120 {
             coordinate = CLLocationCoordinate2D(latitude: relay.lat, longitude: relay.lon)
             altitude = locationManager.currentLocation?.altitude ?? currentMetrics.currentAltitude
-        } else if let known = locationManager.currentLocation {
+        } else if let known = locationManager.currentLocation,
+                  timestamp.timeIntervalSince(known.timestamp) < 120,
+                  known.horizontalAccuracy >= 0, known.horizontalAccuracy < 200 {
             coordinate = known.coordinate
             altitude = known.altitude
         } else {
@@ -2473,6 +2480,7 @@ class WorkoutSession: NSObject, ObservableObject {
                 }
             }
             lastIPhoneRelayCoord = (location.latitude, location.longitude)
+            lastIPhoneRelayTime = Date()
         }
 
         // GPS RETURN AFTER A DEAD-RECKONING GAP (pedometer OR motion fallback).
