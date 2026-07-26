@@ -141,6 +141,9 @@ class WorkoutSession: NSObject, ObservableObject {
     private var yawHeadingOffset: Double?
     /// Pedometer cumulative-distance baseline for the PDR distance path (step activities).
     private var lastPedometerDistanceForDR: Double?
+    private var smoothedPedometerSpeedWatch: Double = 0
+    private var pdrAppendedDistanceWatch: Double = 0
+    private var lastPedometerUpdateTimeWatch: Date?
     /// Unwrapped cumulative heading change from the watch gyro (vertical-axis integration),
     /// and the value consumed at the previous heading tick.
     private var cumulativeYawRotationDeg: Double = 0
@@ -1609,6 +1612,9 @@ class WorkoutSession: NSObject, ObservableObject {
         yawHeadingOffset = nil
         lastPedometerDistanceForDR = nil
         lastCumulativeYawForHeading = nil
+        smoothedPedometerSpeedWatch = 0
+        lastPedometerUpdateTimeWatch = nil
+        pdrAppendedDistanceWatch = 0
         pendingMotionDistance = 0
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0
@@ -1976,16 +1982,27 @@ class WorkoutSession: NSObject, ObservableObject {
         let distance: Double
         if pedometerManager.isDistanceAvailable, pedometerIsCounting {
             let pedometerTotal = pedometerManager.currentDistance
-            if let last = lastPedometerDistanceForDR {
-                distance = max(pedometerTotal - last, 0)
-            } else {
-                distance = 0   // first tick: establish the baseline, add nothing
+            // Smooth speed from cumulative-distance updates, and lay distance down PER TICK
+            // along the CURRENT heading — not the raw cumulative delta, whose sparse jumps
+            // drew one long straight segment ignoring the turns walked during the gap.
+            if let last = lastPedometerDistanceForDR, let lastT = lastPedometerUpdateTimeWatch {
+                let elapsed = now.timeIntervalSince(lastT)
+                if elapsed > 0.5, pedometerTotal > last {
+                    let instant = (pedometerTotal - last) / elapsed
+                    smoothedPedometerSpeedWatch = smoothedPedometerSpeedWatch * 0.5 + instant * 0.5
+                }
             }
+            if pedometerTotal != (lastPedometerDistanceForDR ?? -1) { lastPedometerUpdateTimeWatch = now }
             lastPedometerDistanceForDR = pedometerTotal
-            // Smooth speed; delta/dt spikes on sparse pedometer updates.
-            motionFallbackSpeed = motionFallbackSpeed * 0.7 + (distance / dt) * 0.3
-            // Peg the integrator to the real speed so it cannot diverge while walking and dump
-            // a huge velocity the instant stepping stops (heading = +X north, west = −Y).
+            // Catch-up toward the cumulative, capped per tick (see iPhone comment) so a sparse
+            // pedometer jump spreads over ticks along the heading instead of one straight line.
+            let owed = max(0, pedometerTotal - pdrAppendedDistanceWatch)
+            let perTickCap = max(smoothedPedometerSpeedWatch * dt * 1.5, 1.5)
+            distance = min(owed, perTickCap)
+            pdrAppendedDistanceWatch += distance
+            motionFallbackSpeed = smoothedPedometerSpeedWatch
+            // Peg the integrator to the real speed so it cannot diverge while walking (heading
+            // = +X north, west = −Y).
             let hr = motionHeadingDegrees * .pi / 180
             motionVelX = motionFallbackSpeed * cos(hr)
             motionVelY = -motionFallbackSpeed * sin(hr)
@@ -1994,6 +2011,9 @@ class WorkoutSession: NSObject, ObservableObject {
             // and drop the stale pedometer baseline so a later walk re-anchors cleanly.
             lastPedometerDistanceForDR = nil
         lastCumulativeYawForHeading = nil
+        smoothedPedometerSpeedWatch = 0
+        lastPedometerUpdateTimeWatch = nil
+        pdrAppendedDistanceWatch = 0
             distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
             motionFallbackSpeed = nextSpeed
         }
@@ -2083,6 +2103,9 @@ class WorkoutSession: NSObject, ObservableObject {
         yawHeadingOffset = nil
         lastPedometerDistanceForDR = nil
         lastCumulativeYawForHeading = nil
+        smoothedPedometerSpeedWatch = 0
+        lastPedometerUpdateTimeWatch = nil
+        pdrAppendedDistanceWatch = 0
         pendingMotionDistance = 0
         motionVelX = 0.0; motionVelY = 0.0
         accelBiasX = 0.0; accelBiasY = 0.0

@@ -167,6 +167,9 @@ class WorkoutSession: ObservableObject {
     private let fallbackPedometer = CMPedometer()
     private var fallbackPedometerDistance: Double?      // cumulative metres since fallback start
     private var fallbackPedometerPace: Double?          // seconds per metre (for smooth speed)
+    private var fallbackPedometerSpeed: Double = 0      // m/s, smoothed from pedometer updates
+    private var pdrAppendedDistance: Double = 0         // total distance already laid down in PDR
+    private var lastPedometerUpdateTime: Date?
     private var lastFallbackPedometerDistance: Double = 0
     private var fallbackPedometerActive = false
     /// Distance measured but not yet long enough to justify a route point; carried forward so
@@ -1856,16 +1859,18 @@ class WorkoutSession: ObservableObject {
             // that consumed it, so it is correct regardless of update timing. The `counting`
             // window is deliberately LONG (see pedometerIsCounting) so we stay in this branch
             // across the sparse updates instead of dropping into integration and diverging.
-            let delta = pedometerTotal - lastFallbackPedometerDistance
+            // CATCH-UP toward the pedometer cumulative, CAPPED per tick. CMPedometer updates
+            // land seconds-to-tens-of-seconds apart, so the raw delta is a big jump that, drawn
+            // as one segment, became the long straight line ignoring the turns walked during
+            // the gap. Instead bleed the "owed" distance off a little each tick along the
+            // CURRENT gyro heading — the path curves — while the TOTAL still converges exactly
+            // to the pedometer distance (unlike pure speed×dt, which under-counts).
             lastFallbackPedometerDistance = pedometerTotal
-            distance = max(delta, 0)
-            // Speed from the pedometer's own pace (smooth), not delta/dt (which spikes on each
-            // sparse update). currentPace is seconds-per-metre.
-            if let pace = fallbackPedometerPace, pace > 0 {
-                estimatedFallbackSpeed = 1.0 / pace
-            } else {
-                estimatedFallbackSpeed = estimatedFallbackSpeed * 0.7 + (distance / dt) * 0.3
-            }
+            let owed = max(0, pedometerTotal - pdrAppendedDistance)
+            let perTickCap = max(fallbackPedometerSpeed * dt * 1.5, 1.5)
+            distance = min(owed, perTickCap)
+            pdrAppendedDistance += distance
+            estimatedFallbackSpeed = fallbackPedometerSpeed   // for the speed display
             // CRITICAL: keep the accelerometer integrator from diverging while walking. Its
             // velocity is unused for distance here, but if left to run it climbs to hundreds
             // of km/h and then dumps that in the instant stepping stops. Peg it to the real
@@ -1953,6 +1958,9 @@ class WorkoutSession: ObservableObject {
         pendingEstimatedDistance = 0
         lastFallbackStepCount = 0
         lastStepIncrementTime = nil
+        fallbackPedometerSpeed = 0
+        lastPedometerUpdateTime = nil
+        pdrAppendedDistance = 0
         // Start the pedometer REGARDLESS of the selected activity type. Distance is routed by
         // whether steps are actually being counted, not by the label — the user selects a
         // vehicle/flight type but may still be walking on the ground, where accelerometer
@@ -1964,10 +1972,24 @@ class WorkoutSession: ObservableObject {
                 let distance = data.distance?.doubleValue
                 let steps = data.numberOfSteps.intValue
                 let pace = data.currentPace?.doubleValue   // s/m
+                let now = Date()
                 DispatchQueue.main.async {
-                    if let distance { self.fallbackPedometerDistance = distance }
-                    self.fallbackPedometerPace = pace
-                    if steps > self.lastFallbackStepCount { self.lastStepIncrementTime = Date() }
+                    // Derive a SMOOTH speed from each cumulative-distance update (robust; does
+                    // not depend on currentPace being present). Prefer Apple's pace when valid.
+                    if let d = distance {
+                        if let prevD = self.fallbackPedometerDistance,
+                           let prevT = self.lastPedometerUpdateTime {
+                            let dt = now.timeIntervalSince(prevT)
+                            if dt > 0.5 {
+                                let instant = max(0, d - prevD) / dt
+                                self.fallbackPedometerSpeed = self.fallbackPedometerSpeed * 0.5 + instant * 0.5
+                            }
+                        }
+                        self.fallbackPedometerDistance = d
+                        self.lastPedometerUpdateTime = now
+                    }
+                    if let pace, pace > 0 { self.fallbackPedometerSpeed = 1.0 / pace }
+                    if steps > self.lastFallbackStepCount { self.lastStepIncrementTime = now }
                     self.lastFallbackStepCount = steps
                 }
             }
@@ -2006,6 +2028,9 @@ class WorkoutSession: ObservableObject {
         pendingEstimatedDistance = 0
         lastFallbackStepCount = 0
         lastStepIncrementTime = nil
+        fallbackPedometerSpeed = 0
+        lastPedometerUpdateTime = nil
+        pdrAppendedDistance = 0
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
     }
