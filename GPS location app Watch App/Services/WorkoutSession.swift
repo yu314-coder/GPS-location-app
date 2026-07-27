@@ -1972,15 +1972,16 @@ class WorkoutSession: NSObject, ObservableObject {
         // Correct the ABSOLUTE heading toward the best available reference (the gyro only gives
         // relative turn). Velocity vector under real acceleration is best; else the iPhone's
         // relayed heading (it recovers absolute direction the watch cannot).
-        if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4, motionFrameIsAbsolute {
+        // A diverged velocity vector is not a trustworthy bearing — require a plausible speed.
+        if let vh = velHeading, nextSpeed > 3.0, nextSpeed < 60.0, horizAccelMag > 0.4, motionFrameIsAbsolute {
             motionHeadingDegrees = vh
         } else if let relayedHeading = iPhoneDRHeading, let ts = iPhoneDRTimestamp,
                   now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
             motionHeadingDegrees = normalizedHeading(relayedHeading)
-        } else if let compass = locationManager.currentCompassHeading {
-            // ABSOLUTE REFERENCE. Integrated gyro gives turns but no datum, so a seed error
-            // plus residual drift persists all workout. The magnetometer is noisy but has NO
-            // drift — the exact complement. Correct slowly so it never fights a real turn.
+        }
+        // ABSOLUTE DATUM, ALWAYS: applied outside the branches so a diverged velocity vector
+        // can never lock the heading away from the only drift-free reference available.
+        if let compass = locationManager.currentCompassHeading {
             var err = compass - motionHeadingDegrees
             if err > 180 { err -= 360 } else if err < -180 { err += 360 }
             motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + 0.08 * err)

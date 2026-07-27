@@ -165,6 +165,12 @@ class WorkoutSession: ObservableObject {
     // GPS gap the DR tick uses PEDOMETER DISTANCE + YAW HEADING for walk/run/hike, and
     // accelerometer integration only for vehicle/flight types where there are no steps.
     private let fallbackPedometer = CMPedometer()
+    /// Apple's activity classifier. It reports STATIONARY / automotive / walking directly and
+    /// is unaffected by how far the integrator has drifted, so it can rescue a diverged
+    /// estimate that ZUPT's own thresholds can no longer reach.
+    private let activityManager = CMMotionActivityManager()
+    private var isDeviceStationaryByActivity = false
+    private var activityIsAutomotive = false
     private var fallbackPedometerDistance: Double?      // cumulative metres since fallback start
     private var fallbackPedometerPace: Double?          // seconds per metre (for smooth speed)
     private var fallbackPedometerSpeed: Double = 0      // m/s, smoothed from pedometer updates
@@ -172,6 +178,7 @@ class WorkoutSession: ObservableObject {
     private var lastPedometerUpdateTime: Date?
     private var lastFallbackPedometerDistance: Double = 0
     private var fallbackPedometerActive = false
+    private var activityUpdatesActive = false
     /// Distance measured but not yet long enough to justify a route point; carried forward so
     /// short ticks accumulate rather than being thrown away.
     private var pendingEstimatedDistance: Double = 0
@@ -1492,7 +1499,11 @@ class WorkoutSession: ObservableObject {
             hardQuietDuration = 0
         }
         let hardStationary = hardQuietDuration >= HARD_ZUPT_WINDOW
-        isInertialStationary = softStationary || hardStationary
+        // Apple's activity classifier is authoritative about being STATIONARY, and it does not
+        // care what the integrated speed says. Without it a diverged estimate was unrecoverable:
+        // soft-ZUPT needs speed < 5 m/s (it was 93) and hard-ZUPT needs accel < 0.15 (engine
+        // idle exceeds it), so 336 km/h persisted while parked. This breaks that trap.
+        isInertialStationary = softStationary || hardStationary || isDeviceStationaryByActivity
 
         if isInertialStationary {
             // Truly at rest: the velocity IS zero, so assert it rather than nudging it, and
@@ -1801,7 +1812,11 @@ class WorkoutSession: ObservableObject {
         let horizAccelMag = sqrt(rNh * rNh + rEh * rEh)
 
         var resolvedHeading: Double? = nil
-        if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4,
+        // The velocity vector is only "trustworthy" if the velocity itself is plausible. When
+        // the integrator has diverged (observed: 336 km/h with the car barely moving) this
+        // branch fed garbage heading AND bypassed the compass correction below, which is why
+        // the computed heading sat 90° from the compass. Require a sane speed too.
+        if let vh = velHeading, nextSpeed > 3.0, nextSpeed < 60.0, horizAccelMag > 0.4,
            locationManager.motionReferenceFrameIsAbsolute {
             resolvedHeading = vh                       // real acceleration ⇒ trustworthy
         } else {
@@ -1867,6 +1882,14 @@ class WorkoutSession: ObservableObject {
             resolvedHeading = motionHeadingDegrees
         }
         if let rh = resolvedHeading { motionHeadingDegrees = rh }
+        // ABSOLUTE DATUM, ALWAYS. Applied outside the branches above so a diverged velocity
+        // vector can never lock the heading away from the only drift-free reference we have.
+        if let compass = locationManager.currentCompassHeading {
+            var err = compass - motionHeadingDegrees
+            if err > 180 { err -= 360 } else if err < -180 { err += 360 }
+            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN * err)
+            resolvedHeading = motionHeadingDegrees
+        }
         // A heading backed by real acceleration is authoritative: snap to it and re-anchor the
         // gyro reference so drift cannot accumulate across it.
         if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4 {
@@ -1949,7 +1972,7 @@ class WorkoutSession: ObservableObject {
         // Diagnostic: if the pedometer never delivered any data, Motion & Fitness permission
         // is likely denied — surface that so it is not mistaken for an algorithm bug.
         if sourceTag == "DR" && fallbackPedometerActive && fallbackPedometerDistance == nil {
-            sourceTag = "DR(no-pedo)"
+            sourceTag = "DR(ENABLE MOTION PERMISSION)"
         }
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         motionFallbackStatus = String(format: "%@%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
@@ -2060,6 +2083,17 @@ class WorkoutSession: ObservableObject {
             }
             print("📍 👟 PDR: pedometer engaged as gap distance source")
         }
+        if CMMotionActivityManager.isActivityAvailable() && !activityUpdatesActive {
+            activityUpdatesActive = true
+            activityManager.startActivityUpdates(to: .main) { [weak self] activity in
+                guard let self, let activity else { return }
+                // Only trust a CONFIDENT stationary call, so a brief misclassification cannot
+                // zero a genuinely moving vehicle.
+                self.isDeviceStationaryByActivity = activity.stationary && activity.confidence != .low
+                self.activityIsAutomotive = activity.automotive
+            }
+            print("📍 🚗 Activity classifier engaged (stationary/automotive detection)")
+        }
         resetInertialState(seedSpeed: seed, courseDegrees: course)
         // Anchor the yaw-relative heading: from here on, travel heading = device yaw + offset,
         // so the gyro-fused attitude carries every subsequent turn.
@@ -2088,6 +2122,12 @@ class WorkoutSession: ObservableObject {
             fallbackPedometer.stopUpdates()
             fallbackPedometerActive = false
         }
+        if activityUpdatesActive {
+            activityManager.stopActivityUpdates()
+            activityUpdatesActive = false
+        }
+        isDeviceStationaryByActivity = false
+        activityIsAutomotive = false
         fallbackPedometerDistance = nil
         lastFallbackPedometerDistance = 0
         pendingEstimatedDistance = 0
