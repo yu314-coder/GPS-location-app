@@ -2012,12 +2012,24 @@ class WorkoutSession: ObservableObject {
 
         // Diagnostic: if the pedometer never delivered any data, Motion & Fitness permission
         // is likely denied — surface that so it is not mistaken for an algorithm bug.
-        if sourceTag == "DR" && fallbackPedometerActive && fallbackPedometerDistance == nil {
-            sourceTag = "DR(ENABLE MOTION PERMISSION)"
+        // Report permission from the AUTHORIZATION STATUS, never inferred from missing data:
+        // CMPedometer simply does not deliver updates while you are not walking, so a nil
+        // distance in a vehicle is normal and previously produced a false "denied" warning.
+        if motionPermissionDenied {
+            sourceTag = "DR(MOTION PERMISSION OFF)"
         }
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
-        motionFallbackStatus = String(format: "%@%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
+        // Show the live activity classification. Its state decides whether ZUPT may zero the
+        // speed, so when a reading looks wrong this says immediately whether Apple thinks you
+        // are stationary, driving, or walking.
+        let activityTag: String
+        if isDeviceStationaryByActivity { activityTag = " [still]" }
+        else if activityIsAutomotive { activityTag = " [car]" }
+        else if pedometerIsCounting { activityTag = " [walk]" }
+        else { activityTag = " [?]" }
+        motionFallbackStatus = String(format: "%@%@%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
                                       sourceTag,
+                                      activityTag,
                                       forceMotionFallback ? " FORCED" : "",
                                       estimatedFallbackSpeed * 3.6,
                                       headingDegrees,
