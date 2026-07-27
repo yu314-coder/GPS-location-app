@@ -69,6 +69,10 @@ struct ContentView: View {
         }
         .onAppear {
             print("✅ ContentView appeared successfully")
+            // Prompt for Motion & Fitness at launch. Without it CMPedometer and
+            // CMMotionActivityManager silently return nothing, which disables walking distance
+            // and the stationary/automotive detection the dead reckoning relies on.
+            WorkoutSession.shared.ensureMotionPermission()
             // DEBUG: `-replayFlight` launch arg drives a synthesized flight through the real
             // dead-reckoning pipeline and opens the live map, so Force Velocity can be seen on
             // the simulator (which has no Core Motion). Inert without the argument.

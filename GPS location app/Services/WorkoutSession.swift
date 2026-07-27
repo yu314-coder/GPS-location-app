@@ -179,6 +179,9 @@ class WorkoutSession: ObservableObject {
     private var lastFallbackPedometerDistance: Double = 0
     private var fallbackPedometerActive = false
     private var activityUpdatesActive = false
+    /// True when Motion & Fitness is denied — surfaced in the UI because it silently disables
+    /// pedometer distance AND the stationary/automotive classifier.
+    @Published var motionPermissionDenied = false
     /// Distance measured but not yet long enough to justify a route point; carried forward so
     /// short ticks accumulate rather than being thrown away.
     private var pendingEstimatedDistance: Double = 0
@@ -709,6 +712,34 @@ class WorkoutSession: ObservableObject {
         connectivityManager.stopWorkoutOnWatch()
     }
 
+    /// Ask for Motion & Fitness explicitly and report the outcome.
+    ///
+    /// The app previously only called startUpdates(), which fails SILENTLY when the user was
+    /// never prompted or has declined — so CMPedometer (walking distance) and
+    /// CMMotionActivityManager (stationary / automotive detection) both returned nothing and
+    /// every feature built on them was dead. A historical query is the documented way to
+    /// trigger the prompt.
+    func ensureMotionPermission() {
+        let status = CMPedometer.authorizationStatus()
+        switch status {
+        case .authorized:
+            motionPermissionDenied = false
+        case .denied, .restricted:
+            motionPermissionDenied = true
+            print("📍 ⛔️ Motion & Fitness DENIED — pedometer and activity classifier unavailable")
+        case .notDetermined:
+            // Triggers the system prompt.
+            fallbackPedometer.queryPedometerData(from: Date().addingTimeInterval(-60), to: Date()) { [weak self] _, error in
+                DispatchQueue.main.async {
+                    self?.motionPermissionDenied = (CMPedometer.authorizationStatus() != .authorized)
+                    if let error { print("📍 ⚠️ Motion permission query: \(error.localizedDescription)") }
+                }
+            }
+        @unknown default:
+            motionPermissionDenied = false
+        }
+    }
+
     func startWorkout() {
         guard !isActive else {
             print("⚠️ startWorkout ignored: workout already active")
@@ -717,6 +748,7 @@ class WorkoutSession: ObservableObject {
         }
 
         print("🚀 Starting workout session...")
+        ensureMotionPermission()
         clearActiveWorkoutSnapshot(reason: "newWorkoutStart")
 
         // Initialize flight first
