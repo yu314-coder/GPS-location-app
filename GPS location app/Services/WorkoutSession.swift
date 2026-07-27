@@ -1483,7 +1483,8 @@ class WorkoutSession: ObservableObject {
         // a ≈ 0 keeps v₀), exactly as physics requires.
         let currentSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
         // TIER 1 (normal stop): brief quiet + already slow ⇒ stopped.
-        let softStationary = zuptWindowFilled
+        let softStationary = !(activityIsAutomotive && !isDeviceStationaryByActivity)
+            && zuptWindowFilled
             && peakAccel < ZUPT_ACCEL_THRESHOLD
             && peakRotation < ZUPT_ROTATION_THRESHOLD
             && currentSpeed < ZUPT_MAX_SPEED
@@ -1498,7 +1499,12 @@ class WorkoutSession: ObservableObject {
         } else {
             hardQuietDuration = 0
         }
-        let hardStationary = hardQuietDuration >= HARD_ZUPT_WINDOW
+        // While Apple's classifier says AUTOMOTIVE and not stationary, we are demonstrably
+        // moving in a vehicle, so no amount of quiet means "stopped" — a smooth cruise on a
+        // good road is quiet. Inhibiting the quiet-based tiers here removes the 0 km/h
+        // readings that appeared while actually driving.
+        let drivingNow = activityIsAutomotive && !isDeviceStationaryByActivity
+        let hardStationary = !drivingNow && hardQuietDuration >= HARD_ZUPT_WINDOW
         // Apple's activity classifier is authoritative about being STATIONARY, and it does not
         // care what the integrated speed says. Without it a diverged estimate was unrecoverable:
         // soft-ZUPT needs speed < 5 m/s (it was 93) and hard-ZUPT needs accel < 0.15 (engine
@@ -1547,6 +1553,9 @@ class WorkoutSession: ObservableObject {
         // few seconds) passes through nearly untouched, while any persistent offset is
         // absorbed. This is a high-pass on acceleration, which is exactly what unaided
         // inertial navigation needs to stay bounded.
+        // Kept at 90 s deliberately. A shorter window was TESTED and is clearly worse: at 20 s
+        // it absorbs the vehicle's own acceleration bursts (a typical 8 s pull-away), and the
+        // simulated drive-cycle error rose from 2.7 to 27.9 km/h mean. Long window only.
         let meanTau = 90.0
         let meanAlpha = min(dt / (meanTau + dt), 1.0)
         longRunMeanNorth += (worldAccelNorth - longRunMeanNorth) * meanAlpha

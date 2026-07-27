@@ -1674,7 +1674,10 @@ class WorkoutSession: NSObject, ObservableObject {
         } else {
             hardQuietDuration = 0
         }
-        let stationary = softStationary || hardQuietDuration >= HARD_ZUPT_WINDOW
+        // While the watch's own workout context says we are moving in a vehicle, quiet does not
+        // mean stopped — a smooth cruise is quiet. This removes the 0 km/h-while-driving reads.
+        let drivingNow = self.workoutType == .other && self.motionFallbackSpeed > 8.0
+        let stationary = !drivingNow && (softStationary || hardQuietDuration >= HARD_ZUPT_WINDOW)
         isInertialStationary = stationary
         if stationary {
             motionVelX = 0
