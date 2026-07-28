@@ -201,7 +201,7 @@ class WorkoutSession: ObservableObject {
     private var lastDeviceYawForHeading: Double?
     /// Per-tick pull of the dead-reckoned heading toward the compass. The gyro gives turns but
     /// no absolute datum; the compass has no drift. Small so real turns are never fought.
-    private let COMPASS_CORRECTION_GAIN: Double = 0.08
+    private let COMPASS_CORRECTION_GAIN: Double = 0.25
     /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
     private var walkAccelWindow: [(north: Double, east: Double)] = []
     private let WALK_WINDOW_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
@@ -1870,10 +1870,13 @@ class WorkoutSession: ObservableObject {
         // the integrator has diverged (observed: 336 km/h with the car barely moving) this
         // branch fed garbage heading AND bypassed the compass correction below, which is why
         // the computed heading sat 90° from the compass. Require a sane speed too.
-        if let vh = velHeading, nextSpeed > 3.0, nextSpeed < 60.0, horizAccelMag > 0.4,
-           locationManager.motionReferenceFrameIsAbsolute {
-            resolvedHeading = vh                       // real acceleration ⇒ trustworthy
-        } else {
+        // The velocity-vector heading is NOT used as an absolute reference. It is derived from
+        // the integrated velocity, which this mode has repeatedly shown to diverge, and it
+        // OVERWROTE the heading every tick — the compass correction below could only nudge it
+        // 8% before being replaced again, which is why the recorded heading sat ~45° (once
+        // 205°) from the compass indefinitely. Direction now comes from the gyro for turns and
+        // the compass for the absolute datum, exactly as the PDR literature prescribes.
+        do {
             // COMPLEMENTARY FILTER. Turn ANGLE comes from the gyro, absolute direction from
             // PCA. Previously heading was taken straight from the PCA axis, but that axis is
             // computed over a ~3 s window, so during a turn it averages acceleration from
@@ -1944,17 +1947,11 @@ class WorkoutSession: ObservableObject {
             motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN * err)
             resolvedHeading = motionHeadingDegrees
         }
-        // A heading backed by real acceleration is authoritative: snap to it and re-anchor the
-        // gyro reference so drift cannot accumulate across it.
-        if let vh = velHeading, nextSpeed > 3.0, horizAccelMag > 0.4 {
-            motionHeadingDegrees = vh
-            trustedHeading = vh
-            trustedHeadingYaw = locationManager.currentDeviceYawHeading
-            lastDeviceYawForHeading = locationManager.cumulativeDeviceYawRotation
-        }
+        // NOTE: the velocity vector no longer snaps the heading either. It is a product of the
+        // integrated velocity, so when that diverges it dragged the heading away from the
+        // compass every tick and the correction could never win.
 
         let headingDegrees = resolvedHeading
-            ?? (locationManager.motionReferenceFrameIsAbsolute ? velHeading : nil)
             ?? normalizedHeading(
                 // Prefer GPS COURSE (true direction of travel) over the compass: inside a
                 // vehicle — especially an aircraft — the magnetometer reads the metal shell
