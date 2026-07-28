@@ -1616,8 +1616,12 @@ class WorkoutSession: ObservableObject {
         func clamped(_ v: Double) -> Double { max(-4.0, min(4.0, v)) }
         // Subtract BOTH the gated bias and the long-run mean. The mean-removal is what keeps a
         // vehicle bounded when the gated estimator is frozen.
-        let iN = clamped(worldAccelNorth - accelBiasNorth - longRunMeanNorth)
-        let iE = clamped(worldAccelEast - accelBiasEast - longRunMeanEast)
+        // NOTE: no world-frame mean subtraction here. Bias and gravity leakage are removed in
+        // the DEVICE frame (LocationManager.referenceFrameAcceleration), which is the only
+        // frame where they are constant — a world-frame mean cannot cancel an error vector
+        // that rotates every time the vehicle turns.
+        let iN = clamped(worldAccelNorth - accelBiasNorth)
+        let iE = clamped(worldAccelEast - accelBiasEast)
         motionVelNorth += ((prevResidualNorth + iN) / 2.0) * dt
         motionVelEast += ((prevResidualEast + iE) / 2.0) * dt
         prevResidualNorth = iN

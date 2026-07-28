@@ -65,6 +65,12 @@ class LocationManager: NSObject, ObservableObject {
     /// Slow mean of the vertical gyro rate = gyro bias. Subtracted before integrating so bias
     /// does not accumulate into heading (0.01 rad/s ≈ 34°/min of drift).
     private var verticalGyroBias: Double = 0
+    /// Accelerometer bias + gravity leakage, tracked in the DEVICE frame where it is actually
+    /// constant. Removing it in the world frame fails as soon as the device rotates.
+    private var deviceAccelBiasX: Double = 0
+    private var deviceAccelBiasY: Double = 0
+    private var deviceAccelBiasZ: Double = 0
+    private var lastDeviceBiasTimestamp: TimeInterval?
     private let standardGravity = 9.80665
 
     // GPS reconnection logic
@@ -616,6 +622,8 @@ class LocationManager: NSObject, ObservableObject {
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
+        deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0
+        lastDeviceBiasTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
 
         // Whether the attitude frame is geographically anchored. `.xArbitraryZVertical` has a
@@ -765,6 +773,8 @@ class LocationManager: NSObject, ObservableObject {
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
+        deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0
+        lastDeviceBiasTimestamp = nil
         DispatchQueue.main.async { [weak self] in
             self?.currentMotionAcceleration = nil
             self?.currentPitch = nil
@@ -797,9 +807,34 @@ class LocationManager: NSObject, ObservableObject {
     }
 
     private func referenceFrameAcceleration(from motion: CMDeviceMotion) -> (north: Double, east: Double, up: Double) {
-        let a = motion.userAcceleration
+        let rawA = motion.userAcceleration
         let g = motion.gravity
         let m = motion.attitude.rotationMatrix
+
+        // DEVICE-FRAME BIAS REMOVAL — this must happen BEFORE rotating into the world.
+        //
+        // Accelerometer bias and gravity leakage from attitude error are properties of the
+        // SENSOR, so they are fixed in the DEVICE frame. Removing a mean in the WORLD frame
+        // (as this code did) cannot cancel them: when the car turns, that error vector rotates
+        // in world coordinates, so a long world-frame average smears toward zero while the
+        // instantaneous error survives and integrates. Observed live: a steady ~1.06 m/s²
+        // residual drove speed 292 → 435 → 523 → 751 km/h monotonically.
+        //
+        // In the device frame the average is honest: over a minute or two a vehicle's real
+        // acceleration averages to ~0 (sustaining 1 m/s² for 90 s would be 324 km/h of change),
+        // so whatever remains is bias. The long time constant leaves genuine
+        // seconds-long acceleration bursts untouched.
+        let sampleDt = lastDeviceBiasTimestamp.map { min(max(motion.timestamp - $0, 0.0), 1.0) } ?? 0.0
+        lastDeviceBiasTimestamp = motion.timestamp
+        if sampleDt > 0 {
+            let alpha = min(sampleDt / (90.0 + sampleDt), 1.0)
+            deviceAccelBiasX += (rawA.x - deviceAccelBiasX) * alpha
+            deviceAccelBiasY += (rawA.y - deviceAccelBiasY) * alpha
+            deviceAccelBiasZ += (rawA.z - deviceAccelBiasZ) * alpha
+        }
+        let a = (x: rawA.x - deviceAccelBiasX,
+                 y: rawA.y - deviceAccelBiasY,
+                 z: rawA.z - deviceAccelBiasZ)
 
         // Convert gravity-free device acceleration into the motion reference frame.
         // Apple's rotation-matrix convention (R·v vs Rᵀ·v) is ambiguous, and guessing
