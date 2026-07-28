@@ -230,6 +230,7 @@ class WorkoutSession: ObservableObject {
     private let HARD_ZUPT_ROTATION: Double = 0.18       // rad/s
     private let HARD_ZUPT_WINDOW: TimeInterval = 2.0     // s of near-total stillness
     private var hardQuietDuration: TimeInterval = 0
+    private var lastFastMotionTime: Date?
     /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
     /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
     private var longRunMeanNorth: Double = 0
@@ -1514,8 +1515,17 @@ class WorkoutSession: ObservableObject {
         // SPEED is also low; otherwise it is coasting and velocity is HELD (v = v₀ + a·dt with
         // a ≈ 0 keeps v₀), exactly as physics requires.
         let currentSpeed = sqrt(motionVelNorth * motionVelNorth + motionVelEast * motionVelEast)
+        // "Recently moving fast" latch. The classifier frequently reports UNKNOWN ([?] in the
+        // status line), and treating unknown as "not driving" let the quiet tiers zero the
+        // speed mid-drive — gentle acceleration away from a stop is quiet AND below the speed
+        // gate, so the estimate was repeatedly reset and stayed near zero while the car
+        // actually reached 40 km/h. Something that was doing 20+ km/h seconds ago has not
+        // genuinely stopped unless the classifier positively says so.
+        if currentSpeed > 5.5 { lastFastMotionTime = Date() }
+        let recentlyFast = lastFastMotionTime.map { Date().timeIntervalSince($0) < 12.0 } ?? false
+        let drivingNow = (activityIsAutomotive || recentlyFast) && !isDeviceStationaryByActivity
         // TIER 1 (normal stop): brief quiet + already slow ⇒ stopped.
-        let softStationary = !(activityIsAutomotive && !isDeviceStationaryByActivity)
+        let softStationary = !drivingNow
             && zuptWindowFilled
             && peakAccel < ZUPT_ACCEL_THRESHOLD
             && peakRotation < ZUPT_ROTATION_THRESHOLD
@@ -1535,7 +1545,6 @@ class WorkoutSession: ObservableObject {
         // moving in a vehicle, so no amount of quiet means "stopped" — a smooth cruise on a
         // good road is quiet. Inhibiting the quiet-based tiers here removes the 0 km/h
         // readings that appeared while actually driving.
-        let drivingNow = activityIsAutomotive && !isDeviceStationaryByActivity
         let hardStationary = !drivingNow && hardQuietDuration >= HARD_ZUPT_WINDOW
         // Apple's activity classifier is authoritative about being STATIONARY, and it does not
         // care what the integrated speed says. Without it a diverged estimate was unrecoverable:
