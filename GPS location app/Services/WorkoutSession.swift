@@ -202,6 +202,10 @@ class WorkoutSession: ObservableObject {
     /// Per-tick pull of the dead-reckoned heading toward the compass. The gyro gives turns but
     /// no absolute datum; the compass has no drift. Small so real turns are never fought.
     private let COMPASS_CORRECTION_GAIN: Double = 0.25
+    /// Angle from the phone's magnetic heading to the actual direction of travel, learned from
+    /// the PCA walking axis. The compass alone measures device orientation, so this offset is
+    /// what turns it into a usable absolute datum for travel direction.
+    private var compassMisalignment: Double?
     /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
     private var walkAccelWindow: [(north: Double, east: Double)] = []
     private let WALK_WINDOW_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
@@ -1933,6 +1937,25 @@ class WorkoutSession: ObservableObject {
                 var err = target - motionHeadingDegrees
                 if err > 180 { err -= 360 } else if err < -180 { err += 360 }
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + 0.25 * err)
+
+                // LEARN THE MISALIGNMENT between the phone's magnetic heading and the actual
+                // direction of travel. The compass measures where the PHONE points, not where
+                // the BODY goes — in a pocket those differ by a large, roughly constant angle,
+                // so correcting straight to the compass (build 37) reintroduced the very
+                // device-orientation error this mode had to avoid. The PCA walking axis is a
+                // true measurement of body travel, so their difference IS the misalignment,
+                // and it is what makes the compass usable as an absolute datum.
+                if let compass = locationManager.currentCompassHeading {
+                    var offset = target - compass
+                    if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
+                    if let existing = compassMisalignment {
+                        var delta = offset - existing
+                        if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
+                        compassMisalignment = existing + 0.1 * delta
+                    } else {
+                        compassMisalignment = offset
+                    }
+                }
             }
 
             // ABSOLUTE REFERENCE FROM THE COMPASS.
@@ -1950,8 +1973,11 @@ class WorkoutSession: ObservableObject {
             // but has NO drift, which is the exact complement of the gyro: gyro for fast turns,
             // compass for the long-run truth. Correct slowly so it never fights a real turn,
             // and only while NOT turning (a turn swings the compass through its own transient).
-            if !turningNow, let compass = locationManager.currentCompassHeading {
-                var err = compass - motionHeadingDegrees
+            if !turningNow, let compass = locationManager.currentCompassHeading,
+               let misalignment = compassMisalignment {
+                // Target = where the phone points PLUS how the body is offset from it.
+                let target = normalizedHeading(compass + misalignment)
+                var err = target - motionHeadingDegrees
                 if err > 180 { err -= 360 } else if err < -180 { err += 360 }
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN * err)
             }
@@ -1960,8 +1986,10 @@ class WorkoutSession: ObservableObject {
         if let rh = resolvedHeading { motionHeadingDegrees = rh }
         // ABSOLUTE DATUM, ALWAYS. Applied outside the branches above so a diverged velocity
         // vector can never lock the heading away from the only drift-free reference we have.
-        if let compass = locationManager.currentCompassHeading {
-            var err = compass - motionHeadingDegrees
+        if let compass = locationManager.currentCompassHeading,
+           let misalignment = compassMisalignment {
+            let target = normalizedHeading(compass + misalignment)
+            var err = target - motionHeadingDegrees
             if err > 180 { err -= 360 } else if err < -180 { err += 360 }
             motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN * err)
             resolvedHeading = motionHeadingDegrees
@@ -2200,6 +2228,7 @@ class WorkoutSession: ObservableObject {
         estimatedFallbackSpeed = 0.0
         estimatedFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
+        compassMisalignment = nil
         if fallbackPedometerActive {
             fallbackPedometer.stopUpdates()
             fallbackPedometerActive = false

@@ -149,6 +149,8 @@ class WorkoutSession: NSObject, ObservableObject {
     /// and the value consumed at the previous heading tick.
     private var cumulativeYawRotationDeg: Double = 0
     private var lastCumulativeYawForHeading: Double?
+    /// Compass-to-travel offset learned by the iPhone and relayed; nil until known.
+    private var relayedCompassMisalignment: Double?
     /// Distance measured but not yet long enough to justify a route point; carried forward.
     private var pendingMotionDistance: Double = 0
     /// Step-count tracking used to decide whether the pedometer is a VALID distance source
@@ -1996,8 +1998,13 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         // ABSOLUTE DATUM, ALWAYS: applied outside the branches so a diverged velocity vector
         // can never lock the heading away from the only drift-free reference available.
+        // The compass measures where the WATCH points, not where the body travels; on a wrist
+        // those differ. Only the iPhone can measure the body's travel axis (PCA), so when its
+        // relayed heading is available we prefer that (handled above) and otherwise fall back
+        // to the compass with whatever misalignment the phone has taught us.
         if let compass = locationManager.currentCompassHeading {
-            var err = compass - motionHeadingDegrees
+            let target = normalizedHeading(compass + (relayedCompassMisalignment ?? 0))
+            var err = target - motionHeadingDegrees
             if err > 180 { err -= 360 } else if err < -180 { err += 360 }
             motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + 0.08 * err)
         }
