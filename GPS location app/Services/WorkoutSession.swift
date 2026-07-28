@@ -1564,6 +1564,25 @@ class WorkoutSession: ObservableObject {
             return
         }
 
+        // VERTICAL-MOTION GUARD (elevators, lifts, stairs).
+        //
+        // An elevator produces LARGE genuine vertical acceleration and no horizontal motion.
+        // Any small attitude error leaks a fraction of that vertical signal into the
+        // horizontal axes, and ZUPT cannot suppress it because the 3-axis residual really is
+        // large — so the leakage was integrated into phantom horizontal speed and drawn as a
+        // long straight run (observed: a 0.41 km walk rendered with a segment longer than the
+        // entire recorded distance).
+        //
+        // The discriminator is dominance: when the vertical residual clearly exceeds the
+        // horizontal one, the horizontal part is leakage rather than travel, so it must not be
+        // integrated. Real walking or driving is the opposite — horizontal dominates.
+        let horizontalResidual = sqrt(rN * rN + rE * rE)
+        if abs(up) > 0.3 && abs(up) > 2.5 * horizontalResidual {
+            prevResidualNorth = 0
+            prevResidualEast = 0
+            return
+        }
+
         // VIOLENT-ROTATION GUARD: when the device is whipped around, the attitude estimate
         // lags and GRAVITY leaks into the "horizontal" axes, which integrates into absurd
         // speed. Freeze integration only for genuinely violent rotation.

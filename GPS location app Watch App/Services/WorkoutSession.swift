@@ -1688,6 +1688,18 @@ class WorkoutSession: NSObject, ObservableObject {
             prevResidualY = 0
             return
         }
+        // VERTICAL-MOTION GUARD (elevator / lift / stairs): an elevator's large genuine
+        // vertical acceleration leaks a fraction into the horizontal axes through attitude
+        // error, and ZUPT cannot suppress it because the 3-axis residual is genuinely large.
+        // When vertical clearly dominates horizontal, the horizontal part is leakage, not
+        // travel, so it must not be integrated. Walking/driving is the opposite.
+        let horizontalResidual = sqrt(rX * rX + rY * rY)
+        if abs(azW) > 0.3 && abs(azW) > 2.5 * horizontalResidual {
+            prevResidualX = 0
+            prevResidualY = 0
+            return
+        }
+
         // VIOLENT-ROTATION GUARD: whipping the device around makes the attitude lag, leaking
         // gravity into the horizontal axes and integrating into absurd speed.
         //
