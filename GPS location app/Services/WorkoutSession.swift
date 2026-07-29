@@ -238,6 +238,8 @@ class WorkoutSession: ObservableObject {
     private let HARD_ZUPT_WINDOW: TimeInterval = 2.0     // s of near-total stillness
     private var hardQuietDuration: TimeInterval = 0
     private var lastFastMotionTime: Date?
+    private var sustainedAccelDuration: TimeInterval = 0
+    private var vehicleLaunchDetected = false
     /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
     /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
     private var longRunMeanNorth: Double = 0
@@ -2056,6 +2058,17 @@ class WorkoutSession: ObservableObject {
         // steps — routing on the label alone yields zero distance and NO TRACK.
         let distance: Double
         var sourceTag = "DR"
+        // VEHICLE-LAUNCH DETECTOR. A car or aircraft pulling away produces a large horizontal
+        // acceleration sustained for seconds; walking and handling never do. This is the
+        // positive evidence that permits integration at all, and once seen it latches for the
+        // trip so a cruising vehicle does not lose it.
+        if horizAccelMag > 1.0 {
+            sustainedAccelDuration += dt
+            if sustainedAccelDuration >= 3.0 { vehicleLaunchDetected = true }
+        } else if horizAccelMag < 0.3 {
+            sustainedAccelDuration = 0
+        }
+
         // Route by DETECTED stepping, never the activity label: if the pedometer is counting
         // steps you are walking, and its stride-model distance is right, whereas integrating
         // walking acceleration diverges. Only a genuinely stepless vehicle/aircraft falls
@@ -2099,12 +2112,22 @@ class WorkoutSession: ObservableObject {
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
-        } else {
-            // Not actually stepping and no calibrated vibration model: integrate acceleration,
-            // and drop the stale pedometer baseline so a later real walk re-anchors cleanly.
+        } else if vehicleLaunchDetected || activityIsAutomotive {
+            // INTEGRATION IS THE LAST RESORT, and only with positive evidence of vehicle
+            // motion. It used to be the default fallback, so whenever nothing better had
+            // engaged yet it filled the gap with nonsense — a 40 s WALK read 142 km/h because
+            // the pedometer had not reported yet and integration ran unchecked meanwhile.
             lastFallbackPedometerDistance = fallbackPedometerDistance ?? lastFallbackPedometerDistance
             distance = ((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt
             estimatedFallbackSpeed = nextSpeed
+        } else {
+            // No trustworthy source yet: pedometer silent, vibration model uncalibrated, and no
+            // vehicle launch seen. Report nothing rather than invent a number. Walking resolves
+            // within seconds once the pedometer reports; a vehicle resolves the moment it pulls
+            // away, since that is a large sustained acceleration.
+            estimatedFallbackSpeed = 0
+            distance = 0
+            sourceTag = "DR(waiting)"
         }
         // Live diagnostic: computed travel heading (from the integrated velocity vector) vs
         // the magnetometer. During a ground test, drive a KNOWN compass direction and check
@@ -2281,6 +2304,8 @@ class WorkoutSession: ObservableObject {
         estimatedFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
         compassMisalignment = nil
+        sustainedAccelDuration = 0
+        vehicleLaunchDetected = false
         if fallbackPedometerActive {
             fallbackPedometer.stopUpdates()
             fallbackPedometerActive = false
