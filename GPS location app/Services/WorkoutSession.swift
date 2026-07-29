@@ -1785,6 +1785,34 @@ class WorkoutSession: ObservableObject {
         guard lambda1 / max(lambda2, 1e-9) >= 4.0 else { return nil }
         var deg = 0.5 * atan2(2 * cne, cnn - cee) * 180 / .pi
         if deg < 0 { deg += 360 }
+
+        // RESOLVE WHICH END IS FORWARD, from the gait itself.
+        //
+        // PCA yields an AXIS, and previously the forward end was chosen as whichever was
+        // closer to the heading already believed. That is self-reinforcing: if the belief
+        // starts 180° wrong, the wrong end is chosen, the belief is "confirmed", and the
+        // misalignment locks the inversion in for the whole workout — the reported symptom
+        // that the route needs turning 180° to be right.
+        //
+        // Human gait is ASYMMETRIC along the direction of travel: push-off is a sharper, larger
+        // acceleration than the gentler braking of heel-strike, so acceleration projected onto
+        // the travel axis is positively SKEWED toward forward. The sign of the third moment
+        // therefore identifies forward independently of any prior belief.
+        let axisRad = deg * .pi / 180
+        let ux = cos(axisRad), uy = sin(axisRad)
+        var m2 = 0.0, m3 = 0.0
+        for sample in walkAccelWindow {
+            let projection = (sample.north - meanN) * ux + (sample.east - meanE) * uy
+            m2 += projection * projection
+            m3 += projection * projection * projection
+        }
+        let variance = m2 / n
+        guard variance > 1e-6 else { return nil }
+        let skewness = (m3 / n) / pow(variance, 1.5)
+        // Only trust a clear asymmetry; ambiguous gait leaves the axis unresolved rather than
+        // guessing, so a wrong 180° choice is never forced.
+        guard abs(skewness) > 0.15 else { return nil }
+        if skewness < 0 { deg = (deg + 180).truncatingRemainder(dividingBy: 360) }
         return deg
     }
 
@@ -1931,9 +1959,10 @@ class WorkoutSession: ObservableObject {
             // pull dragged the heading BACKWARDS against the gyro — the visible turn lag.
             // Drift correction only needs the straight stretches, where the axis is honest.
             if !turningNow, pedometerIsCounting, let axis = walkingAxisHeading() {
-                let opposite = normalizedHeading(axis + 180)
-                let target = angularDistance(axis, motionHeadingDegrees)
-                    <= angularDistance(opposite, motionHeadingDegrees) ? axis : opposite
+                // walkingAxisHeading() now returns a DIRECTED heading (forward end resolved
+                // from gait skewness), so it must NOT be re-resolved against the current
+                // belief — doing that is what allowed a 180° error to persist.
+                let target = axis
                 var err = target - motionHeadingDegrees
                 if err > 180 { err -= 360 } else if err < -180 { err += 360 }
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + 0.25 * err)
