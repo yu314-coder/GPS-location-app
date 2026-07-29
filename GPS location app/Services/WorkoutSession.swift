@@ -169,6 +169,9 @@ class WorkoutSession: ObservableObject {
     /// is unaffected by how far the integrator has drifted, so it can rescue a diverged
     /// estimate that ZUPT's own thresholds can no longer reach.
     private let activityManager = CMMotionActivityManager()
+    /// Speed from the ride's vibration signature — no integration, so no drift. Calibrated
+    /// online from GPS while it is available (see VibrationSpeedEstimator).
+    private let vibrationSpeed = VibrationSpeedEstimator()
     private var isDeviceStationaryByActivity = false
     private var activityIsAutomotive = false
     private var fallbackPedometerDistance: Double?      // cumulative metres since fallback start
@@ -774,6 +777,14 @@ class WorkoutSession: ObservableObject {
             self?.integrateWorldAccelSample(north: north, east: east, up: up,
                                             rotationRate: rotationRate, dt: dt)
         }
+        // Feed the vibration model. World-frame components are used only as a convenient
+        // 3-axis sample; the feature is rotation-invariant magnitude, so orientation does not
+        // matter — which is precisely why this path is immune to the attitude errors that
+        // corrupt integration.
+        locationManager.onWorldAccelSampleSecondary = { [weak self] north, east, up, _, dt in
+            self?.vibrationSpeed.ingest(ax: north, ay: east, az: up, dt: dt)
+        }
+        vibrationSpeed.reset()
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
 
         print("✅ Flight initialized at: \(startDate)")
@@ -2076,9 +2087,21 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
+        } else if let vibrationDerived = vibrationSpeed.estimatedSpeed() {
+            // VIBRATION-BASED SPEED (vehicle). Preferred over integration whenever the model
+            // has been calibrated, because it does not accumulate: road and engine vibration
+            // scale with speed, so this is a direct reading rather than an integral, and the
+            // bias that makes integration diverge simply has nowhere to accumulate.
+            estimatedFallbackSpeed = estimatedFallbackSpeed * 0.6 + vibrationDerived * 0.4
+            distance = estimatedFallbackSpeed * dt
+            sourceTag = "VIB"
+            // Keep the integrator pegged so it cannot diverge in the background and reappear.
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelNorth = estimatedFallbackSpeed * cos(hr)
+            motionVelEast = estimatedFallbackSpeed * sin(hr)
         } else {
-            // Not actually stepping: integrate acceleration, and drop the stale pedometer
-            // baseline so a later real walk re-anchors cleanly instead of dumping a jump.
+            // Not actually stepping and no calibrated vibration model: integrate acceleration,
+            // and drop the stale pedometer baseline so a later real walk re-anchors cleanly.
             lastFallbackPedometerDistance = fallbackPedometerDistance ?? lastFallbackPedometerDistance
             distance = ((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt
             estimatedFallbackSpeed = nextSpeed
@@ -2521,6 +2544,10 @@ class WorkoutSession: ObservableObject {
         // can't double-count against the integrated motion distance. Turning the toggle
         // off resumes normal GPS on the next fix (reanchorAfterEstimatedFallback).
         if forceMotionFallback {
+            // Still learn from GPS even though it is ignored for distance: Force Velocity is
+            // usually enabled on the ground BEFORE the signal is lost, so this is exactly the
+            // window in which the vibration model can be calibrated for the trip ahead.
+            if location.speed >= 0 { vibrationSpeed.calibrate(withGPSSpeed: location.speed) }
             return
         }
 
@@ -2596,6 +2623,11 @@ class WorkoutSession: ObservableObject {
         // Update splits
         currentMetrics.updateSplits(startDate: flight.startDate)
         persistActiveWorkoutSnapshot(force: false, reason: "locationTick")
+
+        // Teach the vibration model from this GPS fix. Doing it on every usable fix means the
+        // model is already calibrated for THIS vehicle and phone placement by the time GPS is
+        // lost, which is when it has to carry the estimate.
+        if location.speed >= 0 { vibrationSpeed.calibrate(withGPSSpeed: location.speed) }
 
         // Relay the iPhone's BEST-KNOWN heading to the watch on every fix, not only from the
         // dead-reckoning tick. A watch cannot resolve walking direction by itself (arm swing
