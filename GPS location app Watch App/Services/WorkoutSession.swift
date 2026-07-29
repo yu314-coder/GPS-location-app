@@ -2047,7 +2047,11 @@ class WorkoutSession: NSObject, ObservableObject {
                 let elapsed = now.timeIntervalSince(lastT)
                 if elapsed > 0.5, pedometerTotal > last {
                     let instant = (pedometerTotal - last) / elapsed
-                    smoothedPedometerSpeedWatch = smoothedPedometerSpeedWatch * 0.5 + instant * 0.5
+                    // Time-constant smoothing, not a fixed 50/50 blend per update (see the
+                    // iPhone WorkoutSession for why a fixed ratio under sparse, irregular
+                    // updates reads as sluggish acceleration/deceleration).
+                    let alpha = min(elapsed / (2.0 + elapsed), 1.0)
+                    smoothedPedometerSpeedWatch += (instant - smoothedPedometerSpeedWatch) * alpha
                 }
             }
             if pedometerTotal != (lastPedometerDistanceForDR ?? -1) { lastPedometerUpdateTimeWatch = now }

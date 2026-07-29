@@ -2056,7 +2056,7 @@ class WorkoutSession: ObservableObject {
         // Route by what the sensors ACTUALLY detect, never by the activity label: the user
         // selects "Walking" while sitting in an aircraft, where the pedometer counts zero
         // steps — routing on the label alone yields zero distance and NO TRACK.
-        let distance: Double
+        var distance: Double
         var sourceTag = "DR"
         // VEHICLE-LAUNCH DETECTOR. A car or aircraft pulling away produces a large horizontal
         // acceleration sustained for seconds; walking and handling never do. This is the
@@ -2128,6 +2128,18 @@ class WorkoutSession: ObservableObject {
             estimatedFallbackSpeed = 0
             distance = 0
             sourceTag = "DR(waiting)"
+        }
+
+        // GLOBAL STATIONARY OVERRIDE. Live data showed "VIB [still] FORCED 17km/h" — the
+        // activity classifier confidently said stationary while a computed branch (PDR, VIB, or
+        // integration) still reported a nonzero speed, because none of those branches checked
+        // it. This is the backstop: whatever the source computed, if the classifier is
+        // confident the device is not moving, the reading is forced to zero. It never fights a
+        // genuinely moving vehicle/walk, since it only fires on a CONFIDENT stationary call.
+        if isDeviceStationaryByActivity {
+            estimatedFallbackSpeed = 0
+            distance = 0
+            if !sourceTag.hasSuffix("[still]") { sourceTag += "[still]" }
         }
         // Live diagnostic: computed travel heading (from the integrated velocity vector) vs
         // the magnetometer. During a ground test, drive a KNOWN compass direction and check
@@ -2239,7 +2251,16 @@ class WorkoutSession: ObservableObject {
                             let dt = now.timeIntervalSince(prevT)
                             if dt > 0.5 {
                                 let instant = max(0, d - prevD) / dt
-                                self.fallbackPedometerSpeed = self.fallbackPedometerSpeed * 0.5 + instant * 0.5
+                                // TIME-CONSTANT smoothing, not a fixed 50/50 blend. CMPedometer
+                                // updates arrive at irregular, often multi-second intervals, so a
+                                // fixed blend ratio per UPDATE (not per second) responds far
+                                // slower than intended whenever updates are sparse — reported as
+                                // sluggish acceleration and deceleration. A ~2 s time constant
+                                // means one update after 2 s has closed ~63% of the gap, matching
+                                // every other filter in this pipeline instead of drifting with
+                                // however often CMPedometer happens to report.
+                                let alpha = min(dt / (2.0 + dt), 1.0)
+                                self.fallbackPedometerSpeed = self.fallbackPedometerSpeed + (instant - self.fallbackPedometerSpeed) * alpha
                             }
                         }
                         self.fallbackPedometerDistance = d
@@ -2572,7 +2593,13 @@ class WorkoutSession: ObservableObject {
             // Still learn from GPS even though it is ignored for distance: Force Velocity is
             // usually enabled on the ground BEFORE the signal is lost, so this is exactly the
             // window in which the vibration model can be calibrated for the trip ahead.
-            if location.speed >= 0 { vibrationSpeed.calibrate(withGPSSpeed: location.speed) }
+            // NEVER while actively stepping: the vibration model is for VEHICLES, and a walk's
+            // noisy instantaneous GPS speed poisoned it with spurious high-speed points that
+            // then reported vibration-derived speed while the phone was sitting still.
+            let currentlyStepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
+            if location.speed >= 0, !currentlyStepping {
+                vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
+            }
             return
         }
 
@@ -2651,8 +2678,12 @@ class WorkoutSession: ObservableObject {
 
         // Teach the vibration model from this GPS fix. Doing it on every usable fix means the
         // model is already calibrated for THIS vehicle and phone placement by the time GPS is
-        // lost, which is when it has to carry the estimate.
-        if location.speed >= 0 { vibrationSpeed.calibrate(withGPSSpeed: location.speed) }
+        // lost, which is when it has to carry the estimate. Never while actively stepping — see
+        // the FORCED-mode calibration call above for why.
+        let currentlyStepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
+        if location.speed >= 0, !currentlyStepping {
+            vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
+        }
 
         // Relay the iPhone's BEST-KNOWN heading to the watch on every fix, not only from the
         // dead-reckoning tick. A watch cannot resolve walking direction by itself (arm swing

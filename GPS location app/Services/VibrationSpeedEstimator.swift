@@ -58,8 +58,14 @@ final class VibrationSpeedEstimator {
         vibrationEnergy += (deviation - vibrationEnergy) * min(dt / (1.0 + dt), 1.0)
     }
 
-    /// Teach the model with a trustworthy GPS speed sample.
-    func calibrate(withGPSSpeed speed: Double) {
+    /// Teach the model with a trustworthy GPS speed sample. `horizontalAccuracy` in metres;
+    /// pass a very large number if unknown (rejected below rather than trusted by default).
+    func calibrate(withGPSSpeed speed: Double, horizontalAccuracy: Double) {
+        // A poor fix's speed field is frequently a multipath/urban-canyon spike unrelated to
+        // real motion. Feeding that in poisoned the fit: a walk produced spurious ~20 km/h
+        // "calibration" points that were pure GPS noise, yielding a model that reported
+        // vibration-derived speed while the phone sat still.
+        guard horizontalAccuracy >= 0, horizontalAccuracy < 20.0 else { return }
         // Below walking pace vibration carries no usable signal, and a stopped-but-idling engine
         // would otherwise anchor the line at the wrong place.
         guard speed > 2.0, vibrationEnergy > 0.0001 else { return }
