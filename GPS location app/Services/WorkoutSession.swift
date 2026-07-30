@@ -1764,6 +1764,29 @@ class WorkoutSession: ObservableObject {
         debugReplayTimer = timer
     }
 
+    /// Learn the offset between the phone's magnetic heading and the actual direction of
+    /// travel, using GPS course over ground as the truth. Course is the real travel direction,
+    /// so this is both more reliable than gait and — unlike the PCA walking axis — available in
+    /// a vehicle, where there are no steps.
+    ///
+    /// Must be called on BOTH the normal and the Force Velocity paths; see the call site in
+    /// processNewLocation for what happened when it only ran on one.
+    private func learnCompassMisalignment(from location: FlightLocation) {
+        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20,
+              location.speed > 2.0,
+              let course = validCourse(location.course),
+              let compass = locationManager.currentCompassHeading else { return }
+        var offset = course - compass
+        if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
+        if let existing = compassMisalignment {
+            var delta = offset - existing
+            if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
+            compassMisalignment = existing + 0.1 * delta
+        } else {
+            compassMisalignment = offset
+        }
+    }
+
     /// Angular distance between two bearings, 0…180.
     private func angularDistance(_ a: Double, _ b: Double) -> Double {
         var d = abs(a - b).truncatingRemainder(dividingBy: 360)
@@ -2189,13 +2212,19 @@ class WorkoutSession: ObservableObject {
         else if activityIsAutomotive { activityTag = " [car]" }
         else if pedometerIsCounting { activityTag = " [walk]" }
         else { activityTag = " [?]" }
-        motionFallbackStatus = String(format: "%@%@%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
+        // Show the learned compass-to-travel offset (or "--" when it has not been learned yet).
+        // Heading is corrected toward compass + offset, so if the route points wrong this
+        // distinguishes "offset never learned, heading free-running" from "offset learned but
+        // wrong" — the two need opposite fixes, and previously both looked identical.
+        let offsetText = compassMisalignment.map { String(format: "%+.0f", $0) } ?? "--"
+        motionFallbackStatus = String(format: "%@%@%@ %.0fkm/h →%.0f° cmp%@° off%@° +%.0fm",
                                       sourceTag,
                                       activityTag,
                                       forceMotionFallback ? " FORCED" : "",
                                       estimatedFallbackSpeed * 3.6,
                                       headingDegrees,
                                       compassText,
+                                      offsetText,
                                       estimatedFallbackDistanceAdded)
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
@@ -2627,6 +2656,13 @@ class WorkoutSession: ObservableObject {
             if location.speed >= 0, !currentlyStepping {
                 vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
             }
+            // CRITICAL: learn the heading offset here too. This method previously ran only
+            // AFTER this early return, so in Force Velocity — the mode this feature exists for —
+            // it never executed. A vehicle has no steps, so the PCA path could not supply the
+            // offset either, leaving compassMisalignment nil, NO compass correction applied at
+            // all, and the heading free-running on the gyro from its seed. That is why vehicle
+            // routes pointed the wrong way even after the offset logic was added.
+            learnCompassMisalignment(from: location)
             return
         }
 
@@ -2703,29 +2739,7 @@ class WorkoutSession: ObservableObject {
         currentMetrics.updateSplits(startDate: flight.startDate)
         persistActiveWorkoutSnapshot(force: false, reason: "locationTick")
 
-        // LEARN THE COMPASS MISALIGNMENT FROM GPS COURSE.
-        //
-        // Until now the offset between the phone's magnetic heading and the direction of travel
-        // was only learned from the PCA walking axis, which requires STEPS. In a vehicle there
-        // are none, so it was never learned, no compass correction was ever applied, and the
-        // heading free-ran on the gyro from whatever seed it started with — which is why
-        // vehicle routes pointed the wrong way.
-        //
-        // GPS course over ground IS the direction of travel, so when a good fix shows real
-        // motion it teaches the same offset directly, and far more reliably than gait does.
-        if location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20,
-           location.speed > 2.0, let course = validCourse(location.course),
-           let compass = locationManager.currentCompassHeading {
-            var offset = course - compass
-            if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
-            if let existing = compassMisalignment {
-                var delta = offset - existing
-                if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
-                compassMisalignment = existing + 0.1 * delta
-            } else {
-                compassMisalignment = offset
-            }
-        }
+        learnCompassMisalignment(from: location)
 
         // Teach the vibration model from this GPS fix. Doing it on every usable fix means the
         // model is already calibrated for THIS vehicle and phone placement by the time GPS is
