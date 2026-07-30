@@ -209,6 +209,11 @@ class WorkoutSession: ObservableObject {
     /// the PCA walking axis. The compass alone measures device orientation, so this offset is
     /// what turns it into a usable absolute datum for travel direction.
     private var compassMisalignment: Double?
+    /// Whether the heading seed came from a real GPS course rather than the compass, and where
+    /// the compass-seeded run begins, so it can be rotated once the truth is known.
+    private var headingSeedWasMeasured = false
+    private var untrustedHeadingPrefixStart: Int?
+    private var untrustedSeedHeading: Double?
     /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
     private var walkAccelWindow: [(north: Double, east: Double)] = []
     private let WALK_WINDOW_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
@@ -1784,7 +1789,52 @@ class WorkoutSession: ObservableObject {
             compassMisalignment = existing + 0.1 * delta
         } else {
             compassMisalignment = offset
+            // First time the true travel direction is known: fix the stretch that was drawn
+            // from a compass-seeded (device-orientation) heading.
+            correctUntrustedHeadingPrefix(trueHeadingNow: course)
         }
+    }
+
+    /// Rotate the opening run of estimated points that was laid down before the true travel
+    /// direction was known.
+    ///
+    /// When Force Velocity is engaged while stationary there is no GPS course, so the heading
+    /// seeds from the compass — device orientation, not travel. Every point until the offset is
+    /// learned is therefore drawn rotated by one CONSTANT error, which is exactly what makes it
+    /// correctable: rotating that run about its anchor by the now-known difference restores the
+    /// real shape instead of leaving the route starting off in the wrong direction.
+    private func correctUntrustedHeadingPrefix(trueHeadingNow: Double) {
+        guard let start = untrustedHeadingPrefixStart,
+              let seedHeading = untrustedSeedHeading,
+              start > 0, flight.locations.count > start else {
+            untrustedHeadingPrefixStart = nil
+            return
+        }
+        var rotation = trueHeadingNow - seedHeading
+        if rotation > 180 { rotation -= 360 } else if rotation < -180 { rotation += 360 }
+        // A tiny correction is not worth rewriting history for.
+        guard abs(rotation) > 5 else { untrustedHeadingPrefixStart = nil; return }
+
+        let anchor = flight.locations[start - 1]
+        let anchorLat = anchor.latitude, anchorLon = anchor.longitude
+        let cosLat = max(cos(anchorLat * .pi / 180), 0.000001)
+        let radians = rotation * .pi / 180
+        let cosR = cos(radians), sinR = sin(radians)
+
+        for index in start..<flight.locations.count {
+            let point = flight.locations[index]
+            // Offsets from the anchor in metres (north, east).
+            let north = (point.latitude - anchorLat) * 111_320.0
+            let east = (point.longitude - anchorLon) * 111_320.0 * cosLat
+            // Rotate clockwise by `rotation` in the compass sense (north toward east).
+            let rotatedNorth = north * cosR - east * sinR
+            let rotatedEast = north * sinR + east * cosR
+            flight.locations[index] = point.movedHorizontally(north: rotatedNorth - north,
+                                                              east: rotatedEast - east)
+        }
+        print("📍 🧭 Rotated \(flight.locations.count - start) early points by \(Int(rotation))° once true heading was known")
+        untrustedHeadingPrefixStart = nil
+        untrustedSeedHeading = nil
     }
 
     /// Angular distance between two bearings, 0…180.
@@ -2262,10 +2312,20 @@ class WorkoutSession: ObservableObject {
         // both its speed and its heading through the gap. Prefer GPS COURSE over the compass:
         // course-over-ground is the true direction of travel, whereas the magnetometer is
         // unreliable inside a vehicle/aircraft (metal shell, EMI). Matches the watch.
-        let course = anchor.flatMap { validCourse($0.course) }
+        // Was the seed a real TRAVEL direction, or just device orientation? Starting Force
+        // Velocity while stationary means GPS course is invalid, so the heading seeds from the
+        // compass — which points where the PHONE points, not where you will walk or drive. The
+        // opening stretch of the route is then drawn in the wrong direction until the offset is
+        // learned. That error is a CONSTANT rotation, so it can be undone retroactively once
+        // the true heading is known (see correctUntrustedHeadingPrefix).
+        let measuredCourse = anchor.flatMap { validCourse($0.course) }
+        let course = measuredCourse
             ?? locationManager.currentCompassHeading
             ?? locationManager.currentMotionDirectionDegrees
             ?? 0.0
+        headingSeedWasMeasured = (measuredCourse != nil)
+        untrustedHeadingPrefixStart = headingSeedWasMeasured ? nil : flight.locations.count
+        untrustedSeedHeading = headingSeedWasMeasured ? nil : course
         // PDR distance source for step activities: pedometer from the start of the gap.
         fallbackPedometerDistance = nil
         lastFallbackPedometerDistance = 0
