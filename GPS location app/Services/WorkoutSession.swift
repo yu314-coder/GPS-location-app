@@ -2192,7 +2192,10 @@ class WorkoutSession: ObservableObject {
             // has been calibrated, because it does not accumulate: road and engine vibration
             // scale with speed, so this is a direct reading rather than an integral, and the
             // bias that makes integration diverge simply has nowhere to accumulate.
-            estimatedFallbackSpeed = estimatedFallbackSpeed * 0.6 + vibrationDerived * 0.4
+            // Time-constant blend (~0.8 s) rather than a fixed 0.6/0.4 per tick, which added
+            // ~2.5 s of lag on top of the estimator's own smoothing.
+            let blend = min(dt / (0.8 + dt), 1.0)
+            estimatedFallbackSpeed += (vibrationDerived - estimatedFallbackSpeed) * blend
             distance = estimatedFallbackSpeed * dt
             sourceTag = "VIB"
             // Keep the integrator pegged so it cannot diverge in the background and reappear.

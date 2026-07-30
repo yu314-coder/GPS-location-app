@@ -80,11 +80,17 @@ final class VibrationSpeedEstimator {
         guard dt > 0 else { return }
         let magnitude = sqrt(ax*ax + ay*ay + az*az)
         if !initialised { magnitudeMean = magnitude; initialised = true }
-        // Slow mean tracks the DC part; what is left is the vibration.
-        magnitudeMean += (magnitude - magnitudeMean) * min(dt / (2.0 + dt), 1.0)
+        // The mean exists ONLY to strip the DC offset (sensor bias, gravity residual), so it
+        // must be far SLOWER than any real speed change. At 2 s it chased the signal: when the
+        // car accelerated and vibration rose, the mean caught up within a couple of seconds and
+        // cancelled the very increase being measured, so the feature responded only
+        // transiently — the reported ~10 s sluggishness. At 30 s it is a true baseline and
+        // speed-driven changes survive.
+        magnitudeMean += (magnitude - magnitudeMean) * min(dt / (30.0 + dt), 1.0)
         let deviation = abs(magnitude - magnitudeMean)
-        // ~1 s smoothing gives a stable energy estimate without lagging speed changes badly.
-        vibrationEnergy += (deviation - vibrationEnergy) * min(dt / (1.0 + dt), 1.0)
+        // Short enough to track acceleration, long enough to average the vibration waveform
+        // itself (road noise is tens of Hz, so 0.5 s spans many cycles).
+        vibrationEnergy += (deviation - vibrationEnergy) * min(dt / (0.5 + dt), 1.0)
     }
 
     /// Teach the model with a trustworthy GPS speed sample. `horizontalAccuracy` in metres;
