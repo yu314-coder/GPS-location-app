@@ -2026,7 +2026,13 @@ class WorkoutSession: NSObject, ObservableObject {
                 let elapsed = now.timeIntervalSince(prev)
                 if elapsed > 0.5 {
                     let cadence = Double(added) / elapsed
-                    stepCadenceWatch = stepCadenceWatch * 0.5 + cadence * 0.5
+                    // Seed on the first measurement rather than smoothing up from zero, which
+                    // delayed PDR by several sparse pedometer updates (see iPhone version).
+                    if stepCadenceWatch <= 0 {
+                        stepCadenceWatch = cadence
+                    } else {
+                        stepCadenceWatch = stepCadenceWatch * 0.5 + cadence * 0.5
+                    }
                     if stepCadenceWatch >= 1.0 { lastStepIncrementTime = now }
                 }
             }

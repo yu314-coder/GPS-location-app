@@ -238,7 +238,9 @@ class WorkoutSession: ObservableObject {
     private let HARD_ZUPT_WINDOW: TimeInterval = 2.0     // s of near-total stillness
     private var hardQuietDuration: TimeInterval = 0
     private var lastFastMotionTime: Date?
-    private var sustainedAccelDuration: TimeInterval = 0
+    private var launchMeanNorth: Double = 0
+    private var launchMeanEast: Double = 0
+    private var launchWindowElapsed: TimeInterval = 0
     private var vehicleLaunchDetected = false
     /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
     /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
@@ -2062,11 +2064,23 @@ class WorkoutSession: ObservableObject {
         // acceleration sustained for seconds; walking and handling never do. This is the
         // positive evidence that permits integration at all, and once seen it latches for the
         // trip so a cruising vehicle does not lose it.
-        if horizAccelMag > 1.0 {
-            sustainedAccelDuration += dt
-            if sustainedAccelDuration >= 3.0 { vehicleLaunchDetected = true }
-        } else if horizAccelMag < 0.3 {
-            sustainedAccelDuration = 0
+        // Uses the magnitude of the MEAN acceleration VECTOR, not time spent above a magnitude
+        // threshold. The previous version false-fired on WALKING: step peaks easily exceed
+        // 1.0 m/s², and with a continuous vibration floor the magnitude rarely dips under the
+        // 0.3 reset, so the timer accumulated and latched after ~3 s of walking — after which
+        // integration ran unconditionally and reported 18 km/h for a walk and 261 km/h for a
+        // car doing 20-30.
+        //
+        // The discriminator is DIRECTIONAL PERSISTENCE. Walking pushes and brakes about a mean
+        // of ~zero, so a vector average cancels it. A vehicle pulling away accelerates one way
+        // for seconds, so its vector average is large. Same peak magnitudes, opposite means.
+        let launchAlpha = min(dt / (3.0 + dt), 1.0)
+        launchMeanNorth += (rNh - launchMeanNorth) * launchAlpha
+        launchMeanEast += (rEh - launchMeanEast) * launchAlpha
+        launchWindowElapsed += dt
+        if launchWindowElapsed > 6.0,
+           sqrt(launchMeanNorth * launchMeanNorth + launchMeanEast * launchMeanEast) > 0.8 {
+            vehicleLaunchDetected = true
         }
 
         // Route by DETECTED stepping, never the activity label: if the pedometer is counting
@@ -2281,7 +2295,16 @@ class WorkoutSession: ObservableObject {
                             let elapsed = now.timeIntervalSince(prev)
                             if elapsed > 0.5 {
                                 let cadence = Double(added) / elapsed          // steps/s
-                                self.stepCadence = self.stepCadence * 0.5 + cadence * 0.5
+                                // SEED on the first measurement instead of smoothing up from
+                                // zero. Blending 50/50 from 0 meant a real 1.5 steps/s first
+                                // read as 0.75 — below the gate — so PDR needed THREE sparse
+                                // pedometer updates (~30 s) to engage, which is most of a short
+                                // walk. Meanwhile the walk fell through to integration.
+                                if self.stepCadence <= 0 {
+                                    self.stepCadence = cadence
+                                } else {
+                                    self.stepCadence = self.stepCadence * 0.5 + cadence * 0.5
+                                }
                                 // Only a genuine walking cadence counts as "stepping".
                                 if self.stepCadence >= 1.0 { self.lastStepIncrementTime = now }
                             }
@@ -2329,7 +2352,7 @@ class WorkoutSession: ObservableObject {
         estimatedFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
         compassMisalignment = nil
-        sustainedAccelDuration = 0
+        launchMeanNorth = 0; launchMeanEast = 0; launchWindowElapsed = 0
         vehicleLaunchDetected = false
         if fallbackPedometerActive {
             fallbackPedometer.stopUpdates()
