@@ -2140,6 +2140,10 @@ class WorkoutSession: ObservableObject {
             estimatedFallbackSpeed = 0
             distance = 0
             if !sourceTag.hasSuffix("[still]") { sourceTag += "[still]" }
+            // A confirmed stationary moment is exactly when the vibration floor can be measured.
+            // That floor anchors the speed fit at zero, which is what stops a stopped vehicle
+            // from reading ~30 km/h.
+            vibrationSpeed.observeAtRest()
         }
         // Live diagnostic: computed travel heading (from the integrated velocity vector) vs
         // the magnetometer. During a ground test, drive a KNOWN compass direction and check
@@ -2675,6 +2679,30 @@ class WorkoutSession: ObservableObject {
         // Update splits
         currentMetrics.updateSplits(startDate: flight.startDate)
         persistActiveWorkoutSnapshot(force: false, reason: "locationTick")
+
+        // LEARN THE COMPASS MISALIGNMENT FROM GPS COURSE.
+        //
+        // Until now the offset between the phone's magnetic heading and the direction of travel
+        // was only learned from the PCA walking axis, which requires STEPS. In a vehicle there
+        // are none, so it was never learned, no compass correction was ever applied, and the
+        // heading free-ran on the gyro from whatever seed it started with — which is why
+        // vehicle routes pointed the wrong way.
+        //
+        // GPS course over ground IS the direction of travel, so when a good fix shows real
+        // motion it teaches the same offset directly, and far more reliably than gait does.
+        if location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20,
+           location.speed > 2.0, let course = validCourse(location.course),
+           let compass = locationManager.currentCompassHeading {
+            var offset = course - compass
+            if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
+            if let existing = compassMisalignment {
+                var delta = offset - existing
+                if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
+                compassMisalignment = existing + 0.1 * delta
+            } else {
+                compassMisalignment = offset
+            }
+        }
 
         // Teach the vibration model from this GPS fix. Doing it on every usable fix means the
         // model is already calibrated for THIS vehicle and phone placement by the time GPS is
