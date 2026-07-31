@@ -2197,7 +2197,9 @@ class WorkoutSession: ObservableObject {
             let blend = min(dt / (0.8 + dt), 1.0)
             estimatedFallbackSpeed += (vibrationDerived - estimatedFallbackSpeed) * blend
             distance = estimatedFallbackSpeed * dt
-            sourceTag = "VIB"
+            // "VIB?" = provisional fit (few samples / narrow speed range) — still far better
+            // than integration, but expect the magnitude to be rough until it firms up to "VIB".
+            sourceTag = vibrationSpeed.isProvisional ? "VIB?" : "VIB"
             // Keep the integrator pegged so it cannot diverge in the background and reappear.
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)

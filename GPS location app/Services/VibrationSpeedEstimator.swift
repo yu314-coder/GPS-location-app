@@ -44,6 +44,9 @@ final class VibrationSpeedEstimator {
     private var minSeenSpeed = Double.greatestFiniteMagnitude
     private var maxSeenSpeed = -Double.greatestFiniteMagnitude
     private var slope: Double?
+    /// True once the slope came from a fit meeting the FULL evidence bar, as opposed to the
+    /// provisional early fit. Only a full fit is worth persisting for later trips.
+    private var slopeIsFullyEvidenced = false
     /// Vibration while genuinely stationary. Until this is known the model cannot be anchored,
     /// so no estimate is offered — better than guessing an offset.
     private var restBaseline: Double?
@@ -51,27 +54,98 @@ final class VibrationSpeedEstimator {
     /// Enough evidence to trust the fit: a decent sample count across a real speed spread.
     private let MIN_SAMPLES = 60.0
     private let MIN_SPEED_SPREAD = 6.0   // m/s between the slowest and fastest calibration point
+    // PROVISIONAL fit, used only until the full bar is met. A rough vibration slope is not
+    // accurate, but it is bounded and monotonic in speed — whereas the alternative while
+    // waiting is raw double-integration, which is unbounded and was observed reporting
+    // 252 km/h and fabricating 7.6 km of route in 8 minutes. Wrong by 30% beats wrong by 10x.
+    private let PROVISIONAL_SAMPLES = 12.0
+    private let PROVISIONAL_SPEED_SPREAD = 2.5
 
     var isCalibrated: Bool { slope != nil }
+    /// Distinguishes the provisional fit from the fully-evidenced one, for the status line.
+    var isProvisional: Bool { slope != nil && !slopeIsFullyEvidenced }
 
+    // PERSISTENCE ------------------------------------------------------------------------
+    //
+    // The model used to be wiped at every workout start, so each drive had to re-earn 60
+    // GPS-calibrated samples spanning 6 m/s BEFORE producing anything — and a trip that
+    // enables Force Velocity and then loses GPS never gets that chance, which is precisely
+    // the case this feature exists for. The vibration-to-speed slope is a property of the
+    // VEHICLE AND PHONE PLACEMENT, not of a single workout, so it is carried across trips.
+    private static let slopeKey = "VibrationSpeedEstimator.slope"
+    private static let baselineKey = "VibrationSpeedEstimator.restBaseline"
+
+    /// Start a workout: clear the per-trip signal state but KEEP a previously learned model.
     func reset() {
         magnitudeMean = 0; vibrationEnergy = 0; initialised = false
+        floorCandidate = nil
         n = 0; sumXX = 0; sumXY = 0
         minSeenSpeed = .greatestFiniteMagnitude; maxSeenSpeed = -.greatestFiniteMagnitude
-        slope = nil; restBaseline = nil
+        let defaults = UserDefaults.standard
+        let savedSlope = defaults.double(forKey: Self.slopeKey)
+        let savedBaseline = defaults.double(forKey: Self.baselineKey)
+        if savedSlope > 0, defaults.object(forKey: Self.baselineKey) != nil {
+            slope = savedSlope
+            slopeIsFullyEvidenced = true
+            restBaseline = savedBaseline
+        } else {
+            slope = nil
+            slopeIsFullyEvidenced = false
+            restBaseline = nil
+        }
     }
+
+    /// Discard the stored model — for when the phone moves to a different vehicle or mount.
+    func forgetLearnedModel() {
+        UserDefaults.standard.removeObject(forKey: Self.slopeKey)
+        UserDefaults.standard.removeObject(forKey: Self.baselineKey)
+        slope = nil; slopeIsFullyEvidenced = false; restBaseline = nil
+    }
+
+    private func persistIfFullyEvidenced() {
+        guard slopeIsFullyEvidenced, let slope, let restBaseline else { return }
+        UserDefaults.standard.set(slope, forKey: Self.slopeKey)
+        UserDefaults.standard.set(restBaseline, forKey: Self.baselineKey)
+    }
+
+    /// Lowest vibration energy seen so far this trip, used as the anchor when the activity
+    /// classifier never gives a confident stationary call.
+    private var floorCandidate: Double?
 
     /// Record the vibration floor while the device is genuinely stationary. This anchors the
     /// fit at zero speed, which is what keeps a stopped vehicle reading zero.
     func observeAtRest() {
         guard initialised else { return }
-        if let existing = restBaseline {
-            // Track the floor gently, and prefer the LOWEST credible value seen: a stationary
-            // reading contaminated by handling would otherwise raise the anchor and re-introduce
-            // the offset this exists to remove.
-            restBaseline = Swift.min(existing * 0.9 + vibrationEnergy * 0.1, existing)
+        adoptFloor(vibrationEnergy, trusted: true)
+    }
+
+    /// Called every sample. Tracks the running minimum of the vibration feature so the anchor
+    /// can be established WITHOUT the activity classifier.
+    ///
+    /// The classifier was a hard dependency: `restBaseline` was set only on a confident
+    /// `[still]` call, and a drive that is tagged `[car]` from the first second never got one.
+    /// Every `calibrate()` then bailed at the missing-anchor guard, so the fit stayed empty for
+    /// the whole trip however good the GPS was. A running minimum needs no classifier: over any
+    /// realistic trip the quietest moment IS the slowest moment, so it is a sound floor.
+    private func observeFloor() {
+        guard initialised else { return }
+        adoptFloor(vibrationEnergy, trusted: false)
+    }
+
+    private func adoptFloor(_ candidate: Double, trusted: Bool) {
+        if let existing = floorCandidate {
+            // Prefer the LOWEST credible value: a quiet-but-moving reading would otherwise raise
+            // the anchor and re-introduce the offset this exists to remove. Let it creep upward
+            // only very slowly, so a one-off dropout does not pin the floor forever.
+            floorCandidate = Swift.min(existing * 0.99995 + candidate * 0.00005, candidate)
         } else {
-            restBaseline = vibrationEnergy
+            floorCandidate = candidate
+        }
+        guard let floor = floorCandidate else { return }
+        // A persisted baseline is only overridden by a TRUSTED (classifier-confirmed) rest
+        // reading, or by a running minimum that is clearly lower than what was stored.
+        if trusted || restBaseline == nil || floor < (restBaseline ?? .greatestFiniteMagnitude) {
+            restBaseline = floor
         }
     }
 
@@ -91,6 +165,7 @@ final class VibrationSpeedEstimator {
         // Short enough to track acceleration, long enough to average the vibration waveform
         // itself (road noise is tens of Hz, so 0.5 s spans many cycles).
         vibrationEnergy += (deviation - vibrationEnergy) * min(dt / (0.5 + dt), 1.0)
+        observeFloor()
     }
 
     /// Teach the model with a trustworthy GPS speed sample. `horizontalAccuracy` in metres;
@@ -112,14 +187,20 @@ final class VibrationSpeedEstimator {
         n += 1; sumXY += x * speed; sumXX += x * x
         minSeenSpeed = Swift.min(minSeenSpeed, speed)
         maxSeenSpeed = Swift.max(maxSeenSpeed, speed)
-        guard n >= MIN_SAMPLES, (maxSeenSpeed - minSeenSpeed) >= MIN_SPEED_SPREAD else { return }
+        let spread = maxSeenSpeed - minSeenSpeed
+        let fullyEvidenced = n >= MIN_SAMPLES && spread >= MIN_SPEED_SPREAD
+        let provisional = n >= PROVISIONAL_SAMPLES && spread >= PROVISIONAL_SPEED_SPREAD
+        guard fullyEvidenced || provisional else { return }
         guard sumXX > 1e-12 else { return }
         // Slope through the origin: minimises Σ(speed − m·x)², giving m = Σxy / Σx².
         let m = sumXY / sumXX
         // Vibration must INCREASE with speed; a non-positive slope means the fit is meaningless
         // (phone loose on a seat, stationary idling) and is rejected rather than used.
         guard m > 0 else { return }
+        // A this-trip fit always supersedes a persisted one — same vehicle, current placement.
         slope = m
+        slopeIsFullyEvidenced = fullyEvidenced
+        persistIfFullyEvidenced()
     }
 
     /// Speed from vibration alone, or nil while uncalibrated. No integration, so no drift.
