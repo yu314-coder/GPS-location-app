@@ -831,18 +831,26 @@ class LocationManager: NSObject, ObservableObject {
         let sampleDt = lastDeviceBiasTimestamp.map { min(max(motion.timestamp - $0, 0.0), 1.0) } ?? 0.0
         lastDeviceBiasTimestamp = motion.timestamp
         if sampleDt > 0 {
-            // GROW the time constant from ~0 up to the steady-state 90 s, rather than running
-            // at 90 s from sample one. The filter starts at bias=0, an arbitrary initial guess;
-            // at a fixed 90 s tau it takes ~15 s to close even 15% of the gap to the true bias,
-            // so for the first tens of seconds of every trip a real sensor offset (commonly
-            // 0.3–1 m/s²) survives almost undiminished as apparent "sustained acceleration" —
-            // exactly what the vehicle-launch detector below looks for. Observed live: a WALK
-            // start latched vehicleLaunchDetected within 15 s ("DR [?] 7km/h"), which then never
-            // un-latches for the rest of the trip. Growing tau with elapsed time converges in a
-            // couple of seconds at start (alpha ≈ 0.5 at t = 1 s) while settling into the same
-            // long-window, turn-immune average this exists for once warmed up.
+            // SEED fast from the first second, then hold a long steady-state window.
+            //
+            // The filter starts at bias = 0, an arbitrary guess. At a fixed 90 s tau it takes
+            // ~15 s to close even 15% of the gap, so early in every trip a real sensor offset
+            // (commonly 0.3–1 m/s²) survived as apparent "sustained acceleration" — exactly what
+            // the vehicle-launch detector looks for, and a WALK start latched it within 15 s
+            // ("DR [?] 7km/h"), which never un-latches.
+            //
+            // Ramping tau with elapsed time fixed that but broke the car: at t = 5 s the tau was
+            // 5 s, so the filter CHASED the signal and absorbed a genuine vehicle launch (5–10 s
+            // of sustained acceleration) into "bias" — the same mistake the vibration mean made
+            // at 2 s. The launch residual then collapsed, the launch was never detected, and the
+            // vibration model was never allowed to calibrate.
+            //
+            // Seeding instead: the first second of a workout is essentially always at rest or
+            // in-hand, so averaging it converges immediately and correctly. After that the tau
+            // is the full 90 s, which is long enough that seconds-long real acceleration is
+            // never mistaken for bias.
             deviceBiasElapsedTime += sampleDt
-            let tau = min(90.0, max(deviceBiasElapsedTime, 1.0))
+            let tau = deviceBiasElapsedTime < 1.0 ? 0.1 : 90.0
             let alpha = min(sampleDt / (tau + sampleDt), 1.0)
             deviceAccelBiasX += (rawA.x - deviceAccelBiasX) * alpha
             deviceAccelBiasY += (rawA.y - deviceAccelBiasY) * alpha

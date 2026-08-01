@@ -252,6 +252,12 @@ class WorkoutSession: ObservableObject {
     private var launchMeanEast: Double = 0
     private var launchWindowElapsed: TimeInterval = 0
     private var vehicleLaunchDetected = false
+    /// Latched once GPS has directly measured a speed no pedestrian can reach. This is far more
+    /// reliable evidence of "in a vehicle" than the inertial launch detector, which infers it
+    /// from a sustained acceleration vector and can miss a gentle pull-away entirely (or one
+    /// that happened before the workout was started). Used to gate vibration-model calibration
+    /// and use, so a real drive is never locked out of the only non-diverging speed source.
+    private var vehicleConfirmedByGPSSpeed = false
     /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
     /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
     private var longRunMeanNorth: Double = 0
@@ -2228,7 +2234,7 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if (vehicleLaunchDetected || activityIsAutomotive),
+        } else if (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed),
                   let vibrationDerived = vibrationSpeed.estimatedSpeed() {
             // VIBRATION-BASED SPEED (vehicle). Preferred over integration whenever the model
             // has been calibrated, because it does not accumulate: road and engine vibration
@@ -2495,7 +2501,7 @@ class WorkoutSession: ObservableObject {
         yawHeadingOffset = nil
         compassMisalignment = nil
         launchMeanNorth = 0; launchMeanEast = 0; launchWindowElapsed = 0
-        vehicleLaunchDetected = false
+        vehicleLaunchDetected = false; vehicleConfirmedByGPSSpeed = false
         if fallbackPedometerActive {
             fallbackPedometer.stopUpdates()
             fallbackPedometerActive = false
@@ -2774,7 +2780,15 @@ class WorkoutSession: ObservableObject {
             // ~100 km/h drive read 37 km/h (walking points, low speed/high vibration, drag the
             // through-origin slope down), and a real walk read 40 km/h avg 94 (the model is
             // still car-shaped, so ordinary footstep vibration gets read as highway speed).
-            if location.speed >= 0, !currentlyStepping, (vehicleLaunchDetected || activityIsAutomotive) {
+            // GPS speed alone proves a vehicle: 8 m/s is 29 km/h, far past any walking or
+            // running pace, so this needs no help from the inertial launch detector — which
+            // misses a gentle pull-away, and misses entirely a drive already under way when the
+            // workout was started.
+            if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
+                vehicleConfirmedByGPSSpeed = true
+            }
+            if location.speed >= 0, !currentlyStepping,
+               (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
                 vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
             }
             // CRITICAL: learn the heading offset here too. This method previously ran only
@@ -2868,8 +2882,13 @@ class WorkoutSession: ObservableObject {
         // the FORCED-mode calibration call above for why.
         let currentlyStepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
         // Same vehicle-evidence gate as the Force-Velocity calibration call above — see the
-        // comment there for why "not stepping" alone let walking contaminate the fit.
-        if location.speed >= 0, !currentlyStepping, (vehicleLaunchDetected || activityIsAutomotive) {
+        // comment there for why "not stepping" alone let walking contaminate the fit, and why
+        // GPS speed is admitted as evidence in its own right.
+        if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
+            vehicleConfirmedByGPSSpeed = true
+        }
+        if location.speed >= 0, !currentlyStepping,
+           (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
             vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
         }
 
