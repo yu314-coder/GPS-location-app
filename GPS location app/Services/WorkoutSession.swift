@@ -217,6 +217,11 @@ class WorkoutSession: ObservableObject {
     /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
     private var walkAccelWindow: [(north: Double, east: Double)] = []
     private let WALK_WINDOW_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
+    /// EMA of the gait-skewness forward/back vote, so a single noisy ~1.6 s window (2-3 steps)
+    /// cannot flip the resolved travel direction 180° on its own. See walkingAxisHeading().
+    private var walkingSkewEMA: Double = 0
+    private var walkingSkewEMAValid = false
+    private var wasPedometerCountingForSkewReset = false
     private var isStepBasedWorkout: Bool {
         workoutType == .walking || workoutType == .running || workoutType == .hiking
     }
@@ -1897,10 +1902,25 @@ class WorkoutSession: ObservableObject {
         let variance = m2 / n
         guard variance > 1e-6 else { return nil }
         let skewness = (m3 / n) / pow(variance, 1.5)
-        // Only trust a clear asymmetry; ambiguous gait leaves the axis unresolved rather than
-        // guessing, so a wrong 180° choice is never forced.
-        guard abs(skewness) > 0.15 else { return nil }
-        if skewness < 0 { deg = (deg + 180).truncatingRemainder(dividingBy: 360) }
+
+        // SMOOTH the forward/back vote across calls instead of deciding from one window alone.
+        // walkAccelWindow spans ~1.6 s — only 2-3 steps — so its skewness is noisy, and this
+        // function is re-evaluated roughly once a tick. Trusting the raw instantaneous sign let
+        // the resolved axis flip 180° for a tick or two whenever noise pushed it past the bar,
+        // which is exactly what turned a straight walked line into the tangled, doubling-back
+        // loop seen live: the drawn path is correct in total DISTANCE but keeps reversing which
+        // end is "forward" for a few ticks at a time. An EMA needs sustained, one-sided evidence
+        // before the belief moves, so an isolated noisy window can no longer flip it alone.
+        if walkingSkewEMAValid {
+            walkingSkewEMA += (skewness - walkingSkewEMA) * 0.12
+        } else {
+            walkingSkewEMA = skewness
+            walkingSkewEMAValid = true
+        }
+        // Only trust a clear, SUSTAINED asymmetry; ambiguous gait leaves the axis unresolved
+        // rather than guessing, so a wrong 180° choice is never forced.
+        guard abs(walkingSkewEMA) > 0.15 else { return nil }
+        if walkingSkewEMA < 0 { deg = (deg + 180).truncatingRemainder(dividingBy: 360) }
         return deg
     }
 
@@ -1981,6 +2001,13 @@ class WorkoutSession: ObservableObject {
         // LONG window: CMPedometer updates are sparse, so 5 s dropped us into integration
         // between them. 20 s keeps us in the pedometer branch across the gaps.
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false
+        // A fresh bout of walking (after standing still, turning around, sitting down, etc.)
+        // gets a fresh forward/back vote instead of carrying over a belief that may no longer
+        // apply — the body could easily now be walking the opposite way relative to the axis.
+        if pedometerIsCounting, !wasPedometerCountingForSkewReset {
+            walkingSkewEMAValid = false
+        }
+        wasPedometerCountingForSkewReset = pedometerIsCounting
         let velHeading = nextSpeed > 0.1
             ? normalizedHeading(atan2(motionVelEast, motionVelNorth) * 180 / .pi)
             : nil
