@@ -71,6 +71,10 @@ class LocationManager: NSObject, ObservableObject {
     private var deviceAccelBiasY: Double = 0
     private var deviceAccelBiasZ: Double = 0
     private var lastDeviceBiasTimestamp: TimeInterval?
+    /// Total device-motion time seen since the bias filter was last reset. Used to grow the
+    /// filter's time constant from near-zero up to its steady-state 90 s, instead of running at
+    /// 90 s from the very first sample. See referenceFrameAcceleration for why.
+    private var deviceBiasElapsedTime: TimeInterval = 0
     private let standardGravity = 9.80665
 
     // GPS reconnection logic
@@ -622,7 +626,7 @@ class LocationManager: NSObject, ObservableObject {
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
-        deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0
+        deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
 
@@ -773,7 +777,7 @@ class LocationManager: NSObject, ObservableObject {
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
-        deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0
+        deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         DispatchQueue.main.async { [weak self] in
             self?.currentMotionAcceleration = nil
@@ -827,7 +831,19 @@ class LocationManager: NSObject, ObservableObject {
         let sampleDt = lastDeviceBiasTimestamp.map { min(max(motion.timestamp - $0, 0.0), 1.0) } ?? 0.0
         lastDeviceBiasTimestamp = motion.timestamp
         if sampleDt > 0 {
-            let alpha = min(sampleDt / (90.0 + sampleDt), 1.0)
+            // GROW the time constant from ~0 up to the steady-state 90 s, rather than running
+            // at 90 s from sample one. The filter starts at bias=0, an arbitrary initial guess;
+            // at a fixed 90 s tau it takes ~15 s to close even 15% of the gap to the true bias,
+            // so for the first tens of seconds of every trip a real sensor offset (commonly
+            // 0.3–1 m/s²) survives almost undiminished as apparent "sustained acceleration" —
+            // exactly what the vehicle-launch detector below looks for. Observed live: a WALK
+            // start latched vehicleLaunchDetected within 15 s ("DR [?] 7km/h"), which then never
+            // un-latches for the rest of the trip. Growing tau with elapsed time converges in a
+            // couple of seconds at start (alpha ≈ 0.5 at t = 1 s) while settling into the same
+            // long-window, turn-immune average this exists for once warmed up.
+            deviceBiasElapsedTime += sampleDt
+            let tau = min(90.0, max(deviceBiasElapsedTime, 1.0))
+            let alpha = min(sampleDt / (tau + sampleDt), 1.0)
             deviceAccelBiasX += (rawA.x - deviceAccelBiasX) * alpha
             deviceAccelBiasY += (rawA.y - deviceAccelBiasY) * alpha
             deviceAccelBiasZ += (rawA.z - deviceAccelBiasZ) * alpha

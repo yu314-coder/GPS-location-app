@@ -2173,6 +2173,20 @@ class WorkoutSession: ObservableObject {
             // the gap. Instead bleed the "owed" distance off a little each tick along the
             // CURRENT gyro heading — the path curves — while the TOTAL still converges exactly
             // to the pedometer distance (unlike pure speed×dt, which under-counts).
+            // DECAY the displayed speed toward 0 once cadence stops, independent of the sparse
+            // pedometer callback. fallbackPedometerSpeed is only WRITTEN when a new CMPedometer
+            // update lands (seconds to tens of seconds apart), so stopping mid-walk (e.g. to
+            // stand still) held the last nonzero smoothed speed for up to the full 20 s
+            // `pedometerIsCounting` grace window — reported live as "PDR [walk] 6km/h" while
+            // genuinely stationary. That 20 s window exists to bridge sparse DISTANCE updates
+            // and must stay long; the instantaneous SPEED shown has no reason to share it. A
+            // real walking cadence is 1.5–3 steps/s, so any gap over ~1.2 s already means the
+            // steps have stopped, well before the next pedometer callback would say so.
+            let sinceLastStep = lastStepIncrementTime.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+            if sinceLastStep > 1.2 {
+                let decayAlpha = min(dt / (0.5 + dt), 1.0)
+                fallbackPedometerSpeed += (0 - fallbackPedometerSpeed) * decayAlpha
+            }
             lastFallbackPedometerDistance = pedometerTotal
             let owed = max(0, pedometerTotal - pdrAppendedDistance)
             let perTickCap = max(fallbackPedometerSpeed * dt * 1.5, 1.5)
