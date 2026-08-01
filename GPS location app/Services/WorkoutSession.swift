@@ -2187,11 +2187,18 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if let vibrationDerived = vibrationSpeed.estimatedSpeed() {
+        } else if (vehicleLaunchDetected || activityIsAutomotive),
+                  let vibrationDerived = vibrationSpeed.estimatedSpeed() {
             // VIBRATION-BASED SPEED (vehicle). Preferred over integration whenever the model
             // has been calibrated, because it does not accumulate: road and engine vibration
             // scale with speed, so this is a direct reading rather than an integral, and the
             // bias that makes integration diverge simply has nowhere to accumulate.
+            //
+            // Gated on vehicle evidence, the same bar integration itself already required: a
+            // model trained on driving is shaped for driving vibration, and applying it to
+            // ordinary footstep vibration (tag "[?]", pedometer not yet counting) read a real
+            // walk at 40 km/h, average 94 km/h. Without this gate a genuinely uncertain moment
+            // fell through to whatever the vibration model last said, however inapplicable.
             // Time-constant blend (~0.8 s) rather than a fixed 0.6/0.4 per tick, which added
             // ~2.5 s of lag on top of the estimator's own smoothing.
             let blend = min(dt / (0.8 + dt), 1.0)
@@ -2718,7 +2725,15 @@ class WorkoutSession: ObservableObject {
             // noisy instantaneous GPS speed poisoned it with spurious high-speed points that
             // then reported vibration-derived speed while the phone was sitting still.
             let currentlyStepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
-            if location.speed >= 0, !currentlyStepping {
+            // POSITIVE vehicle evidence required, not just "not stepping". "Not stepping" is a
+            // 20 s-stale pedometer flag: it stays false for the first steps of a walk (before
+            // any step has landed) and for a full 20 s after one, so early-walk and post-walk
+            // GPS fixes leaked walking vibration into what is meant to be a pure-vehicle fit.
+            // That single shared model then misfires in BOTH directions on later trips: a real
+            // ~100 km/h drive read 37 km/h (walking points, low speed/high vibration, drag the
+            // through-origin slope down), and a real walk read 40 km/h avg 94 (the model is
+            // still car-shaped, so ordinary footstep vibration gets read as highway speed).
+            if location.speed >= 0, !currentlyStepping, (vehicleLaunchDetected || activityIsAutomotive) {
                 vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
             }
             // CRITICAL: learn the heading offset here too. This method previously ran only
@@ -2811,7 +2826,9 @@ class WorkoutSession: ObservableObject {
         // lost, which is when it has to carry the estimate. Never while actively stepping — see
         // the FORCED-mode calibration call above for why.
         let currentlyStepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
-        if location.speed >= 0, !currentlyStepping {
+        // Same vehicle-evidence gate as the Force-Velocity calibration call above — see the
+        // comment there for why "not stepping" alone let walking contaminate the fit.
+        if location.speed >= 0, !currentlyStepping, (vehicleLaunchDetected || activityIsAutomotive) {
             vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
         }
 

@@ -72,8 +72,15 @@ final class VibrationSpeedEstimator {
     // enables Force Velocity and then loses GPS never gets that chance, which is precisely
     // the case this feature exists for. The vibration-to-speed slope is a property of the
     // VEHICLE AND PHONE PLACEMENT, not of a single workout, so it is carried across trips.
-    private static let slopeKey = "VibrationSpeedEstimator.slope"
-    private static let baselineKey = "VibrationSpeedEstimator.restBaseline"
+    // Versioned so a fix to WHAT gets learned (e.g. tightening what may calibrate the fit)
+    // invalidates whatever an older build already saved, instead of silently loading it back
+    // in. v2: calibration used to run any time the pedometer had not counted recently, with no
+    // requirement that vehicle motion was actually evidenced — so a walk whose steps hadn't
+    // been detected yet fed footstep vibration into what was meant to be a pure-driving fit,
+    // and vice versa. One contaminated model then misfired on every later trip in both
+    // directions: a real ~100 km/h drive read 37 km/h, and a real walk read 40 km/h.
+    private static let slopeKey = "VibrationSpeedEstimator.slope.v2"
+    private static let baselineKey = "VibrationSpeedEstimator.restBaseline.v2"
 
     /// Start a workout: clear the per-trip signal state but KEEP a previously learned model.
     func reset() {
