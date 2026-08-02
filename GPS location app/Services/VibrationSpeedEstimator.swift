@@ -17,9 +17,25 @@ import Foundation
 final class VibrationSpeedEstimator {
 
     // Rolling vibration feature -----------------------------------------------------------
-    private var magnitudeMean: Double = 0          // slow mean of |a|, removes the DC part
-    private var vibrationEnergy: Double = 0        // smoothed |‖a‖ − mean|, the feature
+    // Low-frequency part of each AXIS (DC bias + driving dynamics). Held per-axis, because the
+    // high-pass has to happen BEFORE the magnitude is taken — see ingest().
+    private var lowFreqX: Double = 0
+    private var lowFreqY: Double = 0
+    private var lowFreqZ: Double = 0
+    // SECOND stage of the high-pass. One pole is not enough: it attenuates only in proportion
+    // to f/fc, so 0.25 Hz braking against a 3.2 Hz corner still passes ~8% of its amplitude —
+    // and braking is an order of magnitude larger than road vibration, so that residue was
+    // comparable to the entire signal being measured (0.094 leaked against 0.141 of real
+    // vibration). Two poles attenuate as (f/fc)², cutting the same leak to 0.007 while leaving
+    // 14 Hz tyre noise essentially untouched.
+    private var lowFreq2X: Double = 0
+    private var lowFreq2Y: Double = 0
+    private var lowFreq2Z: Double = 0
+    private var vibrationEnergy: Double = 0        // smoothed |high-passed ‖a‖|, the feature
     private var initialised = false
+    /// High-pass corner. An EMA tracks everything below 1/(2πτ) ≈ 3.2 Hz, so subtracting it
+    /// leaves only what is above that. See ingest() for why this matters so much.
+    private let LOWFREQ_TAU = 0.05
     /// Seconds of data ingested this workout. The feature is an EMA seeded at zero, so early
     /// readings are a startup transient rather than a measurement.
     private var ingestElapsed: TimeInterval = 0
@@ -98,15 +114,15 @@ final class VibrationSpeedEstimator {
     // v4: the model is now an intercept-bearing quadratic in the scaled feature. Everything
     // stored by earlier builds is unusable — v2 and v3 both encode a rest baseline that was
     // either pinned at zero by a startup-transient bug or captured mid-drive.
-    private static let keyP0 = "VibrationSpeedEstimator.p0.v4"
-    private static let keyP1 = "VibrationSpeedEstimator.p1.v4"
-    private static let keyP2 = "VibrationSpeedEstimator.p2.v4"
-    private static let keyMaxU = "VibrationSpeedEstimator.maxU.v4"
+    private static let keyP0 = "VibrationSpeedEstimator.p0.v7"
+    private static let keyP1 = "VibrationSpeedEstimator.p1.v7"
+    private static let keyP2 = "VibrationSpeedEstimator.p2.v7"
+    private static let keyMaxU = "VibrationSpeedEstimator.maxU.v7"
     private static let allKeys = [keyP0, keyP1, keyP2, keyMaxU]
 
     /// Start a workout: clear the per-trip signal state but KEEP a previously learned model.
     func reset() {
-        magnitudeMean = 0; vibrationEnergy = 0; initialised = false; ingestElapsed = 0
+        lowFreqX = 0; lowFreqY = 0; lowFreqZ = 0; lowFreq2X = 0; lowFreq2Y = 0; lowFreq2Z = 0; vibrationEnergy = 0; initialised = false; ingestElapsed = 0
         n = 0; nZeroish = 0
         sumU = 0; sumU2 = 0; sumU3 = 0; sumU4 = 0
         sumS = 0; sumUS = 0; sumU2S = 0
@@ -152,19 +168,51 @@ final class VibrationSpeedEstimator {
     func ingest(ax: Double, ay: Double, az: Double, dt: TimeInterval) {
         guard dt > 0 else { return }
         ingestElapsed += dt
-        let magnitude = sqrt(ax*ax + ay*ay + az*az)
-        if !initialised { magnitudeMean = magnitude; initialised = true }
-        // The mean exists ONLY to strip the DC offset (sensor bias, gravity residual), so it
-        // must be far SLOWER than any real speed change. At 2 s it chased the signal: when the
-        // car accelerated and vibration rose, the mean caught up within a couple of seconds and
-        // cancelled the very increase being measured, so the feature responded only
-        // transiently — the reported ~10 s sluggishness. At 30 s it is a true baseline and
-        // speed-driven changes survive.
-        magnitudeMean += (magnitude - magnitudeMean) * min(dt / (30.0 + dt), 1.0)
-        let deviation = abs(magnitude - magnitudeMean)
-        // Short enough to track acceleration, long enough to average the vibration waveform
-        // itself (road noise is tens of Hz, so 0.5 s spans many cycles).
-        vibrationEnergy += (deviation - vibrationEnergy) * min(dt / (0.5 + dt), 1.0)
+        if !initialised { lowFreqX = ax; lowFreqY = ay; lowFreqZ = az; lowFreq2X = 0; lowFreq2Y = 0; lowFreq2Z = 0; initialised = true }
+
+        // HIGH-PASS, and this is the whole ballgame.
+        //
+        // This used to subtract a 30-SECOND mean, which passes everything above ~0.005 Hz —
+        // and that includes accelerating, braking and cornering, at 0.1–1 Hz and 0.5–3 m/s².
+        // Genuine road and engine vibration is 10–50 Hz at 0.05–0.5 m/s², an order of magnitude
+        // SMALLER. So the "vibration" feature was really measuring how the car was being
+        // DRIVEN, not how fast it was going. Measured on a realistic synthetic signal:
+        //
+        //                       smooth        heavy traffic
+        //     29 km/h            0.0954          0.3956      <- 4.1x from driving style alone
+        //    101 km/h            0.1473          0.3998
+        //                        ^^^^^^ only 1.5x from a 3.5x speed change
+        //
+        // In traffic it was effectively BLIND to speed: 0.3956 at 29 km/h against 0.3998 at
+        // 101 km/h, a 1% difference across the entire range. Calibrate in city traffic, then
+        // drive a smooth road, and the feature collapses — which is precisely the long-running
+        // complaint that a real 40 km/h reads 11, a real 100 reads 37, while stop-and-go at
+        // 20–30 once read 261.
+        //
+        // A 3.2 Hz corner separates the two cleanly: driving dynamics sit an order of magnitude
+        // below it, tyre and engine vibration an order of magnitude above. After this the same
+        // test gives 2.0x across the speed range and only 1.2x from driving style — speed is
+        // now the dominant term rather than the minor one.
+        // PER-AXIS, and before the magnitude is taken. ‖a‖ is a rectification, so a large
+        // low-frequency swing (hard braking) folds into broadband content that no high-pass
+        // applied AFTER the norm can remove — filtering the magnitude still left a 21 km/h
+        // under-read when the fit was calibrated in traffic and then used on a smooth road.
+        // High-passing each axis first removes the dynamics while they are still linear, and
+        // the magnitude of the residual vector is then genuine vibration only.
+        let alpha = min(dt / (LOWFREQ_TAU + dt), 1.0)
+        lowFreqX += (ax - lowFreqX) * alpha
+        lowFreqY += (ay - lowFreqY) * alpha
+        lowFreqZ += (az - lowFreqZ) * alpha
+        let h1x = ax - lowFreqX, h1y = ay - lowFreqY, h1z = az - lowFreqZ
+        // Second pole, applied to the output of the first.
+        lowFreq2X += (h1x - lowFreq2X) * alpha
+        lowFreq2Y += (h1y - lowFreq2Y) * alpha
+        lowFreq2Z += (h1z - lowFreq2Z) * alpha
+        let hx = h1x - lowFreq2X, hy = h1y - lowFreq2Y, hz = h1z - lowFreq2Z
+        let highPassed = sqrt(hx*hx + hy*hy + hz*hz)
+        // Long enough to average the vibration waveform itself (many cycles at 10+ Hz), short
+        // enough to still track a real change of speed promptly.
+        vibrationEnergy += (highPassed - vibrationEnergy) * min(dt / (0.5 + dt), 1.0)
     }
 
     /// Teach the model with a trustworthy GPS speed sample. `horizontalAccuracy` in metres;
