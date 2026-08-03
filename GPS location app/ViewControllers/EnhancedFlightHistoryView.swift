@@ -2630,10 +2630,31 @@ struct EnhancedFlightCard: View {
                 }
 
                 // Action buttons
-                if onRecalculate != nil || onResync != nil {
+                if true {
                     Divider()
 
                     HStack(spacing: 12) {
+                        // Export this one workout: full per-point sensor data as CSV, plus the
+                        // route as GPX. Always available — it needs nothing but the points that
+                        // are already stored.
+                        Button {
+                            WorkoutDataExporter.exportAll(flight: flight)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.caption)
+                                Text("Export")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.green.opacity(0.15))
+                            .foregroundColor(.green)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+
                         if let onRecalculate = onRecalculate {
                             Button(action: onRecalculate) {
                                 HStack(spacing: 4) {
