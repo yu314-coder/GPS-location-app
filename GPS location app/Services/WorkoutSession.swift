@@ -258,6 +258,39 @@ class WorkoutSession: ObservableObject {
     /// that happened before the workout was started). Used to gate vibration-model calibration
     /// and use, so a real drive is never locked out of the only non-diverging speed source.
     private var vehicleConfirmedByGPSSpeed = false
+    /// When vehicle evidence was last actually OBSERVED, as opposed to remembered. The latches
+    /// above never clear, which is correct for deciding "this trip is a drive" but wrong for
+    /// deciding "the vibration reading right now describes a moving vehicle": after a drive,
+    /// standing still with the phone in hand kept reporting vibration-derived speed forever.
+    private var lastVehicleEvidenceTime: Date?
+    /// Evidence goes stale after this long with nothing to renew it. Generous, because the
+    /// activity classifier drops to "unknown" for long stretches inside a smooth-riding vehicle
+    /// and losing the speed source mid-flight would be far worse than a late expiry.
+    private let VEHICLE_EVIDENCE_TTL: TimeInterval = 300
+    /// Smoothed rotation-rate magnitude — how much the device is being TURNED. A phone resting
+    /// in a car, a pocket or a seat-back tray barely rotates; a phone in a hand rotates
+    /// constantly. Hand tremor sits at 8–12 Hz, squarely inside the vibration passband, so
+    /// handling is indistinguishable from road vibration by amplitude alone and needs its own
+    /// signal to veto it.
+    private var handlingRotationLevel: Double = 0
+    /// Sustained rotation above this reads as a hand, not a vehicle. A car yaws ~0.2 rad/s
+    /// through a turn and only briefly; an aircraft banks far more slowly than that. A phone
+    /// held or fidgeted with sits well above it continuously.
+    private let HANDLING_ROTATION_THRESHOLD = 0.40
+
+    /// Vehicle evidence that is still current, rather than merely remembered from earlier in
+    /// the trip. Vibration only describes a moving vehicle while we are actually in one.
+    private var vehicleContextIsCurrent: Bool {
+        if activityIsAutomotive { return true }
+        guard let seen = lastVehicleEvidenceTime else { return false }
+        return Date().timeIntervalSince(seen) < VEHICLE_EVIDENCE_TTL
+    }
+
+    /// The device is being carried in a hand rather than resting in the vehicle, so its
+    /// vibration is dominated by the person holding it and says nothing about road speed.
+    private var deviceIsBeingHandled: Bool {
+        handlingRotationLevel > HANDLING_ROTATION_THRESHOLD
+    }
     /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
     /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
     private var longRunMeanNorth: Double = 0
@@ -2006,6 +2039,12 @@ class WorkoutSession: ObservableObject {
         // and the distance source); computed before the heading block that consumes it.
         // LONG window: CMPedometer updates are sparse, so 5 s dropped us into integration
         // between them. 20 s keeps us in the pedometer branch across the gaps.
+        // How much the device is being turned, smoothed over a few seconds so a single knock or
+        // a car's turn does not trip it but continuous handling does.
+        if let rr = locationManager.currentRotationRate {
+            handlingRotationLevel += (rr - handlingRotationLevel) * min(dt / (3.0 + dt), 1.0)
+        }
+
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false
         // A fresh bout of walking (after standing still, turning around, sitting down, etc.)
         // gets a fresh forward/back vote instead of carrying over a belief that may no longer
@@ -2234,7 +2273,7 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed),
+        } else if vehicleContextIsCurrent, !deviceIsBeingHandled,
                   let vibrationDerived = vibrationSpeed.estimatedSpeed() {
             // VIBRATION-BASED SPEED (vehicle). Preferred over integration whenever the model
             // has been calibrated, because it does not accumulate: road and engine vibration
@@ -2280,8 +2319,14 @@ class WorkoutSession: ObservableObject {
             // Distinguish "in a vehicle but the speed model has not been calibrated yet" from
             // "nothing detected at all" — the first is fixed by driving once with GPS, and the
             // user cannot act on it unless it is named.
-            let inVehicle = vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed
-            sourceTag = inVehicle ? "NEEDS GPS CALIBRATION" : "DR(waiting)"
+            if deviceIsBeingHandled, vibrationSpeed.isCalibrated {
+                // Named explicitly: the model is fine, it just cannot be read through a hand.
+                sourceTag = "DR(in hand)"
+            } else if vehicleContextIsCurrent {
+                sourceTag = vibrationSpeed.isCalibrated ? "DR(waiting)" : "NEEDS GPS CALIBRATION"
+            } else {
+                sourceTag = "DR(waiting)"
+            }
         }
 
         // GLOBAL STATIONARY OVERRIDE. Live data showed "VIB [still] FORCED 17km/h" — the
@@ -2480,6 +2525,7 @@ class WorkoutSession: ObservableObject {
                 // zero a genuinely moving vehicle.
                 self.isDeviceStationaryByActivity = activity.stationary && activity.confidence != .low
                 self.activityIsAutomotive = activity.automotive
+                if activity.automotive { self.lastVehicleEvidenceTime = Date() }
             }
             print("📍 🚗 Activity classifier engaged (stationary/automotive detection)")
         }
@@ -2793,7 +2839,7 @@ class WorkoutSession: ObservableObject {
             // misses a gentle pull-away, and misses entirely a drive already under way when the
             // workout was started.
             if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
-                vehicleConfirmedByGPSSpeed = true
+                vehicleConfirmedByGPSSpeed = true; lastVehicleEvidenceTime = Date()
             }
             if location.speed >= 0, !currentlyStepping,
                (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
@@ -2893,7 +2939,7 @@ class WorkoutSession: ObservableObject {
         // comment there for why "not stepping" alone let walking contaminate the fit, and why
         // GPS speed is admitted as evidence in its own right.
         if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
-            vehicleConfirmedByGPSSpeed = true
+            vehicleConfirmedByGPSSpeed = true; lastVehicleEvidenceTime = Date()
         }
         if location.speed >= 0, !currentlyStepping,
            (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
