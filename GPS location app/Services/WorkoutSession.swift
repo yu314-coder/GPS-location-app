@@ -253,6 +253,9 @@ class WorkoutSession: ObservableObject {
     private var launchMeanNorth: Double = 0
     private var launchMeanEast: Double = 0
     private var launchWindowElapsed: TimeInterval = 0
+    /// Worst horizontal accuracy still worth recording as a route point, in metres. Comfortably
+    /// above a real GPS fix in a city (5–30 m) and far below the ~250 m of a cell-tower position.
+    private let GPS_MAX_USABLE_ACCURACY: Double = 65.0
     private var vehicleLaunchDetected = false
     /// Latched once GPS has directly measured a speed no pedestrian can reach. This is far more
     /// reliable evidence of "in a vehicle" than the inertial launch detector, which infers it
@@ -2892,9 +2895,28 @@ class WorkoutSession: ObservableObject {
 
         // Accept every usable Core Location GPS fix on iPhone/iPad. Distance is
         // calculated from the recorded track without speed, jump, acceleration,
-        // stale-time, or accuracy caps.
+        // or stale-time caps.
         if location.horizontalAccuracy < 0 {
             print("🚫 INVALID GPS (no satellite fix) - REJECTED")
+            return
+        }
+
+        // REJECT COARSE NETWORK POSITIONS.
+        //
+        // When iOS has no satellite fix it still returns a position, derived from cell towers or
+        // Wi-Fi, and reports its accuracy honestly — typically a flat 250 m. There was no
+        // accuracy cap here, so those were recorded as ordinary route points. An exported walk
+        // showed the consequence exactly: 472 fixes, of which 4 were 1 m and 468 were 250.0 m
+        // with no variation at all, and 655 of the 663 m of recorded route came from the coarse
+        // ones. The drawn track wandered off in the wrong direction entirely, not because dead
+        // reckoning failed but because cell-tower noise was being plotted as truth.
+        //
+        // A position uncertain by 250 m cannot describe a walk whose points are metres apart, so
+        // it is not a route point. Treating it as a gap is also what the rest of the system
+        // wants: lastRealLocationTime is deliberately NOT updated below, so the dead-reckoning
+        // fallback engages — which is the correct answer to "GPS is unusable right now".
+        if location.horizontalAccuracy > GPS_MAX_USABLE_ACCURACY {
+            print("🚫 COARSE FIX ±\(Int(location.horizontalAccuracy))m (network, not GPS) - treated as no fix")
             return
         }
 
