@@ -2258,22 +2258,30 @@ class WorkoutSession: ObservableObject {
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
-        } else if vehicleLaunchDetected || activityIsAutomotive {
-            // INTEGRATION IS THE LAST RESORT, and only with positive evidence of vehicle
-            // motion. It used to be the default fallback, so whenever nothing better had
-            // engaged yet it filled the gap with nonsense — a 40 s WALK read 142 km/h because
-            // the pedometer had not reported yet and integration ran unchecked meanwhile.
-            lastFallbackPedometerDistance = fallbackPedometerDistance ?? lastFallbackPedometerDistance
-            distance = ((estimatedFallbackSpeed + nextSpeed) / 2.0) * dt
-            estimatedFallbackSpeed = nextSpeed
         } else {
-            // No trustworthy source yet: pedometer silent, vibration model uncalibrated, and no
-            // vehicle launch seen. Report nothing rather than invent a number. Walking resolves
-            // within seconds once the pedometer reports; a vehicle resolves the moment it pulls
-            // away, since that is a large sustained acceleration.
+            // NO TRUSTWORTHY SOURCE. Report nothing rather than invent a number.
+            //
+            // Raw double-integration of acceleration used to fill this gap, and it is now gone
+            // entirely. It never once produced a usable number in testing: a stationary phone
+            // read 81 km/h and fabricated 273 m in 35 s; a real 20–30 km/h drive read 261; an
+            // 8-minute drive read 252 km/h and invented 7.6 km of route; a 40 s walk read 142.
+            // The reason is structural, not a tuning problem — accelerometer bias is
+            // indistinguishable from sustained real acceleration, and integrating it produces
+            // an error that grows without bound (0.05 m/s² is 11 km/h per minute, and the
+            // residual after bias removal is routinely ten times that). Every wrong-speed
+            // report in testing carried this branch's "DR" tag.
+            //
+            // So speed comes only from sources that MEASURE rather than accumulate: the
+            // pedometer for steps, and the vibration model for vehicles. Until one of those is
+            // available the honest answer is "unknown", which is reported as zero rather than
+            // as a plausible-looking fiction that silently corrupts the route and the totals.
             estimatedFallbackSpeed = 0
             distance = 0
-            sourceTag = "DR(waiting)"
+            // Distinguish "in a vehicle but the speed model has not been calibrated yet" from
+            // "nothing detected at all" — the first is fixed by driving once with GPS, and the
+            // user cannot act on it unless it is named.
+            let inVehicle = vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed
+            sourceTag = inVehicle ? "NEEDS GPS CALIBRATION" : "DR(waiting)"
         }
 
         // GLOBAL STATIONARY OVERRIDE. Live data showed "VIB [still] FORCED 17km/h" — the
