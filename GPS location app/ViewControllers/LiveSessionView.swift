@@ -6,6 +6,7 @@ struct LiveSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var workoutSession = WorkoutSession.shared
     @State private var showStopConfirmation = false
+    @State private var showDebugSheet = false
     @State private var showWorkoutTypeSelector = false
     @State private var selectedWorkoutType: HKWorkoutActivityType = .walking
     @State private var showLogs = false
@@ -631,6 +632,28 @@ struct LiveSessionView: View {
                         }
                         .disabled(!workoutSession.isActive)
 
+                        // In-session debugging. Works with no network: the track is drawn from
+                        // the recorded points rather than fetched map tiles, which is what makes
+                        // it usable in the tunnels, basements and aircraft where velocity mode
+                        // is actually being relied on.
+                        Button(action: { showDebugSheet = true }) {
+                            HStack {
+                                Image(systemName: "waveform.path.ecg")
+                                Text("Debug / Export Logs")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                Text("\(workoutSession.sessionDiagnostics.rowCount)")
+                                    .font(.caption)
+                                    .opacity(0.8)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.teal)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
+                        .disabled(!workoutSession.isActive)
+
                         // Stop tracking
                         Button(action: {
                             showStopConfirmation = true
@@ -687,6 +710,22 @@ struct LiveSessionView: View {
         }
         .sheet(isPresented: $showWorkoutTypeSelector) {
             WorkoutTypeSelectorView(selectedType: $selectedWorkoutType)
+        }
+        .sheet(isPresented: $showDebugSheet) {
+            NavigationStack {
+                SessionDebugView(
+                    locations: workoutSession.flight.locations,
+                    diagnostics: workoutSession.sessionDiagnostics,
+                    statusLine: workoutSession.motionFallbackStatus
+                )
+                .navigationTitle("Session Debug")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showDebugSheet = false }
+                    }
+                }
+            }
         }
         .confirmationDialog("Stop Tracking", isPresented: $showStopConfirmation) {
             Button("Stop & Save", role: .destructive) {

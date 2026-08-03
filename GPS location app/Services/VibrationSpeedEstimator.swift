@@ -99,6 +99,32 @@ final class VibrationSpeedEstimator {
     private let PROVISIONAL_SAMPLES = 12.0
     private let PROVISIONAL_SPEED_SPREAD = 2.5
 
+    /// Everything needed to explain a reported speed after the fact. Offline simulation has
+    /// repeatedly failed to reproduce the speeds seen in the field, so the model's own inputs
+    /// and coefficients are recorded per tick and exported rather than inferred.
+    struct Diagnostics {
+        let feature: Double          // u, the scaled vibration energy driving the estimate
+        let p0: Double, p1: Double, p2: Double
+        let minCalibratedU: Double, maxCalibratedU: Double
+        let minCalibratedSpeed: Double, maxCalibratedSpeed: Double
+        let samples: Double, zeroSamples: Double
+        let isExtrapolating: Bool    // reading above anything GPS ever labelled
+    }
+
+    var diagnostics: Diagnostics {
+        let u = vibrationEnergy * SCALE
+        return Diagnostics(
+            feature: u,
+            p0: p0 ?? .nan, p1: p1, p2: p2,
+            minCalibratedU: minSeenU == .greatestFiniteMagnitude ? .nan : minSeenU,
+            maxCalibratedU: maxSeenU <= 0 ? .nan : maxSeenU,
+            minCalibratedSpeed: minSeenSpeed == .greatestFiniteMagnitude ? .nan : minSeenSpeed,
+            maxCalibratedSpeed: maxSeenSpeed < 0 ? .nan : maxSeenSpeed,
+            samples: n, zeroSamples: nZeroish,
+            isExtrapolating: maxSeenU > 0 && u > maxSeenU
+        )
+    }
+
     var isCalibrated: Bool { p0 != nil }
     /// Distinguishes the provisional fit from the fully-evidenced one, for the status line.
     var isProvisional: Bool { p0 != nil && !fitIsFullyEvidenced }

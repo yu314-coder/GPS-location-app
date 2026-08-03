@@ -172,6 +172,8 @@ class WorkoutSession: ObservableObject {
     /// Speed from the ride's vibration signature — no integration, so no drift. Calibrated
     /// online from GPS while it is available (see VibrationSpeedEstimator).
     private let vibrationSpeed = VibrationSpeedEstimator()
+    /// Per-tick record of what the speed model saw and decided, for export and live inspection.
+    let sessionDiagnostics = SessionDiagnosticsRecorder()
     private var isDeviceStationaryByActivity = false
     private var activityIsAutomotive = false
     private var fallbackPedometerDistance: Double?      // cumulative metres since fallback start
@@ -838,6 +840,7 @@ class WorkoutSession: ObservableObject {
             self?.vibrationSpeed.ingest(ax: north, ay: east, az: up, dt: dt)
         }
         vibrationSpeed.reset()
+        sessionDiagnostics.reset()
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
 
         print("✅ Flight initialized at: \(startDate)")
@@ -2388,6 +2391,38 @@ class WorkoutSession: ObservableObject {
                                       compassText,
                                       offsetText,
                                       estimatedFallbackDistanceAdded)
+
+        // Capture the model's inputs and coefficients alongside the number it produced. Offline
+        // simulation has repeatedly agreed with itself and disagreed with the road, so the
+        // decisive evidence has to come from the device.
+        let vd = vibrationSpeed.diagnostics
+        let lastFix = flight.locations.last(where: { !$0.isEstimated && $0.isValid })
+        sessionDiagnostics.record(.init(
+            t: now,
+            source: sourceTag,
+            activity: activityTag.trimmingCharacters(in: .whitespaces),
+            reportedSpeed: estimatedFallbackSpeed,
+            distanceAdded: distance,
+            heading: headingDegrees,
+            compass: locationManager.currentCompassHeading,
+            offset: compassMisalignment,
+            feature: vd.feature,
+            p0: vd.p0, p1: vd.p1, p2: vd.p2,
+            minCalU: vd.minCalibratedU, maxCalU: vd.maxCalibratedU,
+            minCalSpeed: vd.minCalibratedSpeed, maxCalSpeed: vd.maxCalibratedSpeed,
+            calSamples: vd.samples,
+            extrapolating: vd.isExtrapolating,
+            handlingRotation: handlingRotationLevel,
+            gpsSpeed: lastFix?.speed,
+            gpsAccuracy: lastFix?.horizontalAccuracy,
+            latitude: lastFix?.latitude,
+            longitude: lastFix?.longitude,
+            accelMagnitude: locationManager.currentMotionAcceleration,
+            rotationRate: locationManager.currentRotationRate,
+            pitch: locationManager.currentPitch,
+            roll: locationManager.currentRoll,
+            yaw: locationManager.currentYaw,
+            altitude: locationManager.currentRelativeAltitude))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist
