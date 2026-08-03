@@ -268,8 +268,13 @@ struct SummaryView: View {
 
                 // Action Buttons
                 VStack(spacing: 12) {
+                    // Was a no-op: the action body was an empty TODO, so the button looked
+                    // functional and did nothing. Open the Fitness app for real.
                     Button(action: {
-                        // TODO: Open in Fitness app
+                        if let url = URL(string: "x-apple-health://"),
+                           UIApplication.shared.canOpenURL(url) {
+                            UIApplication.shared.open(url)
+                        }
                     }) {
                         HStack {
                             Image(systemName: "heart.text.square")
@@ -281,6 +286,24 @@ struct SummaryView: View {
                         .foregroundColor(.white)
                         .cornerRadius(12)
                     }
+
+                    // Full per-point sensor data. GPX is a route format with nowhere to put
+                    // acceleration, attitude or the derived headings, which are the fields that
+                    // explain why a speed or direction came out wrong.
+                    Button(action: {
+                        WorkoutDataExporter.export(flight: flight)
+                    }) {
+                        HStack {
+                            Image(systemName: "tablecells")
+                            Text("Export Sensor Data (CSV)")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(flight.locations.isEmpty ? Color.gray : Color.teal)
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                    }
+                    .disabled(flight.locations.isEmpty)
 
                     Button(action: {
                         exportGPX()

@@ -3,12 +3,17 @@ import UIKit
 
 class GPXExporter {
     static func exportToGPX(flight: Flight) -> URL? {
-        guard let metrics = flight.metrics else {
-            print("❌ No metrics available for GPX export")
+        // NO metrics requirement. This used to bail out whenever flight.metrics was nil, which
+        // silently produced nothing at all — the button appeared to do absolutely nothing. The
+        // metrics were never even referenced when building the file: a GPX track is made of the
+        // recorded POINTS, and distance/speed summaries are derived data that belong nowhere in
+        // it. A workout with a route but no stored summary is exactly the case worth exporting.
+        guard !flight.locations.isEmpty else {
+            print("❌ No locations to export")
             return nil
         }
 
-        let gpxContent = generateGPXContent(flight: flight, metrics: metrics)
+        let gpxContent = generateGPXContent(flight: flight, metrics: flight.metrics)
 
         // Create temp file
         let tempDir = FileManager.default.temporaryDirectory
@@ -28,7 +33,7 @@ class GPXExporter {
         }
     }
 
-    private static func generateGPXContent(flight: Flight, metrics: FlightMetrics) -> String {
+    private static func generateGPXContent(flight: Flight, metrics: FlightMetrics?) -> String {
         let dateFormatter = ISO8601DateFormatter()
         dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 

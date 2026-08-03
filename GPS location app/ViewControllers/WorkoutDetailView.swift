@@ -710,6 +710,21 @@ struct WorkoutDetailView: View {
                             .foregroundColor(.white)
                             .cornerRadius(12)
                         }
+
+                        // Everything the sensors recorded per point, which GPX cannot carry.
+                        Button(action: {
+                            WorkoutDataExporter.export(flight: activeFlight)
+                        }) {
+                            HStack {
+                                Image(systemName: "tablecells")
+                                Text("Export Sensor Data (CSV)")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.teal)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
                     }
 
                     // Recalculate Distance button
