@@ -140,10 +140,10 @@ final class VibrationSpeedEstimator {
     // v4: the model is now an intercept-bearing quadratic in the scaled feature. Everything
     // stored by earlier builds is unusable — v2 and v3 both encode a rest baseline that was
     // either pinned at zero by a startup-transient bug or captured mid-drive.
-    private static let keyP0 = "VibrationSpeedEstimator.p0.v7"
-    private static let keyP1 = "VibrationSpeedEstimator.p1.v7"
-    private static let keyP2 = "VibrationSpeedEstimator.p2.v7"
-    private static let keyMaxU = "VibrationSpeedEstimator.maxU.v7"
+    private static let keyP0 = "VibrationSpeedEstimator.p0.v8"
+    private static let keyP1 = "VibrationSpeedEstimator.p1.v8"
+    private static let keyP2 = "VibrationSpeedEstimator.p2.v8"
+    private static let keyMaxU = "VibrationSpeedEstimator.maxU.v8"
     private static let allKeys = [keyP0, keyP1, keyP2, keyMaxU]
 
     /// Start a workout: clear the per-trip signal state but KEEP a previously learned model.
@@ -219,12 +219,10 @@ final class VibrationSpeedEstimator {
         // below it, tyre and engine vibration an order of magnitude above. After this the same
         // test gives 2.0x across the speed range and only 1.2x from driving style — speed is
         // now the dominant term rather than the minor one.
-        // PER-AXIS, and before the magnitude is taken. ‖a‖ is a rectification, so a large
+        // PER-AXIS, before any magnitude is taken. ‖a‖ is a rectification, so a large
         // low-frequency swing (hard braking) folds into broadband content that no high-pass
         // applied AFTER the norm can remove — filtering the magnitude still left a 21 km/h
         // under-read when the fit was calibrated in traffic and then used on a smooth road.
-        // High-passing each axis first removes the dynamics while they are still linear, and
-        // the magnitude of the residual vector is then genuine vibration only.
         let alpha = min(dt / (LOWFREQ_TAU + dt), 1.0)
         lowFreqX += (ax - lowFreqX) * alpha
         lowFreqY += (ay - lowFreqY) * alpha
@@ -234,8 +232,26 @@ final class VibrationSpeedEstimator {
         lowFreq2X += (h1x - lowFreq2X) * alpha
         lowFreq2Y += (h1y - lowFreq2Y) * alpha
         lowFreq2Z += (h1z - lowFreq2Z) * alpha
-        let hx = h1x - lowFreq2X, hy = h1y - lowFreq2Y, hz = h1z - lowFreq2Z
-        let highPassed = sqrt(hx*hx + hy*hy + hz*hz)
+        let hz = h1z - lowFreq2Z
+
+        // VERTICAL ONLY — not the three-axis magnitude.
+        //
+        // The inputs are WORLD-frame (north, east, up), and the device→world rotation is
+        // orthonormal, so ‖a‖ is mathematically invariant to how the phone is pointed. In
+        // practice the reading still depended on orientation, and the reason is gravity.
+        //
+        // Core Motion removes gravity using its attitude estimate. Vibration shakes the phone
+        // ANGULARLY as well as linearly, so that estimate jitters, and a tilt error of δθ spills
+        // 9.81·sin(δθ) of gravity into the HORIZONTAL axes — just 0.01 rad gives 0.098 m/s²,
+        // comparable to the entire road-vibration signal being measured. That error is
+        // first-order in δθ and depends on how the phone is seated, so the horizontal components
+        // carry an orientation-dependent artefact that has nothing to do with speed.
+        //
+        // The vertical axis is second-order insensitive to the same jitter (cos δθ ≈ 1 − δθ²/2),
+        // and it is where road vibration mostly lives anyway, since suspension travel is
+        // vertical. Using it alone makes the feature indifferent to which way the phone faces,
+        // which is exactly the reported failure.
+        let highPassed = abs(hz)
         // Long enough to average the vibration waveform itself (many cycles at 10+ Hz), short
         // enough to still track a real change of speed promptly.
         vibrationEnergy += (highPassed - vibrationEnergy) * min(dt / (0.5 + dt), 1.0)
