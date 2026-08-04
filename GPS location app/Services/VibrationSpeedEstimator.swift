@@ -88,8 +88,15 @@ final class VibrationSpeedEstimator {
     private var fitIsFullyEvidenced = false
 
     /// Enough evidence to trust the full fit: a decent sample count across a real speed spread.
-    private let MIN_SAMPLES = 60.0
-    private let MIN_SPEED_SPREAD = 6.0   // m/s between the slowest and fastest calibration point
+    // Lowered from 60 samples / 6 m/s. A real drive showed why: the model stayed on the
+    // PROVISIONAL fit for the whole trip, and that fit is deliberately linear. Minute-by-minute
+    // the reported speed then sat pinned at 44–58 km/h from minute 4 to minute 15 while the car
+    // was doing 100–110, whereas the slow early minutes varied freely (14–45). Compressing
+    // everything above ~50 into ~50 is precisely what a straight line does to a saturating
+    // feature once it is used past the range it was taught. Two parameters are what represent
+    // that curve, so the bar to earn them must be reachable within one ordinary drive.
+    private let MIN_SAMPLES = 30.0
+    private let MIN_SPEED_SPREAD = 4.0   // m/s between the slowest and fastest calibration point
     // PROVISIONAL fit, used only until the full bar is met, and deliberately LINEAR: a dozen
     // samples over a narrow range cannot condition a curve, and an ill-fitted quadratic can bend
     // the wrong way entirely. A rough line is not accurate, but it is bounded and monotonic in
@@ -264,7 +271,12 @@ final class VibrationSpeedEstimator {
         // real motion. Feeding that in poisoned the fit: a walk produced spurious ~20 km/h
         // "calibration" points that were pure GPS noise, yielding a model that reported
         // vibration-derived speed while the phone sat still.
-        guard horizontalAccuracy >= 0, horizontalAccuracy < 20.0 else { return }
+        // Raised from 20 m. The point of this gate is to keep multipath spikes out of the fit,
+        // and 20 m was strict enough to discard most of a real drive: ordinary motorway GPS runs
+        // 5–15 m but drifts past 20 through interchanges, cuttings and under gantries — exactly
+        // the fast stretches whose absence left the model taught only at city speeds and forced
+        // to extrapolate everywhere else. 35 m still excludes the urban-canyon garbage.
+        guard horizontalAccuracy >= 0, horizontalAccuracy < 35.0 else { return }
         guard speed >= 0 else { return }
         addSample(speed: speed)
     }

@@ -2386,7 +2386,18 @@ class WorkoutSession: ObservableObject {
         // distinguishes "offset never learned, heading free-running" from "offset learned but
         // wrong" — the two need opposite fixes, and previously both looked identical.
         let offsetText = compassMisalignment.map { String(format: "%+.0f", $0) } ?? "--"
-        motionFallbackStatus = String(format: "%@%@%@ %.0fkm/h →%.0f° cmp%@° off%@° +%.0fm",
+        // CALIBRATION COVERAGE, shown whenever vibration is the source. A drive that read ~50
+        // km/h while actually doing 100–110 looked identical, from the status line alone, to a
+        // model that was simply wrong — when in fact it had only ever been taught city speeds
+        // and was extrapolating far past them. "n=NN ≤MM" makes that visible at a glance, and
+        // "!" marks a reading above everything GPS ever labelled.
+        var calText = ""
+        if sourceTag.hasPrefix("VIB") {
+            let d = vibrationSpeed.diagnostics
+            let top = d.maxCalibratedSpeed.isFinite ? Int(d.maxCalibratedSpeed * 3.6) : 0
+            calText = String(format: " n=%.0f≤%dkm/h%@", d.samples, top, d.isExtrapolating ? "!" : "")
+        }
+        motionFallbackStatus = String(format: "%@%@%@ %.0fkm/h →%.0f° cmp%@° off%@° +%.0fm%@",
                                       sourceTag,
                                       activityTag,
                                       forceMotionFallback ? " FORCED" : "",
@@ -2394,7 +2405,8 @@ class WorkoutSession: ObservableObject {
                                       headingDegrees,
                                       compassText,
                                       offsetText,
-                                      estimatedFallbackDistanceAdded)
+                                      estimatedFallbackDistanceAdded,
+                                      calText)
 
         // Capture the model's inputs and coefficients alongside the number it produced. Offline
         // simulation has repeatedly agreed with itself and disagreed with the road, so the
