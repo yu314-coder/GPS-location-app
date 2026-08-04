@@ -2890,6 +2890,27 @@ class WorkoutSession: ObservableObject {
             // all, and the heading free-running on the gyro from its seed. That is why vehicle
             // routes pointed the wrong way even after the offset logic was added.
             learnCompassMisalignment(from: location)
+
+            // THE FIRST POINT, AND ONLY THE FIRST, MAY COME FROM GPS.
+            //
+            // In this mode the track must be dead-reckoned end to end — that is the whole point
+            // of it, and letting later fixes in would mix two sources and hide exactly the
+            // errors it exists to expose. But it still has to START somewhere real: without an
+            // anchor the route was seeded from syntheticFallbackAnchor, i.e. whatever position
+            // happened to be last known, which can be stale or missing entirely and puts the
+            // whole otherwise-correct shape in the wrong place.
+            //
+            // So: one accurate fix, only while no point exists yet, purely as the origin.
+            // lastRealLocationTime is deliberately left alone — GPS is not a distance source
+            // here, and dead reckoning runs unconditionally in this mode anyway.
+            if flight.locations.isEmpty,
+               location.horizontalAccuracy >= 0,
+               location.horizontalAccuracy <= GPS_MAX_USABLE_ACCURACY {
+                let anchor = location.withMotion(
+                    currentMotionSnapshot(movementDirection: validCourse(location.course)))
+                flight.locations.append(anchor)
+                print("📍 🧭 Velocity mode anchored to GPS ±\(Int(location.horizontalAccuracy))m — all later points are dead-reckoned")
+            }
             return
         }
 
