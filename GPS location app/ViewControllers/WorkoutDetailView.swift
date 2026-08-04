@@ -24,6 +24,20 @@ struct WorkoutDetailView: View {
         detailedFlight ?? flight
     }
 
+    /// The flight to EXPORT, which is not always the one to display.
+    ///
+    /// `detailedFlight` is the route re-read from HealthKit, and HealthKit stores plain
+    /// CLLocations. Rebuilding FlightLocations from those silently drops everything the app
+    /// itself recorded: the isEstimated flag and every motion field. An exported walk therefore
+    /// came back with all 571 points marked as real GPS and every acceleration, attitude and
+    /// heading column blank — which is what made a dead-reckoned track look like it had been
+    /// plotted from coarse fixes, and sent a whole build's diagnosis the wrong way.
+    ///
+    /// So prefer the app's OWN record whenever it actually has points.
+    private var exportFlight: Flight {
+        flight.locations.isEmpty ? activeFlight : flight
+    }
+
     private var activityName: String {
         guard let rawValue = activeFlight.workoutType,
               let type = HKWorkoutActivityType(rawValue: rawValue) else {
@@ -713,7 +727,7 @@ struct WorkoutDetailView: View {
 
                         // Everything the sensors recorded per point, which GPX cannot carry.
                         Button(action: {
-                            WorkoutDataExporter.export(flight: activeFlight)
+                            WorkoutDataExporter.export(flight: exportFlight)
                         }) {
                             HStack {
                                 Image(systemName: "tablecells")
@@ -851,7 +865,7 @@ struct WorkoutDetailView: View {
     }
 
     private func exportGPX() {
-        if let url = GPXExporter.exportToGPX(flight: activeFlight) {
+        if let url = GPXExporter.exportToGPX(flight: exportFlight) {
             gpxFileURL = url
             showingShareSheet = true
         }

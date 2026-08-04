@@ -253,9 +253,10 @@ class WorkoutSession: ObservableObject {
     private var launchMeanNorth: Double = 0
     private var launchMeanEast: Double = 0
     private var launchWindowElapsed: TimeInterval = 0
-    /// Worst horizontal accuracy still worth recording as a route point, in metres. Comfortably
-    /// above a real GPS fix in a city (5–30 m) and far below the ~250 m of a cell-tower position.
-    private let GPS_MAX_USABLE_ACCURACY: Double = 65.0
+    /// Worst horizontal accuracy still worth recording as a route point, in metres. Set loosely
+    /// on purpose: weak urban GPS legitimately reaches 50–100 m and is still far better than
+    /// dead reckoning, so only genuinely unusable fixes are dropped.
+    private let GPS_MAX_USABLE_ACCURACY: Double = 150.0
     private var vehicleLaunchDetected = false
     /// Latched once GPS has directly measured a speed no pedestrian can reach. This is far more
     /// reliable evidence of "in a vehicle" than the inertial launch detector, which infers it
@@ -2922,22 +2923,23 @@ class WorkoutSession: ObservableObject {
             return
         }
 
-        // REJECT COARSE NETWORK POSITIONS.
+        // REJECT UNUSABLY COARSE POSITIONS.
         //
-        // When iOS has no satellite fix it still returns a position, derived from cell towers or
-        // Wi-Fi, and reports its accuracy honestly — typically a flat 250 m. There was no
-        // accuracy cap here, so those were recorded as ordinary route points. An exported walk
-        // showed the consequence exactly: 472 fixes, of which 4 were 1 m and 468 were 250.0 m
-        // with no variation at all, and 655 of the 663 m of recorded route came from the coarse
-        // ones. The drawn track wandered off in the wrong direction entirely, not because dead
-        // reckoning failed but because cell-tower noise was being plotted as truth.
+        // CORRECTION to the previous build. That change claimed an exported walk proved the app
+        // was plotting cell-tower fixes, because 468 of its 472 points carried 250 m accuracy.
+        // That reading was WRONG: 250.0 is this file's own ESTIMATED_LOCATION_*_ACCURACY, those
+        // points were the app's dead-reckoned output, and they never passed through here at all
+        // (appendEstimatedLocation adds them directly). They also carried valid courses, which a
+        // network fix does not. The mistake came from the export mislabelling them — see the
+        // HealthKit rebuild that drops isEstimated.
         //
-        // A position uncertain by 250 m cannot describe a walk whose points are metres apart, so
-        // it is not a route point. Treating it as a gap is also what the rest of the system
-        // wants: lastRealLocationTime is deliberately NOT updated below, so the dead-reckoning
-        // fallback engages — which is the correct answer to "GPS is unusable right now".
+        // A cap is still worth having on its own merits: a fix uncertain by hundreds of metres
+        // cannot describe a route whose points are metres apart, and treating it as a gap lets
+        // dead reckoning take over, which is the right answer to "GPS is unusable". But it is
+        // now set from that reasoning alone rather than from evidence of a problem, so it is
+        // deliberately loose — weak urban GPS legitimately reaches 50–100 m and must survive.
         if location.horizontalAccuracy > GPS_MAX_USABLE_ACCURACY {
-            print("🚫 COARSE FIX ±\(Int(location.horizontalAccuracy))m (network, not GPS) - treated as no fix")
+            print("🚫 UNUSABLE FIX ±\(Int(location.horizontalAccuracy))m - treated as no fix")
             return
         }
 
