@@ -13,7 +13,7 @@ struct StaticMapView: View {
         // Calculate initial region to fit all locations
         if let first = locations.first {
             _position = State(initialValue: .region(MKCoordinateRegion(
-                center: first.toCLLocation().coordinate,
+                center: first.toCLLocation().coordinate.forAppleBasemap,
                 span: MKCoordinateSpan(latitudeDelta: 1.0, longitudeDelta: 1.0)
             )))
         } else {
@@ -29,13 +29,13 @@ struct StaticMapView: View {
             Map(position: $position) {
                 // Draw route polyline
                 if locations.count > 1 {
-                    MapPolyline(coordinates: locations.map { $0.toCLLocation().coordinate })
+                    MapPolyline(coordinates: locations.map { $0.toCLLocation().coordinate.forAppleBasemap })
                         .stroke(.blue, lineWidth: 3)
                 }
 
                 // Start marker (green)
                 if let first = locations.first {
-                    Annotation("Start", coordinate: first.toCLLocation().coordinate) {
+                    Annotation("Start", coordinate: first.toCLLocation().coordinate.forAppleBasemap) {
                         ZStack {
                             Circle()
                                 .fill(.green)
@@ -49,7 +49,7 @@ struct StaticMapView: View {
 
                 // End marker (red)
                 if let last = locations.last, locations.count > 1 {
-                    Annotation("End", coordinate: last.toCLLocation().coordinate) {
+                    Annotation("End", coordinate: last.toCLLocation().coordinate.forAppleBasemap) {
                         ZStack {
                             Circle()
                                 .fill(.red)
@@ -75,7 +75,7 @@ struct StaticMapView: View {
     private func fitRegionToRoute() {
         guard !locations.isEmpty else { return }
 
-        let coordinates = locations.map { $0.toCLLocation().coordinate }
+        let coordinates = locations.map { $0.toCLLocation().coordinate.forAppleBasemap }
 
         let minLat = coordinates.map { $0.latitude }.min() ?? 0
         let maxLat = coordinates.map { $0.latitude }.max() ?? 0

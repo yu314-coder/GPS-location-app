@@ -86,7 +86,10 @@ private struct TracksMapLayer: UIViewRepresentable {
     }
 
     private func displayCoordinates(for track: WorkoutMapTrack) -> [CLLocationCoordinate2D] {
-        roadAlignedCoordinates[track.id] ?? track.coordinates
+        // Shifted for Apple's basemap as the LAST step before drawing. Inside mainland China
+        // that basemap is GCJ-02 while every stored coordinate is WGS-84, so a true position
+        // lands a few hundred metres off its road unless converted. No-op elsewhere.
+        (roadAlignedCoordinates[track.id] ?? track.coordinates).forAppleBasemap
     }
 
     private func rebuildOverlays(on map: MKMapView) {
@@ -223,8 +226,12 @@ struct WorkoutMapView: View {
         }
 
         var region: MKCoordinateRegion {
+            // The centre is shifted too, not just the drawn line: these bounds come from stored
+            // WGS-84 points, so an unshifted centre would frame the map a few hundred metres away
+            // from the route that is now drawn in GCJ-02, inside mainland China.
             MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2),
+                center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2,
+                                               longitude: (minLon + maxLon) / 2).forAppleBasemap,
                 span: MKCoordinateSpan(latitudeDelta: max((maxLat - minLat) * 1.25, 0.01),
                                        longitudeDelta: max((maxLon - minLon) * 1.25, 0.01))
             )
@@ -732,7 +739,7 @@ struct WorkoutMapView: View {
             // a single multi-polyline far faster than thousands of separate
             // overlays — this is what lets the map show every route smoothly.
             let multi = MKMultiPolyline(loaded.map { track in
-                MKPolyline(coordinates: track.coordinates, count: track.coordinates.count)
+                MKPolyline(coordinates: track.coordinates.forAppleBasemap, count: track.coordinates.count)
             })
 
             DispatchQueue.main.async {
@@ -901,7 +908,10 @@ struct WorkoutMapView: View {
     }
 
     private func displayCoordinates(for track: WorkoutMapTrack) -> [CLLocationCoordinate2D] {
-        roadAlignedCoordinates[track.id] ?? track.coordinates
+        // Shifted for Apple's basemap as the LAST step before drawing. Inside mainland China
+        // that basemap is GCJ-02 while every stored coordinate is WGS-84, so a true position
+        // lands a few hundred metres off its road unless converted. No-op elsewhere.
+        (roadAlignedCoordinates[track.id] ?? track.coordinates).forAppleBasemap
     }
 
     private func applyFit(_ region: MKCoordinateRegion?) {

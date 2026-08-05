@@ -12,13 +12,13 @@ struct LiveMapView: View {
         Map(position: $position) {
             // Start marker
             if let first = locations.first {
-                Marker("Start", coordinate: first.toCLLocation().coordinate)
+                Marker("Start", coordinate: first.toCLLocation().coordinate.forAppleBasemap)
                     .tint(.green)
             }
 
             // Current position marker
             if let current = currentLocation {
-                Annotation("Current", coordinate: current.coordinate) {
+                Annotation("Current", coordinate: current.coordinate.forAppleBasemap) {
                     CurrentPositionMarker()
                 }
             }
@@ -49,7 +49,7 @@ struct LiveMapView: View {
     private func updateRegion(for location: CLLocation) {
         withAnimation {
             position = .region(MKCoordinateRegion(
-                center: location.coordinate,
+                center: location.coordinate.forAppleBasemap,
                 span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
             ))
         }
@@ -59,7 +59,7 @@ struct LiveMapView: View {
         if let location = currentLocation {
             withAnimation {
                 position = .region(MKCoordinateRegion(
-                    center: location.coordinate,
+                    center: location.coordinate.forAppleBasemap,
                     span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
                 ))
             }
