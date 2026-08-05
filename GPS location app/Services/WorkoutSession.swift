@@ -211,6 +211,24 @@ class WorkoutSession: ObservableObject {
     /// the PCA walking axis. The compass alone measures device orientation, so this offset is
     /// what turns it into a usable absolute datum for travel direction.
     private var compassMisalignment: Double?
+
+    /// The compass offset to actually apply, and how hard to pull toward it.
+    ///
+    /// Until this build, a nil misalignment meant NO compass correction at all — every
+    /// correction site was gated behind `if let`. Heading then free-ran on the gyro from
+    /// whatever it was seeded with, and integrated turn rate has no absolute datum, so an
+    /// initial error simply persisted. A 0.22 km walk recorded heading east while the walk went
+    /// north: the shape was right, the datum was never established, and nothing could ever pull
+    /// it back. That is the worst of both worlds, because the magnetometer WAS available.
+    ///
+    /// Zero is a far better prior than "the seed was correct": it says the phone points roughly
+    /// where you are going, which is true for a hand-held phone and merely imprecise otherwise,
+    /// whereas a free-running gyro is unbounded. Applied at half gain so a genuinely learned
+    /// offset, which is a real measurement of body-versus-device orientation, always wins.
+    private var effectiveCompassMisalignment: (value: Double, gain: Double) {
+        if let learned = compassMisalignment { return (learned, COMPASS_CORRECTION_GAIN) }
+        return (0, COMPASS_CORRECTION_GAIN * 0.5)
+    }
     /// Whether the heading seed came from a real GPS course rather than the compass, and where
     /// the compass-seeded run begins, so it can be rotated once the truth is known.
     private var headingSeedWasMeasured = false
@@ -2172,25 +2190,25 @@ class WorkoutSession: ObservableObject {
             // but has NO drift, which is the exact complement of the gyro: gyro for fast turns,
             // compass for the long-run truth. Correct slowly so it never fights a real turn,
             // and only while NOT turning (a turn swings the compass through its own transient).
-            if !turningNow, let compass = locationManager.currentCompassHeading,
-               let misalignment = compassMisalignment {
+            if !turningNow, let compass = locationManager.currentCompassHeading {
+                let (misalignment, gain) = effectiveCompassMisalignment
                 // Target = where the phone points PLUS how the body is offset from it.
                 let target = normalizedHeading(compass + misalignment)
                 var err = target - motionHeadingDegrees
                 if err > 180 { err -= 360 } else if err < -180 { err += 360 }
-                motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN * err)
+                motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + gain * err)
             }
             resolvedHeading = motionHeadingDegrees
         }
         if let rh = resolvedHeading { motionHeadingDegrees = rh }
         // ABSOLUTE DATUM, ALWAYS. Applied outside the branches above so a diverged velocity
         // vector can never lock the heading away from the only drift-free reference we have.
-        if let compass = locationManager.currentCompassHeading,
-           let misalignment = compassMisalignment {
+        if let compass = locationManager.currentCompassHeading {
+            let (misalignment, gain) = effectiveCompassMisalignment
             let target = normalizedHeading(compass + misalignment)
             var err = target - motionHeadingDegrees
             if err > 180 { err -= 360 } else if err < -180 { err += 360 }
-            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN * err)
+            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + gain * err)
             resolvedHeading = motionHeadingDegrees
         }
         // NOTE: the velocity vector no longer snaps the heading either. It is a product of the
@@ -2388,7 +2406,9 @@ class WorkoutSession: ObservableObject {
         // Heading is corrected toward compass + offset, so if the route points wrong this
         // distinguishes "offset never learned, heading free-running" from "offset learned but
         // wrong" — the two need opposite fixes, and previously both looked identical.
-        let offsetText = compassMisalignment.map { String(format: "%+.0f", $0) } ?? "--"
+        // "~0" means no offset has been learned yet and zero is being ASSUMED, which is very
+        // different from a measured offset that happens to be near zero.
+        let offsetText = compassMisalignment.map { String(format: "%+.0f", $0) } ?? "~0"
         // CALIBRATION COVERAGE, shown whenever vibration is the source. A drive that read ~50
         // km/h while actually doing 100–110 looked identical, from the status line alone, to a
         // model that was simply wrong — when in fact it had only ever been taught city speeds
