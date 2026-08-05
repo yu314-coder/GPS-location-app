@@ -31,7 +31,17 @@ final class VibrationSpeedEstimator {
     private var lowFreq2X: Double = 0
     private var lowFreq2Y: Double = 0
     private var lowFreq2Z: Double = 0
-    private var vibrationEnergy: Double = 0        // smoothed |high-passed ‖a‖|, the feature
+    private var vibrationEnergy: Double = 0        // the feature: dominant vibration FREQUENCY, Hz
+    /// Previous high-passed vertical sample, for the derivative.
+    private var prevHighPassed: Double = 0
+    /// Smoothed |x| and |dx/dt| of the high-passed vertical signal. Their ratio is a frequency
+    /// and, crucially, is INDEPENDENT OF AMPLITUDE — it cancels in the division.
+    private var ampEMA: Double = 0
+    private var derivEMA: Double = 0
+    /// Below this the high-passed signal is sensor noise rather than road vibration, and a
+    /// frequency computed from noise is meaningless (it tends toward Nyquist, which would read
+    /// as enormous speed while parked). Treated as zero instead.
+    private let VIBRATION_NOISE_FLOOR = 0.02
     private var initialised = false
     /// High-pass corner. An EMA tracks everything below 1/(2πτ) ≈ 3.2 Hz, so subtracting it
     /// leaves only what is above that. See ingest() for why this matters so much.
@@ -43,7 +53,7 @@ final class VibrationSpeedEstimator {
 
     /// The feature is O(0.1). Raising it to O(1) before forming the regression's power sums
     /// keeps Σu⁴ from underflowing into the noise and makes the conditioning test meaningful.
-    private let SCALE = 10.0
+    private let SCALE = 1.0   // the feature is now a frequency in Hz, already O(1–20)
 
     // THE FIT ------------------------------------------------------------------------------
     //
@@ -147,15 +157,15 @@ final class VibrationSpeedEstimator {
     // v4: the model is now an intercept-bearing quadratic in the scaled feature. Everything
     // stored by earlier builds is unusable — v2 and v3 both encode a rest baseline that was
     // either pinned at zero by a startup-transient bug or captured mid-drive.
-    private static let keyP0 = "VibrationSpeedEstimator.p0.v8"
-    private static let keyP1 = "VibrationSpeedEstimator.p1.v8"
-    private static let keyP2 = "VibrationSpeedEstimator.p2.v8"
-    private static let keyMaxU = "VibrationSpeedEstimator.maxU.v8"
+    private static let keyP0 = "VibrationSpeedEstimator.p0.v9"
+    private static let keyP1 = "VibrationSpeedEstimator.p1.v9"
+    private static let keyP2 = "VibrationSpeedEstimator.p2.v9"
+    private static let keyMaxU = "VibrationSpeedEstimator.maxU.v9"
     private static let allKeys = [keyP0, keyP1, keyP2, keyMaxU]
 
     /// Start a workout: clear the per-trip signal state but KEEP a previously learned model.
     func reset() {
-        lowFreqX = 0; lowFreqY = 0; lowFreqZ = 0; lowFreq2X = 0; lowFreq2Y = 0; lowFreq2Z = 0; vibrationEnergy = 0; initialised = false; ingestElapsed = 0
+        lowFreqX = 0; lowFreqY = 0; lowFreqZ = 0; lowFreq2X = 0; lowFreq2Y = 0; lowFreq2Z = 0; vibrationEnergy = 0; prevHighPassed = 0; ampEMA = 0; derivEMA = 0; initialised = false; ingestElapsed = 0
         n = 0; nZeroish = 0
         sumU = 0; sumU2 = 0; sumU3 = 0; sumU4 = 0
         sumS = 0; sumUS = 0; sumU2S = 0
@@ -258,7 +268,35 @@ final class VibrationSpeedEstimator {
         // and it is where road vibration mostly lives anyway, since suspension travel is
         // vertical. Using it alone makes the feature indifferent to which way the phone faces,
         // which is exactly the reported failure.
-        let highPassed = abs(hz)
+        // FREQUENCY, NOT AMPLITUDE. This is the substantive change.
+        //
+        // Amplitude was measured and found not to carry the speed. On a real drive the model was
+        // fully calibrated — 342 samples, a quadratic fit, GPS-labelled up to 116 km/h, and not
+        // extrapolating — and still reported 35 km/h at a true 100. A well-conditioned fit
+        // cannot be wrong by 3x INSIDE its own range unless the input does not determine the
+        // output. The exported data agreed: acceleration magnitude averaged 0.5–1.5 m/s² at a
+        // reported 17–28 km/h and 1.0–1.4 at a reported 36–44, i.e. flat. Vibration amplitude is
+        // set by how rough the road is, and road roughness varies more than speed does.
+        //
+        // Frequency does not have that problem. Tyre and suspension excitation is driven by
+        // wheel rotation, f = v / 2πr, so a 0.32 m wheel gives ~4.8 Hz at 35 km/h and ~13.8 Hz
+        // at 100 km/h — proportional to speed by construction, well inside the 50 Hz sampling,
+        // and indifferent to how hard the road is shaking the phone.
+        //
+        // Estimated without an FFT: for a narrowband signal, E|ẋ| / E|x| ≈ 2πf. Amplitude
+        // appears in both terms and cancels, which is exactly the property amplitude-based
+        // sensing lacked.
+        let derivative = (hz - prevHighPassed) / dt
+        prevHighPassed = hz
+        let smooth = min(dt / (0.5 + dt), 1.0)
+        ampEMA += (abs(hz) - ampEMA) * smooth
+        derivEMA += (abs(derivative) - derivEMA) * smooth
+        // Below the noise floor there is no vibration to measure a frequency of, and noise would
+        // read near Nyquist — a parked car reporting a huge speed. Report zero and let the fit's
+        // intercept handle rest.
+        let highPassed = ampEMA > VIBRATION_NOISE_FLOOR
+            ? derivEMA / (2 * Double.pi * ampEMA)
+            : 0.0
         // Long enough to average the vibration waveform itself (many cycles at 10+ Hz), short
         // enough to still track a real change of speed promptly.
         vibrationEnergy += (highPassed - vibrationEnergy) * min(dt / (0.5 + dt), 1.0)
