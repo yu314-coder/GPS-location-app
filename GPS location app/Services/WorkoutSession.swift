@@ -256,6 +256,9 @@ class WorkoutSession: ObservableObject {
     /// Worst horizontal accuracy still worth recording as a route point, in metres. Set loosely
     /// on purpose: weak urban GPS legitimately reaches 50–100 m and is still far better than
     /// dead reckoning, so only genuinely unusable fixes are dropped.
+    /// Worst accuracy still accepted as the velocity-mode ANCHOR only. There is deliberately no
+    /// cap on ordinary GPS recording (see processNewLocation); this exists solely so the single
+    /// origin point of a dead-reckoned track is not placed by a wildly uncertain fix.
     private let GPS_MAX_USABLE_ACCURACY: Double = 150.0
     private var vehicleLaunchDetected = false
     /// Latched once GPS has directly measured a speed no pedestrian can reach. This is far more
@@ -2935,26 +2938,17 @@ class WorkoutSession: ObservableObject {
             return
         }
 
-        // REJECT UNUSABLY COARSE POSITIONS.
+        // NO ACCURACY CAP. One was added two builds ago and is now removed entirely.
         //
-        // CORRECTION to the previous build. That change claimed an exported walk proved the app
-        // was plotting cell-tower fixes, because 468 of its 472 points carried 250 m accuracy.
-        // That reading was WRONG: 250.0 is this file's own ESTIMATED_LOCATION_*_ACCURACY, those
-        // points were the app's dead-reckoned output, and they never passed through here at all
-        // (appendEstimatedLocation adds them directly). They also carried valid courses, which a
-        // network fix does not. The mistake came from the export mislabelling them — see the
-        // HealthKit rebuild that drops isEstimated.
+        // It rested on a misreading — 250 m points in an export were this app's own
+        // dead-reckoned output, not cell-tower fixes — and with the premise gone the cap had no
+        // evidence behind it. It then broke normal GPS recording outright: this guard sits
+        // BEFORE lastRealLocationTime is set, so a rejected fix is neither recorded nor counted
+        // as a fix, and since raw integration was removed an uncalibrated speed model
+        // contributes nothing either. A weak-signal walk therefore recorded absolutely nothing.
         //
-        // A cap is still worth having on its own merits: a fix uncertain by hundreds of metres
-        // cannot describe a route whose points are metres apart, and treating it as a gap lets
-        // dead reckoning take over, which is the right answer to "GPS is unusable". But it is
-        // now set from that reasoning alone rather than from evidence of a problem, so it is
-        // deliberately loose — weak urban GPS legitimately reaches 50–100 m and must survive.
-        if location.horizontalAccuracy > GPS_MAX_USABLE_ACCURACY {
-            print("🚫 UNUSABLE FIX ±\(Int(location.horizontalAccuracy))m - treated as no fix")
-            return
-        }
-
+        // A degraded fix is still enormously more informative about position than no fix at all,
+        // which is what the alternative amounts to. Accept whatever Core Location can supply.
         if isUsingEstimatedLocationFallback {
             reanchorAfterEstimatedFallback(with: location)
             return

@@ -41,7 +41,13 @@ final class VibrationSpeedEstimator {
     /// Below this the high-passed signal is sensor noise rather than road vibration, and a
     /// frequency computed from noise is meaningless (it tends toward Nyquist, which would read
     /// as enormous speed while parked). Treated as zero instead.
-    private let VIBRATION_NOISE_FLOOR = 0.02
+    /// Set low on purpose. This is the one constant here chosen by reasoning rather than
+    /// measurement, and at 0.02 it was high enough to silence a quiet car: the feature read zero
+    /// while moving, which reported zero speed and — because a zero sample was also being
+    /// discarded by the fit — prevented calibration from ever starting. 0.003 is close to the
+    /// accelerometer's own noise after a two-pole high-pass, so it still catches a parked car
+    /// without swallowing a smooth-riding one.
+    private let VIBRATION_NOISE_FLOOR = 0.003
     private var initialised = false
     /// High-pass corner. An EMA tracks everything below 1/(2πτ) ≈ 3.2 Hz, so subtracting it
     /// leaves only what is above that. See ingest() for why this matters so much.
@@ -322,7 +328,16 @@ final class VibrationSpeedEstimator {
     private func addSample(speed: Double) {
         // Before warm-up the feature is still climbing out of its zero seed, so it describes the
         // filter's initial condition rather than the ride.
-        guard initialised, ingestElapsed >= FEATURE_WARMUP_SECONDS, vibrationEnergy > 1e-4 else { return }
+        // A ZERO FEATURE IS A VALID OBSERVATION, and rejecting it deadlocked the model.
+        //
+        // The feature used to be an amplitude, where zero meant "nothing measured yet", so a
+        // zero was worth discarding. It is now a frequency, and zero is what the noise floor
+        // deliberately reports when the vehicle is at rest — exactly the samples that pin the
+        // intercept. Worse, if the floor was ever too high for a quiet car the feature read zero
+        // WHILE MOVING, every sample was then thrown away here, calibration could never begin,
+        // and with raw integration gone the speed stayed at zero for the whole trip with no way
+        // out. Let the value through and let the fit judge it.
+        guard initialised, ingestElapsed >= FEATURE_WARMUP_SECONDS else { return }
 
         // Stopped samples are what pin the zero end, but a long wait at a light would otherwise
         // pile up thousands of them and flatten the curve toward a constant.
