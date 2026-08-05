@@ -1054,6 +1054,22 @@ extension LocationManager: CLLocationManagerDelegate {
             if abs(d) <= 45 { magneticDeclinationDegrees = d }
         }
 
+        // TRUST THE MAGNETOMETER ONLY WHEN IT SAYS IT IS TRUSTWORTHY.
+        //
+        // headingAccuracy was never consulted, so the compass was believed unconditionally.
+        // CLHeading reports a NEGATIVE accuracy when the reading is invalid, and a large one
+        // when the magnetometer is disturbed — which happens constantly in the places this app
+        // is used: beside vehicles, reinforced concrete, lifts, and the steel in a car itself.
+        // Heading is corrected toward the compass every tick, so a transient swing is not a
+        // brief wobble in the output: dead reckoning integrates position along that heading, so
+        // the track leaves the road and comes back, and the road-alignment pass then snaps the
+        // excursion onto a neighbouring street and draws it as a confident detour that was never
+        // walked. Ignoring a disturbed reading leaves the gyro to carry heading for those few
+        // seconds, which is exactly what a gyro is good at over short intervals.
+        guard newHeading.headingAccuracy >= 0, newHeading.headingAccuracy <= 25 else {
+            return
+        }
+
         currentCompassHeading = heading
         onCompassHeadingUpdate?(heading, Date())
     }

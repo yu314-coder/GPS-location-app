@@ -274,10 +274,15 @@ class WorkoutSession: ObservableObject {
     /// Worst horizontal accuracy still worth recording as a route point, in metres. Set loosely
     /// on purpose: weak urban GPS legitimately reaches 50–100 m and is still far better than
     /// dead reckoning, so only genuinely unusable fixes are dropped.
-    /// Worst accuracy still accepted as the velocity-mode ANCHOR only. There is deliberately no
-    /// cap on ordinary GPS recording (see processNewLocation); this exists solely so the single
-    /// origin point of a dead-reckoned track is not placed by a wildly uncertain fix.
+    /// Worst accuracy still accepted as the velocity-mode ANCHOR, so the single origin point of
+    /// a dead-reckoned track is not placed by a wildly uncertain fix.
     private let GPS_MAX_USABLE_ACCURACY: Double = 150.0
+    /// A fix this poor is dropped, but ONLY while a better one is still recent — see
+    /// processNewLocation for why an unconditional cap is wrong in both directions.
+    private let POOR_FIX_ACCURACY: Double = 100.0
+    /// Accuracy that counts as "GPS is working", which is what makes dropping a bad fix safe.
+    private let GOOD_FIX_ACCURACY: Double = 35.0
+    private var lastGoodAccuracyFixTime: Date = .distantPast
     private var vehicleLaunchDetected = false
     /// Latched once GPS has directly measured a speed no pedestrian can reach. This is far more
     /// reliable evidence of "in a vehicle" than the inertial launch detector, which infers it
@@ -845,6 +850,7 @@ class WorkoutSession: ObservableObject {
         flight.workoutType = workoutType.rawValue
         isActive = true
         lastRealLocationTime = startDate
+        lastGoodAccuracyFixTime = .distantPast
         isUsingEstimatedLocationFallback = false
         lastEstimatedFallbackTick = nil
         estimatedFallbackSpeed = 0.0
@@ -1808,6 +1814,7 @@ class WorkoutSession: ObservableObject {
         isActive = true
         isPaused = false
         lastRealLocationTime = startDate
+        lastGoodAccuracyFixTime = .distantPast
 
         // Seed a real starting fix so the estimated points have an anchor to project from.
         let seed = CLLocation(
@@ -2958,17 +2965,32 @@ class WorkoutSession: ObservableObject {
             return
         }
 
-        // NO ACCURACY CAP. One was added two builds ago and is now removed entirely.
+        // CONDITIONAL accuracy rejection: drop a bad fix only when something better is actually
+        // available to take its place.
         //
-        // It rested on a misreading — 250 m points in an export were this app's own
-        // dead-reckoned output, not cell-tower fixes — and with the premise gone the cap had no
-        // evidence behind it. It then broke normal GPS recording outright: this guard sits
-        // BEFORE lastRealLocationTime is set, so a rejected fix is neither recorded nor counted
-        // as a fix, and since raw integration was removed an uncalibrated speed model
-        // contributes nothing either. A weak-signal walk therefore recorded absolutely nothing.
+        // A flat cap failed in both directions. Rejecting everything above a threshold broke
+        // recording outright — this runs BEFORE lastRealLocationTime is set, so a rejected fix
+        // is neither recorded nor counted as a fix, and with raw integration removed an
+        // uncalibrated speed model adds nothing either, so a weak-signal walk recorded nothing
+        // at all. Removing the cap entirely then let single wild fixes back into the track, and
+        // those are worse than they look: the road-alignment pass snaps the trace to OSM
+        // geometry, so one excursion does not stay a small wobble — it gets matched onto a
+        // neighbouring road and drawn as a confident detour that was never walked.
         //
-        // A degraded fix is still enormously more informative about position than no fix at all,
-        // which is what the alternative amounts to. Accept whatever Core Location can supply.
+        // The distinction that matters is not how bad the fix is, but whether we can afford to
+        // ignore it. With a good fix in the last 30 s the previous position and dead reckoning
+        // together cover the gap, so a wild one is pure noise and is dropped. With nothing
+        // better recently, even a poor fix is far more informative than no position at all, so
+        // it is kept.
+        let hasRecentGoodFix = Date().timeIntervalSince(lastGoodAccuracyFixTime) < 30.0
+        if location.horizontalAccuracy > POOR_FIX_ACCURACY, hasRecentGoodFix {
+            print("🚫 NOISY FIX ±\(Int(location.horizontalAccuracy))m dropped (good fix still recent)")
+            return
+        }
+        if location.horizontalAccuracy <= GOOD_FIX_ACCURACY {
+            lastGoodAccuracyFixTime = Date()
+        }
+
         if isUsingEstimatedLocationFallback {
             reanchorAfterEstimatedFallback(with: location)
             return
