@@ -877,7 +877,11 @@ class WorkoutSession: ObservableObject {
         // matter — which is precisely why this path is immune to the attitude errors that
         // corrupt integration.
         locationManager.onWorldAccelSampleSecondary = { [weak self] north, east, up, _, dt in
-            self?.vibrationSpeed.ingest(ax: north, ay: east, az: up, dt: dt)
+            guard let self else { return }
+            self.vibrationSpeed.ingest(ax: north, ay: east, az: up, dt: dt)
+            // Keep the raw vertical trace alongside the model's own view of it. Everything the
+            // estimator computes is a lossy summary; a spectrum can only be taken from this.
+            self.sessionDiagnostics.recordRaw(verticalAccel: up, at: Date())
         }
         vibrationSpeed.reset()
         sessionDiagnostics.reset()
@@ -2976,6 +2980,7 @@ class WorkoutSession: ObservableObject {
             // running pace, so this needs no help from the inertial launch detector — which
             // misses a gentle pull-away, and misses entirely a drive already under way when the
             // workout was started.
+            sessionDiagnostics.latestGPSSpeed = location.speed
             if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
                 vehicleConfirmedByGPSSpeed = true; lastVehicleEvidenceTime = Date()
             }
@@ -3120,6 +3125,7 @@ class WorkoutSession: ObservableObject {
         // lost, which is when it has to carry the estimate. Never while actively stepping — see
         // the FORCED-mode calibration call above for why.
         let currentlyStepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
+        sessionDiagnostics.latestGPSSpeed = location.speed
         // Same vehicle-evidence gate as the Force-Velocity calibration call above — see the
         // comment there for why "not stepping" alone let walking contaminate the fit, and why
         // GPS speed is admitted as evidence in its own right.

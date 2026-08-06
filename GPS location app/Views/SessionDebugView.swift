@@ -119,7 +119,7 @@ struct SessionDebugView: View {
                 Button {
                     diagnostics.exportCSV()
                 } label: {
-                    Label("Export \(diagnostics.rowCount) rows (CSV)", systemImage: "square.and.arrow.up")
+                    Label("Export \(diagnostics.rowCount) rows + \(diagnostics.rawCount) raw samples", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)

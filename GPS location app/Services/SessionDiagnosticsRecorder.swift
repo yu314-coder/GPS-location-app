@@ -52,6 +52,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
 
     func reset() {
         rows.removeAll(keepingCapacity: true)
+        raw.removeAll(keepingCapacity: true)
+        rawStart = nil
         rowCount = 0
         latest = nil
     }
@@ -64,6 +66,51 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     }
 
     var isEmpty: Bool { rows.isEmpty }
+
+    // MARK: - Raw high-rate capture
+    //
+    // Three different vibration features have now been designed, shipped and failed: amplitude
+    // (turned out to measure road roughness), the E|ẋ|/E|x| frequency ratio (constant on a
+    // broadband signal), and a 2–18 Hz band centroid (barely moved — a real drive at 40–100 km/h
+    // reported a 15–26 km/h span). Each was validated against a synthetic signal that encoded
+    // the very assumption under test, so each test passed and each feature failed on the road.
+    //
+    // A fourth guess is not worth shipping. What is missing is the actual spectrum of this
+    // phone in this car: whether a wheel-rotation peak exists above the broadband road noise at
+    // all, and if so where it sits and how it moves with speed. That is answerable in one drive
+    // from the raw samples, and answerable no other way. So capture them.
+    //
+    // 50 Hz vertical acceleration with the GPS speed at that moment. ~30 minutes at a bounded
+    // 90k samples; the oldest are dropped rather than growing without limit.
+    struct RawSample {
+        let t: TimeInterval        // seconds since capture start
+        let verticalAccel: Double  // world-frame, gravity removed, m/s²
+        let gpsSpeed: Double       // m/s, negative when unknown
+    }
+    private var raw: [RawSample] = []
+    private let rawCapacity = 90_000
+    private var rawStart: Date?
+    /// GPS speed most recently seen, stamped onto raw samples so the two can be correlated.
+    var latestGPSSpeed: Double = -1
+
+    func recordRaw(verticalAccel: Double, at time: Date) {
+        if rawStart == nil { rawStart = time }
+        guard let start = rawStart else { return }
+        raw.append(RawSample(t: time.timeIntervalSince(start),
+                             verticalAccel: verticalAccel,
+                             gpsSpeed: latestGPSSpeed))
+        if raw.count > rawCapacity { raw.removeFirst(raw.count - rawCapacity) }
+    }
+
+    var rawCount: Int { raw.count }
+
+    private func rawCSV() -> String {
+        var out = "t_seconds,vertical_accel_ms2,gps_speed_ms\n"
+        for s in raw {
+            out += String(format: "%.3f,%.6f,%.3f\n", s.t, s.verticalAccel, s.gpsSpeed)
+        }
+        return out
+    }
 
     /// Snapshot for the live plot: the recorded speed series, cheap to hand to a view.
     func recentSpeeds(limit: Int = 300) -> [Double] {
@@ -112,16 +159,29 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     func exportCSV(from presenter: UIViewController? = nil) {
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd_HHmmss"
-        let name = "velocity_debug_\(df.string(from: Date())).csv"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        let stamp = df.string(from: Date())
+        var items: [Any] = []
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("velocity_debug_\(stamp).csv")
         do {
             try csv().write(to: url, atomically: true, encoding: .utf8)
+            items.append(url)
         } catch {
             print("❌ diagnostics export failed: \(error)")
-            return
         }
+        // The raw 50 Hz trace, which is what a spectrum can actually be computed from.
+        if !raw.isEmpty {
+            let rawURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("velocity_raw50hz_\(stamp).csv")
+            if (try? rawCSV().write(to: rawURL, atomically: true, encoding: .utf8)) != nil {
+                items.append(rawURL)
+            }
+        }
+        guard !items.isEmpty else { return }
+
         DispatchQueue.main.async {
-            let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
             let host = presenter ?? Self.topViewController()
             if let pop = vc.popoverPresentationController, let host {
                 pop.sourceView = host.view
