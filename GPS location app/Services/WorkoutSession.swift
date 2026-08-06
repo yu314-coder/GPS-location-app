@@ -131,6 +131,13 @@ class WorkoutSession: ObservableObject {
     private var lastEstimatedFallbackTick: Date?
     private var estimatedFallbackSpeed: Double = 0.0
     private var estimatedFallbackDistanceAdded: Double = 0.0
+    /// When a dead-reckoned point was last written, so a track exists even when the speed model
+    /// is producing nothing. See the heartbeat in checkEstimatedLocationFallback.
+    private var lastEstimatedAppendTime: Date = .distantPast
+    private let ESTIMATED_HEARTBEAT_SECONDS: TimeInterval = 5.0
+    /// Dead-reckoned movement measured before any geographic origin existed. Replayed as real
+    /// points the moment one arrives, so a workout that starts without GPS keeps its shape.
+    private var pendingUnanchoredMovement: [(distance: Double, heading: Double, speed: Double, timestamp: Date)] = []
     private let ESTIMATED_LOCATION_GAP_THRESHOLD: TimeInterval = 5.0
     private let ESTIMATED_LOCATION_TICK_INTERVAL: TimeInterval = 1.0
     private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
@@ -851,6 +858,8 @@ class WorkoutSession: ObservableObject {
         isActive = true
         lastRealLocationTime = startDate
         lastGoodAccuracyFixTime = .distantPast
+        pendingUnanchoredMovement = []
+        lastEstimatedAppendTime = Date()
         isUsingEstimatedLocationFallback = false
         lastEstimatedFallbackTick = nil
         estimatedFallbackSpeed = 0.0
@@ -1815,6 +1824,8 @@ class WorkoutSession: ObservableObject {
         isPaused = false
         lastRealLocationTime = startDate
         lastGoodAccuracyFixTime = .distantPast
+        pendingUnanchoredMovement = []
+        lastEstimatedAppendTime = Date()
 
         // Seed a real starting fix so the estimated points have an anchor to project from.
         let seed = CLLocation(
@@ -2491,9 +2502,24 @@ class WorkoutSession: ObservableObject {
         // cumulative baseline had already advanced — so slow walking silently dropped
         // distance and appended nothing.
         pendingEstimatedDistance += distance
-        guard pendingEstimatedDistance >= 0.25 else { return }
+
+        // ALWAYS RECORD SOMETHING. The 0.25 m threshold exists so a stationary phone does not
+        // fill the track with duplicate points, but it also meant that whenever the speed model
+        // produced nothing — uncalibrated, waiting for evidence, vetoed as hand-held — the
+        // workout recorded NO POINTS AT ALL. A recording that captures nothing cannot be
+        // reviewed, cannot be exported, and cannot be debugged; it is the one outcome with no
+        // recovery. A stationary point is a genuine observation ("we were here, not moving"),
+        // and time is still passing whether or not the estimator has an answer.
+        //
+        // So: append on distance as before, or on a heartbeat if too long has passed without any
+        // point. The heartbeat is slow enough that standing still costs a handful of points a
+        // minute, and it guarantees a continuous, inspectable track under every failure mode.
+        let sinceLastAppend = now.timeIntervalSince(lastEstimatedAppendTime)
+        let heartbeatDue = sinceLastAppend >= ESTIMATED_HEARTBEAT_SECONDS
+        guard pendingEstimatedDistance >= 0.25 || heartbeatDue else { return }
         let appendDistance = pendingEstimatedDistance
         pendingEstimatedDistance = 0
+        lastEstimatedAppendTime = now
         appendEstimatedLocation(distanceMeters: appendDistance, headingDegrees: headingDegrees,
                                 speedMetersPerSecond: estimatedFallbackSpeed, timestamp: now)
         estimatedFallbackDistanceAdded += appendDistance
@@ -2802,7 +2828,7 @@ class WorkoutSession: ObservableObject {
 
     private func appendEstimatedLocation(distanceMeters: Double, headingDegrees: Double,
                                          speedMetersPerSecond: Double, timestamp: Date) {
-        let previousLocation: FlightLocation
+        var previousLocation: FlightLocation
         if let last = flight.locations.last {
             previousLocation = last
         } else if let seed = syntheticFallbackAnchor(at: timestamp) {
@@ -2812,10 +2838,35 @@ class WorkoutSession: ObservableObject {
             previousLocation = seed
             print("📍 🧭 Fallback seeded synthetic anchor (no GPS yet) at \(String(format: "%.5f", seed.latitude)),\(String(format: "%.5f", seed.longitude))")
         } else {
-            // No geographic reference anywhere — still record the distance so the workout
-            // reflects real progress; a coordinate is impossible without any origin.
+            // NO ORIGIN YET — buffer the movement instead of throwing its shape away.
+            //
+            // A coordinate genuinely cannot be produced without somewhere to start, and inventing
+            // one would be worse than recording nothing. But the previous behaviour kept only the
+            // scalar distance and discarded the SHAPE, so a workout that began before any fix —
+            // already airborne, in a basement, in a tunnel — permanently lost its first stretch
+            // even though every displacement had been measured. Hold them, and lay them all down
+            // the moment a real position arrives.
             currentMetrics.totalDistance += distanceMeters
+            if pendingUnanchoredMovement.count < 20_000 {
+                pendingUnanchoredMovement.append((distanceMeters, headingDegrees,
+                                                  speedMetersPerSecond, timestamp))
+            }
             return
+        }
+
+        // An origin now exists, so anything buffered before it can finally be placed.
+        if !pendingUnanchoredMovement.isEmpty {
+            let buffered = pendingUnanchoredMovement
+            pendingUnanchoredMovement = []
+            print("📍 🧭 Replaying \(buffered.count) buffered pre-anchor movements")
+            // Distance was already counted when buffered; replaying must not double it.
+            let restoreDistance = currentMetrics.totalDistance
+            for m in buffered {
+                appendEstimatedLocation(distanceMeters: m.distance, headingDegrees: m.heading,
+                                        speedMetersPerSecond: m.speed, timestamp: m.timestamp)
+            }
+            currentMetrics.totalDistance = restoreDistance
+            previousLocation = flight.locations.last ?? previousLocation
         }
         let coordinate = projectedCoordinate(
             from: CLLocationCoordinate2D(latitude: previousLocation.latitude, longitude: previousLocation.longitude),
