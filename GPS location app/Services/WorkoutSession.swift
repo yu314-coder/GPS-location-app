@@ -2425,7 +2425,13 @@ class WorkoutSession: ObservableObject {
         if sourceTag.hasPrefix("VIB") {
             let d = vibrationSpeed.diagnostics
             let top = d.maxCalibratedSpeed.isFinite ? Int(d.maxCalibratedSpeed * 3.6) : 0
-            calText = String(format: " n=%.0f≤%dkm/h%@", d.samples, top, d.isExtrapolating ? "!" : "")
+            // u is the feature actually driving the estimate. Printing it turns "the speed is
+            // wrong" into two distinguishable cases at a glance: u varying while the speed does
+            // not means the FIT is bad, u sitting still while the car speeds up means the
+            // FEATURE carries no speed — which is what the last three attempts turned out to be,
+            // and it cost several rounds each time to establish from exports.
+            calText = String(format: " u=%.1f n=%.0f≤%dkm/h%@", d.feature, d.samples, top,
+                             d.isExtrapolating ? "!" : "")
         }
         motionFallbackStatus = String(format: "%@%@%@ %.0fkm/h →%.0f° cmp%@° off%@° +%.0fm%@",
                                       sourceTag,

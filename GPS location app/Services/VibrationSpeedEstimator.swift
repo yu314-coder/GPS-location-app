@@ -32,12 +32,13 @@ final class VibrationSpeedEstimator {
     private var lowFreq2Y: Double = 0
     private var lowFreq2Z: Double = 0
     private var vibrationEnergy: Double = 0        // the feature: dominant vibration FREQUENCY, Hz
-    /// Previous high-passed vertical sample, for the derivative.
-    private var prevHighPassed: Double = 0
-    /// Smoothed |x| and |dx/dt| of the high-passed vertical signal. Their ratio is a frequency
-    /// and, crucially, is INDEPENDENT OF AMPLITUDE — it cancels in the division.
-    private var ampEMA: Double = 0
-    private var derivEMA: Double = 0
+    /// FILTER BANK over the wheel-rotation band. Edges in Hz; a 0.32 m wheel turns at 2.8 Hz at
+    /// 20 km/h and 16.6 Hz at 120, so this span covers ordinary road speeds.
+    private let bandEdges: [Double] = [2, 4, 6, 9, 13, 18]
+    /// One low-pass state per edge. The difference of two adjacent low-passes is a band-pass.
+    private var bandLowPass: [Double] = Array(repeating: 0, count: 6)
+    /// Smoothed energy in each band, and the total, for the spectral centroid.
+    private var bandEnergy: [Double] = Array(repeating: 0, count: 5)
     /// Below this the high-passed signal is sensor noise rather than road vibration, and a
     /// frequency computed from noise is meaningless (it tends toward Nyquist, which would read
     /// as enormous speed while parked). Treated as zero instead.
@@ -163,15 +164,15 @@ final class VibrationSpeedEstimator {
     // v4: the model is now an intercept-bearing quadratic in the scaled feature. Everything
     // stored by earlier builds is unusable — v2 and v3 both encode a rest baseline that was
     // either pinned at zero by a startup-transient bug or captured mid-drive.
-    private static let keyP0 = "VibrationSpeedEstimator.p0.v9"
-    private static let keyP1 = "VibrationSpeedEstimator.p1.v9"
-    private static let keyP2 = "VibrationSpeedEstimator.p2.v9"
-    private static let keyMaxU = "VibrationSpeedEstimator.maxU.v9"
+    private static let keyP0 = "VibrationSpeedEstimator.p0.v10"
+    private static let keyP1 = "VibrationSpeedEstimator.p1.v10"
+    private static let keyP2 = "VibrationSpeedEstimator.p2.v10"
+    private static let keyMaxU = "VibrationSpeedEstimator.maxU.v10"
     private static let allKeys = [keyP0, keyP1, keyP2, keyMaxU]
 
     /// Start a workout: clear the per-trip signal state but KEEP a previously learned model.
     func reset() {
-        lowFreqX = 0; lowFreqY = 0; lowFreqZ = 0; lowFreq2X = 0; lowFreq2Y = 0; lowFreq2Z = 0; vibrationEnergy = 0; prevHighPassed = 0; ampEMA = 0; derivEMA = 0; initialised = false; ingestElapsed = 0
+        lowFreqX = 0; lowFreqY = 0; lowFreqZ = 0; lowFreq2X = 0; lowFreq2Y = 0; lowFreq2Z = 0; vibrationEnergy = 0; bandLowPass = Array(repeating: 0, count: 6); bandEnergy = Array(repeating: 0, count: 5); initialised = false; ingestElapsed = 0
         n = 0; nZeroish = 0
         sumU = 0; sumU2 = 0; sumU3 = 0; sumU4 = 0
         sumS = 0; sumUS = 0; sumU2S = 0
@@ -292,17 +293,37 @@ final class VibrationSpeedEstimator {
         // Estimated without an FFT: for a narrowband signal, E|ẋ| / E|x| ≈ 2πf. Amplitude
         // appears in both terms and cancels, which is exactly the property amplitude-based
         // sensing lacked.
-        let derivative = (hz - prevHighPassed) / dt
-        prevHighPassed = hz
+        // BAND-LIMITED SPECTRAL CENTROID, replacing E|ẋ|/E|x|.
+        //
+        // That ratio is the energy-weighted MEAN frequency of everything present. It works on a
+        // narrowband signal — which is what the synthetic test used, and why the test passed —
+        // but road vibration is BROADBAND. Averaged over a wide spectrum the ratio settles at a
+        // value fixed by the filter bandwidth rather than by the wheel, so the feature came out
+        // nearly constant: a real drive reported 20.2 km/h at both the 10th and 50th percentile,
+        // a dead flat line, while the car varied between 70 and 100.
+        //
+        // Restricting the measurement to the wheel-rotation band fixes that. Energy is split
+        // across five bands spanning 2–18 Hz and the centroid is taken over those alone, so the
+        // broadband tail no longer drags the answer to a constant. Dividing by total band energy
+        // keeps it amplitude-independent, which is the property that made frequency worth
+        // pursuing over amplitude in the first place.
         let smooth = min(dt / (0.5 + dt), 1.0)
-        ampEMA += (abs(hz) - ampEMA) * smooth
-        derivEMA += (abs(derivative) - derivEMA) * smooth
-        // Below the noise floor there is no vibration to measure a frequency of, and noise would
-        // read near Nyquist — a parked car reporting a huge speed. Report zero and let the fit's
-        // intercept handle rest.
-        let highPassed = ampEMA > VIBRATION_NOISE_FLOOR
-            ? derivEMA / (2 * Double.pi * ampEMA)
-            : 0.0
+        for i in 0..<bandEdges.count {
+            let tau = 1.0 / (2 * Double.pi * bandEdges[i])
+            bandLowPass[i] += (hz - bandLowPass[i]) * min(dt / (tau + dt), 1.0)
+        }
+        var weighted = 0.0, total = 0.0
+        for k in 0..<bandEnergy.count {
+            // Band-pass = what the higher-corner low-pass keeps but the lower-corner one does not.
+            let bp = abs(bandLowPass[k + 1] - bandLowPass[k])
+            bandEnergy[k] += (bp - bandEnergy[k]) * smooth
+            let centre = (bandEdges[k] + bandEdges[k + 1]) / 2
+            weighted += centre * bandEnergy[k]
+            total += bandEnergy[k]
+        }
+        // Below the noise floor there is no vibration whose frequency means anything, and a
+        // centroid of noise would read as a fixed mid-band value — a parked car reporting speed.
+        let highPassed = total > VIBRATION_NOISE_FLOOR ? weighted / total : 0.0
         // Long enough to average the vibration waveform itself (many cycles at 10+ Hz), short
         // enough to still track a real change of speed promptly.
         vibrationEnergy += (highPassed - vibrationEnergy) * min(dt / (0.5 + dt), 1.0)
