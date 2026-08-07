@@ -112,6 +112,83 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         return out
     }
 
+    // MARK: - Persistence
+    //
+    // The buffers live in memory and are cleared when the next workout starts, and the live
+    // panel that exports them only exists while a workout is running. So a drive whose export
+    // was forgotten before pressing Stop was simply gone — the one thing these logs exist to
+    // prevent. Write them to disk at the end of every workout instead, keyed by start time, so
+    // they can be retrieved later from the workout itself.
+
+    private static var logDirectory: URL {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("VelocityLogs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private static func stamp(for workoutStart: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd_HHmmss"
+        return df.string(from: workoutStart)
+    }
+
+    /// Write both logs for a finished workout. Cheap enough to do on the main actor at stop.
+    func persistToDisk(workoutStart: Date) {
+        guard !rows.isEmpty || !raw.isEmpty else { return }
+        let s = Self.stamp(for: workoutStart)
+        let dir = Self.logDirectory
+        if !rows.isEmpty {
+            try? csv().write(to: dir.appendingPathComponent("velocity_debug_\(s).csv"),
+                             atomically: true, encoding: .utf8)
+        }
+        if !raw.isEmpty {
+            try? rawCSV().write(to: dir.appendingPathComponent("velocity_raw50hz_\(s).csv"),
+                                atomically: true, encoding: .utf8)
+        }
+        print("💾 Velocity logs saved for \(s): \(rows.count) ticks, \(raw.count) raw samples")
+        Self.pruneOldLogs()
+    }
+
+    /// Files already saved for a given workout, newest formats first. Empty if none.
+    static func savedLogs(forWorkoutStart start: Date) -> [URL] {
+        let s = stamp(for: start)
+        let dir = logDirectory
+        return ["velocity_raw50hz_\(s).csv", "velocity_debug_\(s).csv"]
+            .map { dir.appendingPathComponent($0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    /// Raw traces are large. Keep the twenty most recent workouts' worth and drop the rest.
+    private static func pruneOldLogs() {
+        let dir = logDirectory
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let sorted = files.sorted {
+            let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            return a > b
+        }
+        for old in sorted.dropFirst(40) { try? FileManager.default.removeItem(at: old) }
+    }
+
+    /// Share previously saved logs for a workout, from anywhere in the app.
+    static func exportSavedLogs(forWorkoutStart start: Date, from presenter: UIViewController? = nil) {
+        let files = savedLogs(forWorkoutStart: start)
+        guard !files.isEmpty else { return }
+        DispatchQueue.main.async {
+            let vc = UIActivityViewController(activityItems: files, applicationActivities: nil)
+            let host = presenter ?? topViewController()
+            if let pop = vc.popoverPresentationController, let host {
+                pop.sourceView = host.view
+                pop.sourceRect = CGRect(x: host.view.bounds.midX, y: host.view.bounds.midY,
+                                        width: 0, height: 0)
+                pop.permittedArrowDirections = []
+            }
+            host?.present(vc, animated: true)
+        }
+    }
+
     /// Snapshot for the live plot: the recorded speed series, cheap to hand to a view.
     func recentSpeeds(limit: Int = 300) -> [Double] {
         Array(rows.suffix(limit).map(\.reportedSpeed))
@@ -193,7 +270,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         }
     }
 
-    private static func topViewController() -> UIViewController? {
+    static func topViewController() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first(where: { $0.activationState == .foregroundActive })

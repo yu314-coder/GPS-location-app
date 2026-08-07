@@ -1007,6 +1007,9 @@ class WorkoutSession: ObservableObject {
 
     func stopWorkout(completion: @escaping (Bool) -> Void) {
         persistActiveWorkoutSnapshot(force: true, reason: "stopWorkoutRequested", shouldLog: true)
+        // Save the velocity diagnostics before anything is torn down, so a forgotten in-session
+        // export no longer costs the whole drive.
+        sessionDiagnostics.persistToDisk(workoutStart: flight.startDate)
         // The manual velocity override is a per-workout choice; never let it leak forward.
         forceMotionFallback = false
         stopEstimatedFallbackTimer()

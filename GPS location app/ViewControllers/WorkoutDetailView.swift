@@ -741,6 +741,25 @@ struct WorkoutDetailView: View {
                         }
                     }
 
+                    // The velocity-model logs, saved automatically when this workout stopped:
+                    // the per-tick diagnostics and the raw 50 Hz vertical trace. Only shown when
+                    // files actually exist for this workout, so it never offers nothing.
+                    if !SessionDiagnosticsRecorder.savedLogs(forWorkoutStart: activeFlight.startDate).isEmpty {
+                        Button(action: {
+                            SessionDiagnosticsRecorder.exportSavedLogs(forWorkoutStart: activeFlight.startDate)
+                        }) {
+                            HStack {
+                                Image(systemName: "waveform.path.ecg")
+                                Text("Export Velocity Logs (raw 50 Hz)")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.indigo)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
+                    }
+
                     // Recalculate Distance button
                     if !activeFlight.locations.isEmpty {
                         Button(action: {
