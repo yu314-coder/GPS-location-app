@@ -218,6 +218,13 @@ class WorkoutSession: ObservableObject {
     /// the PCA walking axis. The compass alone measures device orientation, so this offset is
     /// what turns it into a usable absolute datum for travel direction.
     private var compassMisalignment: Double?
+    /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
+    private var lastCompassReadingForCheck: Double?
+    /// How far the compass may disagree with the gyro over one tick before it is treated as
+    /// deflected by iron rather than turned by the user. Generous enough to absorb ordinary
+    /// magnetometer noise and gyro rounding, tight enough to catch the 100-degree-per-second
+    /// swings logged walking through a steel-framed building.
+    private let COMPASS_GYRO_DISAGREEMENT: Double = 30.0
 
     /// The compass offset to actually apply, and how hard to pull toward it.
     ///
@@ -2139,6 +2146,8 @@ class WorkoutSession: ObservableObject {
         // OVERWROTE the heading every tick — the compass correction below could only nudge it
         // 8% before being replaced again, which is why the recorded heading sat ~45° (once
         // 205°) from the compass indefinitely. Direction now comes from the gyro for turns and
+        // Set inside the block below; consulted again by the always-on datum after it.
+        var compassIsDisturbed = false
         // the compass for the absolute datum, exactly as the PDR literature prescribes.
         do {
             // COMPLEMENTARY FILTER. Turn ANGLE comes from the gyro, absolute direction from
@@ -2157,12 +2166,39 @@ class WorkoutSession: ObservableObject {
             // small deltas, so nothing legitimate is ever clipped.
             let cumulativeYaw = locationManager.cumulativeDeviceYawRotation
             var turningNow = false
+            var gyroTurnThisTick: Double? = nil
             if let previousCumulative = lastDeviceYawForHeading {
                 let dYaw = cumulativeYaw - previousCumulative
+                gyroTurnThisTick = dYaw
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
                 turningNow = abs(dYaw) > 8   // deg per tick — actively turning
             }
             lastDeviceYawForHeading = cumulativeYaw
+
+            // CROSS-CHECK THE COMPASS AGAINST THE GYRO.
+            //
+            // headingAccuracy is not a sufficient filter. A walk indoors logged the compass
+            // going 190° → 222° → 320° → 330° → 36° → 61° in consecutive seconds, all reported
+            // by iOS as acceptable accuracy, and the heading followed it straight down —
+            // 190 → 223 → 318 → 324 → 22 → 44 — while the learned offset drifted −112° → −145°
+            // chasing the noise. Steel structures disturb the magnetometer far faster than its
+            // own confidence estimate reflects.
+            //
+            // The gyro does not share that failure: it is the most reliable signal here over
+            // short intervals, and it independently measures how far the device actually turned
+            // in the same tick. If the compass claims a rotation the gyro did not see, the
+            // compass is being deflected by iron rather than by the user turning, and must not
+            // be allowed to drag the heading. The gyro alone carries the datum for those
+            // seconds, which is exactly what it is good at.
+            // (declared above the block so the always-on datum can see it)
+            if let compass = locationManager.currentCompassHeading {
+                if let previous = lastCompassReadingForCheck, let gyroTurn = gyroTurnThisTick {
+                    var dCompass = compass - previous
+                    if dCompass > 180 { dCompass -= 360 } else if dCompass < -180 { dCompass += 360 }
+                    compassIsDisturbed = abs(dCompass - gyroTurn) > COMPASS_GYRO_DISAGREEMENT
+                }
+                lastCompassReadingForCheck = compass
+            }
             // 2) Pull slowly toward the PCA walking axis, which is absolute and orientation-
             //    independent. This removes the drift the gyro accumulates, without letting a
             //    slow window dictate fast turn dynamics. The axis's 180° ambiguity resolves
@@ -2171,7 +2207,7 @@ class WorkoutSession: ObservableObject {
             // trailing window, so mid-turn it still points at the pre-turn direction and the
             // pull dragged the heading BACKWARDS against the gyro — the visible turn lag.
             // Drift correction only needs the straight stretches, where the axis is honest.
-            if !turningNow, pedometerIsCounting, let axis = walkingAxisHeading() {
+            if !turningNow, !compassIsDisturbed, pedometerIsCounting, let axis = walkingAxisHeading() {
                 // walkingAxisHeading() now returns a DIRECTED heading (forward end resolved
                 // from gait skewness), so it must NOT be re-resolved against the current
                 // belief — doing that is what allowed a 180° error to persist.
@@ -2215,7 +2251,7 @@ class WorkoutSession: ObservableObject {
             // but has NO drift, which is the exact complement of the gyro: gyro for fast turns,
             // compass for the long-run truth. Correct slowly so it never fights a real turn,
             // and only while NOT turning (a turn swings the compass through its own transient).
-            if !turningNow, let compass = locationManager.currentCompassHeading {
+            if !turningNow, !compassIsDisturbed, let compass = locationManager.currentCompassHeading {
                 let (misalignment, gain) = effectiveCompassMisalignment
                 // Target = where the phone points PLUS how the body is offset from it.
                 let target = normalizedHeading(compass + misalignment)
@@ -2228,7 +2264,7 @@ class WorkoutSession: ObservableObject {
         if let rh = resolvedHeading { motionHeadingDegrees = rh }
         // ABSOLUTE DATUM, ALWAYS. Applied outside the branches above so a diverged velocity
         // vector can never lock the heading away from the only drift-free reference we have.
-        if let compass = locationManager.currentCompassHeading {
+        if !compassIsDisturbed, let compass = locationManager.currentCompassHeading {
             let (misalignment, gain) = effectiveCompassMisalignment
             let target = normalizedHeading(compass + misalignment)
             var err = target - motionHeadingDegrees
