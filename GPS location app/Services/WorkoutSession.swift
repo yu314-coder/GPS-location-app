@@ -247,6 +247,13 @@ class WorkoutSession: ObservableObject {
     /// magnetometer noise and gyro rounding, tight enough to catch the 100-degree-per-second
     /// swings logged walking through a steel-framed building.
     private let COMPASS_GYRO_DISAGREEMENT: Double = 30.0
+    /// How long the compass may be rejected before it is used anyway at reduced weight. A biased
+    /// absolute reference beats an unbounded relative one.
+    private let COMPASS_STARVATION_LIMIT: TimeInterval = 20.0
+    private var compassDisturbedSince: Date?
+    /// True while the compass is being used despite disagreeing with the gyro, so the reduced
+    /// weight can be applied and the state surfaced.
+    private var compassStarved = false
 
     /// The compass offset to actually apply, and how hard to pull toward it.
     ///
@@ -262,7 +269,9 @@ class WorkoutSession: ObservableObject {
     /// whereas a free-running gyro is unbounded. Applied at half gain so a genuinely learned
     /// offset, which is a real measurement of body-versus-device orientation, always wins.
     private var effectiveCompassMisalignment: (value: Double, gain: Double) {
-        if let learned = compassMisalignment { return (learned, COMPASS_CORRECTION_GAIN) }
+        if let learned = compassMisalignment {
+            return (learned, COMPASS_CORRECTION_GAIN * (compassStarved ? 0.4 : 1.0))
+        }
         return (0, COMPASS_CORRECTION_GAIN * 0.5)
     }
     /// Whether the heading seed came from a real GPS course rather than the compass, and where
@@ -2257,6 +2266,29 @@ class WorkoutSession: ObservableObject {
                     compassIsDisturbed = abs(dCompass - gyroTurn) > COMPASS_GYRO_DISAGREEMENT
                 }
                 lastCompassReadingForCheck = compass
+            }
+
+            // DO NOT STARVE THE HEADING OF ITS ONLY ABSOLUTE REFERENCE.
+            //
+            // The check above is right for a transient swing, but a car is a steel box and the
+            // magnetometer can be disturbed CONTINUOUSLY inside one. Rejecting every reading
+            // then leaves heading free-running on the gyro with no datum at all, which drifts
+            // without bound — the exact failure the compass correction exists to prevent, and a
+            // worse outcome than a biased datum.
+            //
+            // So the rejection is allowed to hold only so long. Past that, the compass is used
+            // again at reduced weight: it may be biased, but it does not accumulate error, and
+            // a slow pull toward a slightly wrong absolute beats an unbounded relative one.
+            if compassIsDisturbed {
+                compassDisturbedSince = compassDisturbedSince ?? now
+                if let since = compassDisturbedSince,
+                   now.timeIntervalSince(since) > COMPASS_STARVATION_LIMIT {
+                    compassIsDisturbed = false
+                    compassStarved = true
+                }
+            } else {
+                compassDisturbedSince = nil
+                compassStarved = false
             }
             // 2) Pull slowly toward the PCA walking axis, which is absolute and orientation-
             //    independent. This removes the drift the gyro accumulates, without letting a
