@@ -53,10 +53,19 @@ final class FlightPhaseEstimator {
     private let CLIMB_RATE_THRESHOLD = 0.35       // m/s sustained; a lift does 1–2 m/s for seconds
     private let PHASE_CONFIRM_SECONDS = 90.0      // a lift cannot sustain this
 
-    // Airliner speeds. Deliberately conservative: under-reading a cruise slightly is far better
-    // than over-reading it, since the route length scales directly with this.
-    private let CRUISE_KMH = 830.0
-    private let CLIMB_START_KMH = 300.0
+    // NO SPEED CONSTANTS HERE, DELIBERATELY.
+    //
+    // An earlier version asserted 830 km/h for cruise and interpolated the climb against cabin
+    // altitude. Both were wrong. The interpolation was meaningless: the barometer reads CABIN
+    // altitude, held near 1,800–2,400 m by pressurisation regardless of the aircraft's real
+    // height, so dividing it by an assumed ceiling does not track anything. And the constant was
+    // exactly the mistake that sank five vibration features — a number asserted rather than
+    // measured. An aircraft that cruises slower or faster than the guess would have had its
+    // whole route scaled wrong, silently and confidently.
+    //
+    // Cabin pressure can say WHETHER the aircraft is flying, which is a real measurement of a
+    // real signal. It cannot say how fast. Speed comes from GPS whenever GPS supplies it, and is
+    // held between fixes; this class no longer produces a speed at all.
 
     func reset() {
         phase = .ground; altitude = 0; initialised = false; climbRate = 0
@@ -103,22 +112,7 @@ final class FlightPhaseEstimator {
         }
     }
 
-    /// Speed in m/s implied by the current phase, or nil while still on the ground — where the
-    /// last measured GPS speed is the honest answer and no inference is warranted.
-    func inferredSpeed() -> Double? {
-        switch phase {
-        case .ground:
-            return nil
-        case .cruise:
-            return CRUISE_KMH / 3.6
-        case .climb, .descent:
-            // Interpolate with cabin altitude: near the ground the aircraft is near rotation
-            // speed, near cruise altitude it is near cruise speed. Crude, but monotonic and
-            // bounded by two figures that are true of every jet airliner.
-            let f = min(max(altitude / 2000.0, 0), 1)
-            return (CLIMB_START_KMH + (CRUISE_KMH - CLIMB_START_KMH) * f) / 3.6
-        }
-    }
-
+    /// Whether the pressure profile says this is a flight. Used as CONTEXT — it makes holding a
+    /// GPS-measured speed appropriate, and labels the status line — never to invent a speed.
     var isAirborne: Bool { phase != .ground }
 }

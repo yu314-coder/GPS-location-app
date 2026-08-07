@@ -364,6 +364,12 @@ class WorkoutSession: ObservableObject {
     /// Vehicle evidence that is still current, rather than merely remembered from earlier in
     /// the trip. Vibration only describes a moving vehicle while we are actually in one.
     private var vehicleContextIsCurrent: Bool {
+        // Being airborne is vehicle context in its own right, and it does not expire: the
+        // activity classifier has no aircraft category and reports "unknown" for whole flights,
+        // which would otherwise let the evidence time out at cruise and stop the speed being
+        // held. This uses the pressure profile only to say WHETHER we are flying — never how
+        // fast, which cabin pressure cannot tell.
+        if flightPhase.isAirborne { return true }
         if activityIsAutomotive { return true }
         guard let seen = lastVehicleEvidenceTime else { return false }
         return Date().timeIntervalSince(seen) < VEHICLE_EVIDENCE_TTL
@@ -2467,16 +2473,6 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if let airborne = flightPhase.inferredSpeed() {
-            // AIRBORNE, detected from the cabin pressure profile — no input required. The one
-            // case where a sensor other than GPS genuinely carries speed information, because
-            // pressurisation is unmistakable and airliner speeds are a narrow known range.
-            estimatedFallbackSpeed = airborne
-            distance = airborne * dt
-            sourceTag = "FLIGHT(\(flightPhase.phase.rawValue))"
-            let hr = motionHeadingDegrees * .pi / 180
-            motionVelNorth = estimatedFallbackSpeed * cos(hr)
-            motionVelEast = estimatedFallbackSpeed * sin(hr)
         } else if let stated = manualSpeedKmh, stated > 0 {
             // USER-STATED SPEED. Highest priority: a number the traveller knows beats anything
             // inferable from a sensor that does not carry the signal.
@@ -2511,7 +2507,14 @@ class WorkoutSession: ObservableObject {
             distance = held * dt
             // Name a held ZERO explicitly. Engaging this mode while stopped freezes zero, and a
             // route that never moves looks identical to a broken estimator unless it says so.
-            sourceTag = held > 0.5 ? "HOLD" : "HOLD(0 — set a speed)"
+            // Flight phase labels the reading but never sets it. Cabin pressure can say whether
+            // the aircraft is flying; it cannot say how fast, because it reads CABIN altitude —
+            // held near 1,800–2,400 m by pressurisation whatever the aircraft's real height.
+            if flightPhase.isAirborne {
+                sourceTag = "HOLD(\(flightPhase.phase.rawValue))"
+            } else {
+                sourceTag = held > 0.5 ? "HOLD" : "HOLD(0 — set a speed)"
+            }
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
