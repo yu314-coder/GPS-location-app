@@ -238,6 +238,9 @@ class WorkoutSession: ObservableObject {
     /// what turns it into a usable absolute datum for travel direction.
     private var compassMisalignment: Double?
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
+    /// Previous GPS fix used for the misalignment bearing, so travel direction can be measured
+    /// from position change when the course field is unusable (i.e. at walking pace).
+    private var lastMisalignmentFix: FlightLocation?
     private var lastCompassReadingForCheck: Double?
     /// How far the compass may disagree with the gyro over one tick before it is treated as
     /// deflected by iron rather than turned by the user. Generous enough to absorb ordinary
@@ -1904,9 +1907,43 @@ class WorkoutSession: ObservableObject {
     /// processNewLocation for what happened when it only ran on one.
     private func learnCompassMisalignment(from location: FlightLocation) {
         guard location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20,
-              location.speed > 2.0,
-              let course = validCourse(location.course),
               let compass = locationManager.currentCompassHeading else { return }
+
+        // TRAVEL DIRECTION, from whichever source can actually supply it.
+        //
+        // This used to require CLLocation.course together with speed > 2 m/s — 7.2 km/h. Walking
+        // is 1.2–1.6 m/s, so on a WALK the offset was never learned from GPS at all, and the
+        // only remaining source was the PCA walking axis, whose failure is visible in the logs:
+        // it wandered from −112° to −145° while the recorded track set off north-west on a walk
+        // that went south. The thresholds were written for a vehicle and silently excluded the
+        // case they were most needed in.
+        //
+        // The bearing between two successive fixes has no such limitation. Over a long enough
+        // baseline it is a direct measurement of where the body actually travelled, and at
+        // 10 m separation with fixes good to a few metres it is far more trustworthy at walking
+        // pace than the course field, which iOS often reports as −1 or noise below a few km/h.
+        var travelDirection: Double? = validCourse(location.course).flatMap { location.speed > 2.0 ? $0 : nil }
+        if travelDirection == nil, let previous = lastMisalignmentFix {
+            let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+            let to = CLLocation(latitude: location.latitude, longitude: location.longitude)
+            // Long enough that fix noise cannot dominate the bearing, short enough to still be
+            // one direction of travel rather than an average over several turns.
+            if from.distance(from: to) >= 10, from.distance(from: to) <= 120 {
+                let φ1 = previous.latitude * .pi / 180, φ2 = location.latitude * .pi / 180
+                let Δλ = (location.longitude - previous.longitude) * .pi / 180
+                let y = sin(Δλ) * cos(φ2)
+                let x = cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(Δλ)
+                travelDirection = normalizedHeading(atan2(y, x) * 180 / .pi)
+            }
+        }
+        if lastMisalignmentFix == nil {
+            lastMisalignmentFix = location
+        } else if let previous = lastMisalignmentFix {
+            let moved = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+                .distance(from: CLLocation(latitude: location.latitude, longitude: location.longitude))
+            if moved >= 10 { lastMisalignmentFix = location }
+        }
+        guard let course = travelDirection else { return }
         var offset = course - compass
         if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
         if let existing = compassMisalignment {
