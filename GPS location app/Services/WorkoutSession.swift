@@ -555,10 +555,24 @@ class WorkoutSession: ObservableObject {
         }
         locationManager.onBarometricAltitudeUpdate = { [weak self] relativeAltitude, pressure, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
+            // INSIDE A PRESSURISED CABIN THIS IS NOT ALTITUDE.
+            //
+            // The barometer measures the air around the phone, and in an airliner that air is
+            // held near 1,800–2,400 m by the pressurisation system no matter what the aircraft
+            // is doing. It can never see the outside pressure, which is the only thing that
+            // reflects real altitude. So while airborne, climb, descent and vertical speed
+            // derived from it describe the CABIN SCHEDULE, not the flight: a climb to 11,000 m
+            // would be logged as roughly 2,000 m of gain, and the levelling-off of
+            // pressurisation would read as the aircraft levelling off when it had not.
+            //
+            // Feeding that into elevation statistics would state something false. The reading is
+            // still stored as the raw pressure it is, but it stops contributing to climb,
+            // descent and vertical speed for the duration of the flight.
             self.currentMetrics.updateWithBarometricAltitude(
                 relativeAltitude: relativeAltitude,
                 pressure: pressure,
-                timestamp: timestamp
+                timestamp: timestamp,
+                accumulateElevation: !self.flightPhase.isAirborne
             )
         }
     }

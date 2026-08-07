@@ -512,7 +512,9 @@ struct FlightMetrics: Codable, Hashable {
         compassHeadingHistory = history
     }
 
-    mutating func updateWithBarometricAltitude(relativeAltitude: Double, pressure: Double?, timestamp: Date = Date()) {
+    /// - Parameter accumulateElevation: false inside a pressurised cabin, where this reading is
+    ///   the pressurisation schedule rather than altitude and must not become climb/descent.
+    mutating func updateWithBarometricAltitude(relativeAltitude: Double, pressure: Double?, timestamp: Date = Date(), accumulateElevation: Bool = true) {
         currentBarometricRelativeAltitude = relativeAltitude
         currentPressure = pressure ?? currentPressure
         maxBarometricRelativeAltitude = max(maxBarometricRelativeAltitude ?? relativeAltitude, relativeAltitude)
@@ -527,7 +529,7 @@ struct FlightMetrics: Codable, Hashable {
                 verticalSpeed = altitudeDelta / timeDelta
 
                 // Ignore tiny barometer flutter when accumulating climb/descent.
-                if abs(altitudeDelta) >= 0.3 {
+                if accumulateElevation, abs(altitudeDelta) >= 0.3 {
                     if altitudeDelta > 0 {
                         barometricAltitudeGain = (barometricAltitudeGain ?? 0) + altitudeDelta
                     } else {
@@ -535,6 +537,7 @@ struct FlightMetrics: Codable, Hashable {
                     }
                 }
 
+                if !accumulateElevation { verticalSpeed = nil }
                 currentVerticalSpeed = verticalSpeed
                 if let verticalSpeed {
                     maxClimbRate = max(maxClimbRate ?? verticalSpeed, verticalSpeed)
