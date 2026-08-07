@@ -9,6 +9,7 @@ struct LiveSessionView: View {
     @ObservedObject private var workoutSession = WorkoutSession.shared
     @State private var showStopConfirmation = false
     @State private var logsMode: LogsMode = .map
+    @State private var manualSpeedText: String = ""
     @State private var showWorkoutTypeSelector = false
     @State private var selectedWorkoutType: HKWorkoutActivityType = .walking
     @State private var showLogs = false
@@ -661,6 +662,37 @@ struct LiveSessionView: View {
                             .cornerRadius(12)
                         }
                         .disabled(!workoutSession.isActive)
+
+                        // STATED SPEED. The phone cannot measure vehicle speed without GPS —
+                        // measured, not assumed. But a traveller knows their cruise speed, and
+                        // one number they supply beats any inference from a sensor that does not
+                        // carry the signal. Only shown in velocity mode, where it applies.
+                        if workoutSession.forceMotionFallback {
+                            HStack(spacing: 10) {
+                                Image(systemName: "gauge.with.dots.needle.67percent")
+                                    .foregroundColor(.purple)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Known speed")
+                                        .font(.subheadline).fontWeight(.semibold)
+                                    Text("Blank = use last GPS speed")
+                                        .font(.caption2).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                TextField("auto", text: $manualSpeedText)
+                                    .keyboardType(.numberPad)
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(width: 70)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onChange(of: manualSpeedText) { _, new in
+                                        let v = Double(new.filter(\.isNumber)) ?? 0
+                                        workoutSession.manualSpeedKmh = v > 0 ? v : nil
+                                    }
+                                Text("km/h").font(.caption).foregroundColor(.secondary)
+                            }
+                            .padding()
+                            .background(Color(.systemGray6))
+                            .cornerRadius(12)
+                        }
 
                         // Stop tracking
                         Button(action: {

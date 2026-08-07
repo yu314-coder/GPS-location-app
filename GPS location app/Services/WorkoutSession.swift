@@ -146,6 +146,20 @@ class WorkoutSession: ObservableObject {
     // MARK: - Forced velocity (inertial dead reckoning) — mirrors the watch implementation
     /// UI toggle: force velocity/acceleration dead reckoning and ignore GPS for distance.
     @Published var forceMotionFallback = false
+    /// A speed the USER states, in km/h, used when nothing can measure one.
+    ///
+    /// The phone cannot measure vehicle speed without GPS — that is now established by
+    /// measurement, not assumption (see the HOLD branch). Holding the last GPS speed covers a
+    /// tunnel well, but not the case this mode was built for: an aircraft. GPS is typically lost
+    /// on the ground, so the held value is taxi speed, and a whole cruise would be drawn at
+    /// 30 km/h. Cruise speed, however, is something the traveller simply knows — it is on the
+    /// seat-back display, in the booking, or a familiar constant for the route.
+    ///
+    /// One number the user supplies beats any amount of inference from a sensor that does not
+    /// carry the signal. Takes priority over HOLD whenever set.
+    @Published var manualSpeedKmh: Double? {
+        didSet { UserDefaults.standard.set(manualSpeedKmh ?? 0, forKey: "manualSpeedKmh") }
+    }
     /// Live status for the UI, e.g. "DR FORCED 62km/h +410m".
     @Published var motionFallbackStatus = "GPS OK"
     // Signed WORLD-frame velocity vector (north/east). Integrating a VECTOR (not the
@@ -178,6 +192,11 @@ class WorkoutSession: ObservableObject {
     private let activityManager = CMMotionActivityManager()
     /// Speed from the ride's vibration signature — no integration, so no drift. Calibrated
     /// online from GPS while it is available (see VibrationSpeedEstimator).
+    // Restore any previously stated speed at launch.
+    private func restoreManualSpeed() {
+        let v = UserDefaults.standard.double(forKey: "manualSpeedKmh")
+        if v > 0 { manualSpeedKmh = v }
+    }
     private let vibrationSpeed = VibrationSpeedEstimator()
     /// Per-tick record of what the speed model saw and decided, for export and live inspection.
     let sessionDiagnostics = SessionDiagnosticsRecorder()
@@ -2365,6 +2384,15 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
+        } else if let stated = manualSpeedKmh, stated > 0 {
+            // USER-STATED SPEED. Highest priority: a number the traveller knows beats anything
+            // inferable from a sensor that does not carry the signal.
+            estimatedFallbackSpeed = stated / 3.6
+            distance = estimatedFallbackSpeed * dt
+            sourceTag = "SET"
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelNorth = estimatedFallbackSpeed * cos(hr)
+            motionVelEast = estimatedFallbackSpeed * sin(hr)
         } else if vehicleContextIsCurrent, let held = lastMeasuredVehicleSpeed {
             // HOLD THE LAST MEASURED SPEED.
             //
