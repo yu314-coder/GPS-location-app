@@ -2485,7 +2485,9 @@ class WorkoutSession: ObservableObject {
             // to within whatever the driver did while inside.
             estimatedFallbackSpeed = held
             distance = held * dt
-            sourceTag = "HOLD"
+            // Name a held ZERO explicitly. Engaging this mode while stopped freezes zero, and a
+            // route that never moves looks identical to a broken estimator unless it says so.
+            sourceTag = held > 0.5 ? "HOLD" : "HOLD(0 — set a speed)"
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
@@ -3145,11 +3147,24 @@ class WorkoutSession: ObservableObject {
             // running pace, so this needs no help from the inertial launch detector — which
             // misses a gentle pull-away, and misses entirely a drive already under way when the
             // workout was started.
+            // Recorded for the diagnostics file only — a ground-truth column to compare the
+            // estimate against. It must NOT feed the estimate itself; see below.
             sessionDiagnostics.latestGPSSpeed = location.speed
-            // Remember a genuine vehicle speed so it can be held once GPS goes.
-            if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
-                lastMeasuredVehicleSpeed = location.speed
-            }
+
+            // DELIBERATELY NOT UPDATING lastMeasuredVehicleSpeed HERE.
+            //
+            // Force Velocity means "behave as though GPS is gone", and it is tested on the
+            // ground precisely to predict what will happen in the air. If the held speed kept
+            // refreshing from live fixes, this mode would silently be reporting GPS speed: the
+            // ground test would look near-perfect and would predict nothing, while in an
+            // aircraft — where GPS is lost before takeoff — the held value would be taxi speed
+            // for the entire flight. A test that cannot fail on the ground is worse than no
+            // test, because it hides exactly the case the mode exists for.
+            //
+            // So the held speed freezes at whatever GPS last measured BEFORE this mode was
+            // engaged, which is exactly what "the last speed before signal loss" means. Enable
+            // it while moving and it holds that speed; enable it while stopped and it holds
+            // zero, which is honest — and the Known-speed field is there to say otherwise.
             if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
                 vehicleConfirmedByGPSSpeed = true; lastVehicleEvidenceTime = Date()
             }
