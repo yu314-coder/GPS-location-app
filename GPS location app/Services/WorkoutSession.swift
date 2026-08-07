@@ -197,6 +197,9 @@ class WorkoutSession: ObservableObject {
         let v = UserDefaults.standard.double(forKey: "manualSpeedKmh")
         if v > 0 { manualSpeedKmh = v }
     }
+    /// Infers flight phase from cabin pressure, giving an autonomous airliner speed. See
+    /// FlightPhaseEstimator for why this is possible for flight and not for a car.
+    private let flightPhase = FlightPhaseEstimator()
     private let vibrationSpeed = VibrationSpeedEstimator()
     /// Per-tick record of what the speed model saw and decided, for export and live inspection.
     let sessionDiagnostics = SessionDiagnosticsRecorder()
@@ -926,6 +929,7 @@ class WorkoutSession: ObservableObject {
         }
         vibrationSpeed.reset()
         sessionDiagnostics.reset()
+        flightPhase.reset()
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
 
         print("✅ Flight initialized at: \(startDate)")
@@ -2173,6 +2177,16 @@ class WorkoutSession: ObservableObject {
             handlingRotationLevel += (rr - handlingRotationLevel) * min(dt / (3.0 + dt), 1.0)
         }
 
+        // Feed the flight-phase detector every tick; cabin pressure is the one signal that can
+
+        // distinguish being airborne from anything on the ground.
+
+        if let relAlt = locationManager.currentRelativeAltitude {
+
+            flightPhase.ingest(relativeAltitude: relAlt, at: now)
+
+        }
+
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false
         // A fresh bout of walking (after standing still, turning around, sitting down, etc.)
         // gets a fresh forward/back vote instead of carrying over a belief that may no longer
@@ -2453,6 +2467,16 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
+        } else if let airborne = flightPhase.inferredSpeed() {
+            // AIRBORNE, detected from the cabin pressure profile — no input required. The one
+            // case where a sensor other than GPS genuinely carries speed information, because
+            // pressurisation is unmistakable and airliner speeds are a narrow known range.
+            estimatedFallbackSpeed = airborne
+            distance = airborne * dt
+            sourceTag = "FLIGHT(\(flightPhase.phase.rawValue))"
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelNorth = estimatedFallbackSpeed * cos(hr)
+            motionVelEast = estimatedFallbackSpeed * sin(hr)
         } else if let stated = manualSpeedKmh, stated > 0 {
             // USER-STATED SPEED. Highest priority: a number the traveller knows beats anything
             // inferable from a sensor that does not carry the signal.
