@@ -297,6 +297,9 @@ class WorkoutSession: ObservableObject {
     /// Accuracy that counts as "GPS is working", which is what makes dropping a bad fix safe.
     private let GOOD_FIX_ACCURACY: Double = 35.0
     private var lastGoodAccuracyFixTime: Date = .distantPast
+    /// The last speed GPS actually measured while in a vehicle, held when GPS is lost. Exact at
+    /// the moment of loss, degrades gracefully, needs no calibration and cannot diverge.
+    private var lastMeasuredVehicleSpeed: Double?
     private var vehicleLaunchDetected = false
     /// Latched once GPS has directly measured a speed no pedestrian can reach. This is far more
     /// reliable evidence of "in a vehicle" than the inertial launch detector, which infers it
@@ -2362,8 +2365,34 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if vehicleContextIsCurrent, !deviceIsBeingHandled,
-                  let vibrationDerived = vibrationSpeed.estimatedSpeed() {
+        } else if vehicleContextIsCurrent, let held = lastMeasuredVehicleSpeed {
+            // HOLD THE LAST MEASURED SPEED.
+            //
+            // Vibration is not a speed sensor on this hardware, and that is now measured rather
+            // than suspected. Over 784 windows from two drives spanning 0–77 km/h, correlation
+            // between vibration and GPS speed was: total energy r = −0.08; every absolute band
+            // from 0.5–25 Hz between −0.03 and −0.09; the best relative band (10–14 Hz) r = 0.38,
+            // explaining 14% of variance. The spectral peak sat at 1.37 Hz at EVERY speed —
+            // the car's suspension resonance, a fixed mechanical property — while a wheel peak
+            // would have swept 3.2→9.7 Hz across that range.
+            //
+            // The cause is placement. CarSpeedNet assumes a rigidly mounted phone coupled to
+            // road-tyre input; a phone loose in a hand or on a seat is isolated by both the
+            // suspension and its own mounting compliance, so it measures the body bouncing, not
+            // the road. Five successive features failed because the signal is not there.
+            //
+            // What IS true of vehicles is that speed changes slowly. Holding the last speed GPS
+            // actually measured is exact at the moment of signal loss and degrades gracefully,
+            // needs no calibration, and cannot diverge. For the case this mode exists for — an
+            // aircraft at cruise — it is very nearly right for hours. In a tunnel it is right
+            // to within whatever the driver did while inside.
+            estimatedFallbackSpeed = held
+            distance = held * dt
+            sourceTag = "HOLD"
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelNorth = estimatedFallbackSpeed * cos(hr)
+            motionVelEast = estimatedFallbackSpeed * sin(hr)
+        } else if false, let vibrationDerived = vibrationSpeed.estimatedSpeed() {
             // VIBRATION-BASED SPEED (vehicle). Preferred over integration whenever the model
             // has been calibrated, because it does not accumulate: road and engine vibration
             // scale with speed, so this is a direct reading rather than an integral, and the
@@ -3020,6 +3049,10 @@ class WorkoutSession: ObservableObject {
             // misses a gentle pull-away, and misses entirely a drive already under way when the
             // workout was started.
             sessionDiagnostics.latestGPSSpeed = location.speed
+            // Remember a genuine vehicle speed so it can be held once GPS goes.
+            if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
+                lastMeasuredVehicleSpeed = location.speed
+            }
             if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
                 vehicleConfirmedByGPSSpeed = true; lastVehicleEvidenceTime = Date()
             }
@@ -3165,6 +3198,10 @@ class WorkoutSession: ObservableObject {
         // the FORCED-mode calibration call above for why.
         let currentlyStepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
         sessionDiagnostics.latestGPSSpeed = location.speed
+        // Remember a genuine vehicle speed so it can be held once GPS goes.
+        if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
+            lastMeasuredVehicleSpeed = location.speed
+        }
         // Same vehicle-evidence gate as the Force-Velocity calibration call above — see the
         // comment there for why "not stepping" alone let walking contaminate the fit, and why
         // GPS speed is admitted as evidence in its own right.
