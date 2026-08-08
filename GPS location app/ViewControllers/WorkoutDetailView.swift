@@ -20,20 +20,24 @@ struct WorkoutDetailView: View {
     @State private var showRecalculateAlert = false
     @State private var recalculateMessage = ""
 
+    /// The richer of the two records, for display as well as export.
+    ///
+    /// `detailedFlight` is the route re-read from HealthKit, and HealthKit stores a SUMMARISED
+    /// route: a walk this app recorded as 56 dead-reckoned points over 79 m came back as barely
+    /// two, so the map drew one straight line between them while the real track wandered. That
+    /// looked exactly like a heading failure — the recorded headings were in fact changing by
+    /// 17.6°/s — and sent several builds chasing the wrong layer.
+    ///
+    /// The HealthKit copy is still needed: a workout recorded elsewhere, or imported from the
+    /// watch, has no locations of its own here. So prefer whichever actually holds more points
+    /// rather than always preferring one.
     private var activeFlight: Flight {
-        detailedFlight ?? flight
+        guard let detailed = detailedFlight else { return flight }
+        return detailed.locations.count > flight.locations.count ? detailed : flight
     }
 
-    /// The flight to EXPORT, which is not always the one to display.
-    ///
-    /// `detailedFlight` is the route re-read from HealthKit, and HealthKit stores plain
-    /// CLLocations. Rebuilding FlightLocations from those silently drops everything the app
-    /// itself recorded: the isEstimated flag and every motion field. An exported walk therefore
-    /// came back with all 571 points marked as real GPS and every acceleration, attitude and
-    /// heading column blank — which is what made a dead-reckoned track look like it had been
-    /// plotted from coarse fixes, and sent a whole build's diagnosis the wrong way.
-    ///
-    /// So prefer the app's OWN record whenever it actually has points.
+    /// Export takes the app's OWN record whenever it has points: the HealthKit copy is rebuilt
+    /// from plain CLLocations, which cannot carry the isEstimated flag or any motion field.
     private var exportFlight: Flight {
         flight.locations.isEmpty ? activeFlight : flight
     }
