@@ -2770,6 +2770,8 @@ class WorkoutSession: ObservableObject {
             gpsAccuracy: lastFix?.horizontalAccuracy,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
+            truthLatitude: sessionDiagnostics.latestGPSLatitude,
+            truthLongitude: sessionDiagnostics.latestGPSLongitude,
             accelMagnitude: locationManager.currentMotionAcceleration,
             rotationRate: locationManager.currentRotationRate,
             pitch: locationManager.currentPitch,
@@ -3274,6 +3276,8 @@ class WorkoutSession: ObservableObject {
             // Recorded for the diagnostics file only — a ground-truth column to compare the
             // estimate against. It must NOT feed the estimate itself; see below.
             sessionDiagnostics.latestGPSSpeed = location.speed
+            sessionDiagnostics.latestGPSLatitude = location.latitude
+            sessionDiagnostics.latestGPSLongitude = location.longitude
 
             // GPS may still TEACH the learned model here, even though it must not SUPPLY the
             // answer. Learning is calibration, not measurement — it is exactly what happens on
@@ -3442,6 +3446,8 @@ class WorkoutSession: ObservableObject {
         // the FORCED-mode calibration call above for why.
         let currentlyStepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
         sessionDiagnostics.latestGPSSpeed = location.speed
+        sessionDiagnostics.latestGPSLatitude = location.latitude
+        sessionDiagnostics.latestGPSLongitude = location.longitude
         // Remember a genuine vehicle speed so it can be held once GPS goes.
         if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
             lastMeasuredVehicleSpeed = location.speed

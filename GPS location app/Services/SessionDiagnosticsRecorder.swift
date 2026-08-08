@@ -36,6 +36,11 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let gpsAccuracy: Double?
         let latitude: Double?
         let longitude: Double?
+        /// Where GPS says we ACTUALLY are, recorded even in Force Velocity where GPS is
+        /// excluded from the route. Without it the file holds only the dead-reckoned track and
+        /// its error can be judged by eye against a map but never measured.
+        let truthLatitude: Double?
+        let truthLongitude: Double?
         let accelMagnitude: Double?
         let rotationRate: Double?
         let pitch: Double?, roll: Double?, yaw: Double?
@@ -92,6 +97,9 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     private var rawStart: Date?
     /// GPS speed most recently seen, stamped onto raw samples so the two can be correlated.
     var latestGPSSpeed: Double = -1
+    /// Latest GPS position, kept as ground truth even when the route deliberately ignores it.
+    var latestGPSLatitude: Double?
+    var latestGPSLongitude: Double?
 
     func recordRaw(verticalAccel: Double, at time: Date) {
         if rawStart == nil { rawStart = time }
@@ -196,9 +204,9 @@ final class SessionDiagnosticsRecorder: ObservableObject {
 
     // MARK: - Export
 
-    private static func fmt(_ v: Double?) -> String {
+    private static func fmt(_ v: Double?, _ places: Int = 5) -> String {
         guard let v, v.isFinite else { return "" }
-        return String(format: "%.5f", v)
+        return String(format: "%.\(places)f", v)
     }
 
     func csv() -> String {
@@ -206,7 +214,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "heading_deg,compass_deg,offset_deg,"
         out += "vib_feature_u,fit_p0,fit_p1,fit_p2,cal_min_u,cal_max_u,"
         out += "cal_min_speed_ms,cal_max_speed_ms,cal_samples,extrapolating,"
-        out += "handling_rot_rads,gps_speed_ms,gps_accuracy_m,lat,lon,"
+        out += "handling_rot_rads,gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m\n"
 
         let iso = ISO8601DateFormatter()
@@ -225,6 +233,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.handlingRotation) + ","
             out += Self.fmt(r.gpsSpeed) + "," + Self.fmt(r.gpsAccuracy) + ","
             out += Self.fmt(r.latitude) + "," + Self.fmt(r.longitude) + ","
+            out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
             out += Self.fmt(r.altitude) + "\n"
