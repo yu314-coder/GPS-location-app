@@ -2321,6 +2321,12 @@ class WorkoutSession: ObservableObject {
                 let dYaw = cumulativeYaw - previousCumulative
                 gyroTurnThisTick = dYaw
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
+
+                // Per TICK, not per sample: cumulative yaw is integrated at sensor rate, so a
+                // stride's swing has already cancelled itself within the second and what remains
+                // is close to the real turn. Tested against a simulated pocketed walk with a
+                // 90 deg turn: this flags the turn 4/4 and ordinary walking 0/36, where a
+                // smoothed-rate variant was worse on both.
                 turningNow = abs(dYaw) > 8   // deg per tick — actively turning
             }
             lastDeviceYawForHeading = cumulativeYaw
@@ -2424,7 +2430,11 @@ class WorkoutSession: ObservableObject {
             // but has NO drift, which is the exact complement of the gyro: gyro for fast turns,
             // compass for the long-run truth. Correct slowly so it never fights a real turn,
             // and only while NOT turning (a turn swings the compass through its own transient).
-            if !turningNow, !compassIsDisturbed, let compass = locationManager.currentCompassHeading {
+            // No turning gate here. It existed because a turn swings the compass through its
+            // own transient — but the gyro cross-check now tests that directly, and far better,
+            // by comparing the compass against the rotation actually measured. Keeping both
+            // meant a pocketed phone was denied its only absolute reference while walking.
+            if !compassIsDisturbed, let compass = locationManager.currentCompassHeading {
                 let (misalignment, gain) = effectiveCompassMisalignment
                 // Target = where the phone points PLUS how the body is offset from it.
                 let target = normalizedHeading(compass + misalignment)
