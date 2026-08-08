@@ -164,6 +164,8 @@ class WorkoutSession: NSObject, ObservableObject {
     // relay — so with no GPS the watch had nothing and its speed froze. The iPhone runs the
     // full ZUPT/bias/yaw pipeline, so when the watch can't integrate for itself it simply
     // ADOPTS the iPhone's speed and heading. Bluetooth/peer-WiFi: no internet required.
+    /// Last speed the WATCH's own GPS measured, held when GPS goes — mirrors the iPhone's HOLD.
+    private var lastMeasuredVehicleSpeedWatch: Double?
     private var iPhoneDRSpeed: Double?
     private var iPhoneDRHeading: Double?
     private var iPhoneDRVelocity: (north: Double, east: Double)?
@@ -2075,15 +2077,43 @@ class WorkoutSession: NSObject, ObservableObject {
             motionVelX = motionFallbackSpeed * cos(hr)
             motionVelY = -motionFallbackSpeed * sin(hr)
         } else {
-            // Not actually stepping (vehicle / aircraft / stationary): integrate acceleration,
-            // and drop the stale pedometer baseline so a later walk re-anchors cleanly.
+            // Not stepping: vehicle, aircraft or stationary. Drop the stale pedometer baseline
+            // so a later walk re-anchors cleanly.
             lastPedometerDistanceForDR = nil
-        lastCumulativeYawForHeading = nil
-        smoothedPedometerSpeedWatch = 0
-        lastPedometerUpdateTimeWatch = nil
-        pdrAppendedDistanceWatch = 0
-            distance = ((motionFallbackSpeed + nextSpeed) / 2.0) * dt
-            motionFallbackSpeed = nextSpeed
+            lastCumulativeYawForHeading = nil
+            smoothedPedometerSpeedWatch = 0
+            lastPedometerUpdateTimeWatch = nil
+            pdrAppendedDistanceWatch = 0
+
+            // SAME PRIORITY CHAIN AS THE IPHONE, and for the same measured reasons.
+            //
+            // This used to integrate the watch's own acceleration. That is exactly the method
+            // deleted from the iPhone once it was measured: accelerometer bias is
+            // indistinguishable from real sustained acceleration, so integrating it produces an
+            // error that grows without bound — a stationary phone read 81 km/h in 35 s, and an
+            // 8-minute drive fabricated 7.6 km of route. A watch has the same class of sensor
+            // on a swinging wrist, so it has the same failure and worse.
+            //
+            // Order: the iPhone's own estimate first, since the phone runs the learned speed
+            // model, holds the GPS-measured speed, and sees far steadier motion than a wrist;
+            // then the watch's own last GPS-measured speed, held; then nothing at all. Never
+            // integration.
+            if let relayed = iPhoneDRSpeed, let ts = iPhoneDRTimestamp,
+               now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
+                motionFallbackSpeed = relayed
+                accelSource = "iPhone-DR"
+            } else if let held = lastMeasuredVehicleSpeedWatch {
+                motionFallbackSpeed = held
+                accelSource = "HOLD"
+            } else {
+                motionFallbackSpeed = 0
+                accelSource = "waiting"
+            }
+            distance = motionFallbackSpeed * dt
+            // Peg the integrator so it cannot diverge in the background and reappear later.
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelX = motionFallbackSpeed * cos(hr)
+            motionVelY = -motionFallbackSpeed * sin(hr)
         }
 
         // Keep the DISPLAYED speed in sync every tick, not only when a point is appended, so
@@ -2517,6 +2547,13 @@ class WorkoutSession: NSObject, ObservableObject {
         if location.horizontalAccuracy < 0 {
             print("⌚ 🚫 [\(sourceLabel)] INVALID location (no fix) - REJECTED")
             return
+        }
+
+        // Remember a genuine measured speed so it can be HELD once GPS goes, matching the
+        // iPhone. Vehicle speed changes slowly, so the last measured value is exact at the
+        // moment of signal loss and degrades gracefully — unlike integration, which diverges.
+        if location.speed >= 0, location.horizontalAccuracy < 35.0 {
+            lastMeasuredVehicleSpeedWatch = location.speed
         }
 
         // FROZEN iPHONE RELAY GUARD: "connected to iPhone" does NOT mean the iPhone
