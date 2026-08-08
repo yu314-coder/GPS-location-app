@@ -338,6 +338,8 @@ class WorkoutSession: ObservableObject {
     /// The last speed GPS actually measured while in a vehicle, held when GPS is lost. Exact at
     /// the moment of loss, degrades gracefully, needs no calibration and cannot diverge.
     private var lastMeasuredVehicleSpeed: Double?
+    /// Consecutive GPS fixes showing vehicle-like speed, so one spike cannot latch vehicle mode.
+    private var consecutiveVehicleSpeedFixes = 0
     private var vehicleLaunchDetected = false
     /// Latched once GPS has directly measured a speed no pedestrian can reach. This is far more
     /// reliable evidence of "in a vehicle" than the inertial launch detector, which infers it
@@ -1947,6 +1949,43 @@ class WorkoutSession: ObservableObject {
     ///
     /// Must be called on BOTH the normal and the Force Velocity paths; see the call site in
     /// processNewLocation for what happened when it only ran on one.
+
+    /// Decide from GPS whether we are in a vehicle — and refuse to be fooled by one bad fix.
+    ///
+    /// This used to latch on a SINGLE reading above 8 m/s, permanently and with no check that
+    /// the user was not simply walking. Urban multipath produces exactly that: an isolated
+    /// spurious speed spike while on foot. The trip was then vehicular for good, the learned
+    /// speed model applied car-shaped speeds during a walk, and the route grew a spike where a
+    /// single tick advanced tens of metres. It only ever happened with GPS present, because GPS
+    /// was the sole source of the false evidence.
+    ///
+    /// Two changes. Consecutive confirmation, so an isolated spike cannot latch anything — real
+    /// vehicle travel sustains 29 km/h across several fixes, a multipath artefact does not. And
+    /// stepping vetoes it outright: if the pedometer is reporting a walking cadence then whatever
+    /// GPS just claimed, we are on foot.
+    private func confirmVehicleFromGPS(_ location: FlightLocation) {
+        let stepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
+        guard location.speed > 8.0, location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy < 20.0, !stepping else {
+            consecutiveVehicleSpeedFixes = 0
+            return
+        }
+        consecutiveVehicleSpeedFixes += 1
+        if consecutiveVehicleSpeedFixes >= 3 {
+            vehicleConfirmedByGPSSpeed = true
+            lastVehicleEvidenceTime = Date()
+        }
+    }
+
+    /// Walking, confirmed by counted steps, revokes vehicle status. Nothing else could clear it,
+    /// so a trip that briefly looked vehicular stayed that way even once plainly on foot.
+    private func revokeVehicleEvidenceIfWalking() {
+        vehicleConfirmedByGPSSpeed = false
+        vehicleLaunchDetected = false
+        lastVehicleEvidenceTime = nil
+        consecutiveVehicleSpeedFixes = 0
+    }
+
     private func learnCompassMisalignment(from location: FlightLocation) {
         guard location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20,
               let compass = locationManager.currentCompassHeading else { return }
@@ -2861,7 +2900,12 @@ class WorkoutSession: ObservableObject {
                                     self.stepCadence = self.stepCadence * 0.5 + cadence * 0.5
                                 }
                                 // Only a genuine walking cadence counts as "stepping".
-                                if self.stepCadence >= 1.0 { self.lastStepIncrementTime = now }
+                                if self.stepCadence >= 1.0 {
+                                    self.lastStepIncrementTime = now
+                                    // Counted steps at a walking cadence are direct evidence of
+                                    // being on foot, and outrank any earlier GPS speed spike.
+                                    self.revokeVehicleEvidenceIfWalking()
+                                }
                             }
                         }
                         self.lastStepSampleTime = now
@@ -3245,9 +3289,7 @@ class WorkoutSession: ObservableObject {
             // engaged, which is exactly what "the last speed before signal loss" means. Enable
             // it while moving and it holds that speed; enable it while stopped and it holds
             // zero, which is honest — and the Known-speed field is there to say otherwise.
-            if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
-                vehicleConfirmedByGPSSpeed = true; lastVehicleEvidenceTime = Date()
-            }
+            confirmVehicleFromGPS(location)
             if location.speed >= 0, !currentlyStepping,
                (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
                 vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
@@ -3400,9 +3442,7 @@ class WorkoutSession: ObservableObject {
         // Same vehicle-evidence gate as the Force-Velocity calibration call above — see the
         // comment there for why "not stepping" alone let walking contaminate the fit, and why
         // GPS speed is admitted as evidence in its own right.
-        if location.speed > 8.0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20.0 {
-            vehicleConfirmedByGPSSpeed = true; lastVehicleEvidenceTime = Date()
-        }
+        confirmVehicleFromGPS(location)
         if location.speed >= 0, !currentlyStepping,
            (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
             vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
