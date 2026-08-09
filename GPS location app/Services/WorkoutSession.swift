@@ -2766,7 +2766,10 @@ class WorkoutSession: ObservableObject {
             calSamples: vd.samples,
             extrapolating: vd.isExtrapolating,
             handlingRotation: handlingRotationLevel,
-            gpsSpeed: lastFix?.speed,
+            // The LIVE GPS speed, not lastFix.speed — in Force Velocity lastFix is the frozen
+            // anchor, so that column read one constant value for an entire drive and was
+            // useless as ground truth.
+            gpsSpeed: sessionDiagnostics.latestGPSSpeed >= 0 ? sessionDiagnostics.latestGPSSpeed : nil,
             gpsAccuracy: lastFix?.horizontalAccuracy,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
