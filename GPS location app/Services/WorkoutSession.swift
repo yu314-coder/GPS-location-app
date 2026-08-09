@@ -2770,7 +2770,10 @@ class WorkoutSession: ObservableObject {
             // anchor, so that column read one constant value for an entire drive and was
             // useless as ground truth.
             gpsSpeed: sessionDiagnostics.latestGPSSpeed >= 0 ? sessionDiagnostics.latestGPSSpeed : nil,
-            gpsAccuracy: lastFix?.horizontalAccuracy,
+            // Live accuracy, not lastFix — in Force Velocity lastFix is the frozen anchor, so
+            // that column read one constant value (1 m) for an entire drive and could not be
+            // used to tell a tracking fix from a stale one.
+            gpsAccuracy: sessionDiagnostics.latestGPSAccuracy >= 0 ? sessionDiagnostics.latestGPSAccuracy : nil,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
             truthLatitude: sessionDiagnostics.latestGPSLatitude,
@@ -3281,6 +3284,7 @@ class WorkoutSession: ObservableObject {
             sessionDiagnostics.latestGPSSpeed = location.speed
             sessionDiagnostics.latestGPSLatitude = location.latitude
             sessionDiagnostics.latestGPSLongitude = location.longitude
+            sessionDiagnostics.latestGPSAccuracy = location.horizontalAccuracy
 
             // GPS may still TEACH the learned model here, even though it must not SUPPLY the
             // answer. Learning is calibration, not measurement — it is exactly what happens on
@@ -3451,6 +3455,7 @@ class WorkoutSession: ObservableObject {
         sessionDiagnostics.latestGPSSpeed = location.speed
         sessionDiagnostics.latestGPSLatitude = location.latitude
         sessionDiagnostics.latestGPSLongitude = location.longitude
+        sessionDiagnostics.latestGPSAccuracy = location.horizontalAccuracy
         // Remember a genuine vehicle speed so it can be held once GPS goes.
         if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
             lastMeasuredVehicleSpeed = location.speed

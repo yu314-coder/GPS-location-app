@@ -100,6 +100,11 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// Latest GPS position, kept as ground truth even when the route deliberately ignores it.
     var latestGPSLatitude: Double?
     var latestGPSLongitude: Double?
+    /// Accuracy of that live fix. Recorded because the truth track is only usable where GPS was
+    /// actually tracking: in a basement it freezes, and a frozen truth silently turns into a
+    /// bogus reference bearing that inflates every measured heading error. On one walk that
+    /// alone accounted for the difference between a 113 deg and a 48 deg p90.
+    var latestGPSAccuracy: Double = -1
 
     func recordRaw(verticalAccel: Double, at time: Date) {
         if rawStart == nil { rawStart = time }

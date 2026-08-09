@@ -691,22 +691,30 @@ class LocationManager: NSObject, ObservableObject {
                 // MINUTE, which bends a long route steadily away from truth. Track the slow
                 // mean of the vertical rate and subtract it; real turns are far faster than
                 // this 30 s time constant (as used in the PDR literature) and pass through.
-                // ESTIMATE BIAS ONLY WHILE NOT TURNING.
+                // NO not-turning gate. One was tried and measurably made things worse.
                 //
-                // The bias filter used to run unconditionally, so a sustained turn — a motorway
-                // ramp or a long bend takes 10-20 s — was partly absorbed INTO the bias and then
-                // subtracted from the very rotation being measured. The heading under-rotated
-                // exactly when it was changing.
+                // The theory was that a sustained turn gets absorbed into the bias estimate and
+                // subtracted from the rotation being measured, so bias should only be sampled
+                // while still. Gating at 0.05 rad/s produced this, against GPS ground truth:
                 //
-                // Measured against GPS ground truth on a real drive: heading error is 3 deg at
-                // the median and stays under 15 deg through 441 of 501 windows, but the 60 worst
-                // windows average 16.8 deg/tick of real turning against 6.0 for the good ones.
-                // The failure is concentrated in turns, which is the signature of exactly this.
+                //     straight-line heading p90   8 deg  ->  30 deg
+                //     turning heading median     22 deg  ->  51 deg
                 //
-                // Bias is a property of the sensor, not of the manoeuvre, so it can be measured
-                // whenever the device is not rotating and held through the turn. 0.05 rad/s is
-                // ~3 deg/s: far above the bias being estimated, far below any real turn.
-                if dtForRotation > 0, abs(verticalRate) < 0.05 {
+                // Worse in both regimes. The reason is in the same logs: during STRAIGHT
+                // driving the rotation-rate magnitude has a median of 0.086 rad/s and only 24%
+                // of samples fall below 0.05, so the gate discarded three-quarters of the
+                // samples that should have been updating bias, and a stale bias drifts.
+                //
+                // The gate could not have worked in any case: straight driving medians
+                // 0.086 rad/s against 0.095 for turning. Rotation rate barely separates them,
+                // because it is dominated by vibration rather than by the vehicle's yaw. There
+                // is no threshold that admits straight driving and rejects turns.
+                //
+                // Note also that the "turning" error is partly an artefact of how it is
+                // measured: an instantaneous heading is compared against a bearing averaged
+                // over 5 s, and during a turn those genuinely differ. The metric needs fixing
+                // before turns are chased again.
+                if dtForRotation > 0 {
                     let biasAlpha = min(dtForRotation / (30.0 + dtForRotation), 1.0)
                     self.verticalGyroBias += (verticalRate - self.verticalGyroBias) * biasAlpha
                 }
