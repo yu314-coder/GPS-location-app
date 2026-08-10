@@ -335,7 +335,11 @@ struct FlightMetrics: Codable, Hashable {
 
             // Calculate instantaneous speed (m/s) from distance between points
             let timeDelta = location.timestamp.timeIntervalSince(previous.timestamp)
-            if timeDelta > 0 && distance > 0 {
+            // A speed derived from two points a few milliseconds apart is a division artifact,
+            // not a measurement — 1.5 m over 4 ms reads as 1350 km/h, which is how a 1.6 km/h
+            // walk came to report a max speed of 1416.2 km/h. Below this gap the pair says
+            // nothing about speed, so leave the previous value alone.
+            if timeDelta >= 0.2 && distance > 0 {
                 currentSpeed = distance / timeDelta
 
                 // Log speed calculation details every 25 points for background monitoring

@@ -406,6 +406,79 @@ class WorkoutSession: ObservableObject {
     /// ~250 m/s), so anything beyond it is integration runaway and the velocity is rescaled
     /// back to the ceiling rather than allowed to reach thousands of km/h.
     private let DR_MAX_SPEED: Double = 360.0            // m/s (~1300 km/h)
+    // MARK: - Step detection from the accelerometer
+    //
+    // CMPedometer is the authority on how far a walk went, but it is far too slow to say WHEN
+    // it started and stopped — measured at 16-27 s late in both directions. Steps are plainly
+    // visible in the vertical acceleration at 50 Hz, so detect them here and let the pedometer
+    // correct the total afterwards.
+    /// Low-passed vertical residual, subtracted to high-pass the step signal (posture changes
+    /// and slow drift must not read as footfalls).
+    private var stepDetectSlowVertical: Double = 0
+    /// Hysteresis: the signal must fall back below the reset level before another step counts,
+    /// so one footfall cannot be counted several times as it rings.
+    private var stepDetectArmed = true
+    /// Times of recently detected steps, for cadence.
+    private var imuStepTimes: [Date] = []
+    /// Steps detected since the 1 Hz tick last consumed them.
+    private var imuStepsPendingTick = 0
+    /// Metres per step, LEARNED from CMPedometer (its distance ÷ its steps) rather than
+    /// assumed. Seeded at a typical adult walking stride until the first update lands.
+    private var learnedStrideLength: Double = 0.70
+    /// Distance walked according to the step detector, reconciled upward to the pedometer.
+    private var walkedDistanceEstimate: Double = 0
+    /// The pedometer's cumulative distance as of the previous update, used only to learn the
+    /// stride length from the same update's step delta.
+    private var lastFallbackPedometerDistanceForStride: Double?
+    private let STEP_PEAK_ACCEL: Double = 1.2           // m/s², high-passed vertical
+    private let STEP_RESET_ACCEL: Double = 0.4          // m/s², re-arm level
+    private let STEP_MIN_INTERVAL: TimeInterval = 0.25  // s (4 steps/s ceiling)
+    /// Peak acceleration and rotation over the stationarity window, kept so the pedestrian
+    /// stillness test can read them without recomputing.
+    private var recentMotionPeakAccel: Double = 0
+    private var recentMotionPeakRotation: Double = 0
+    /// How long the device has looked pedestrian-quiet, for the standing-still test.
+    private var pedestrianQuietDuration: TimeInterval = 0
+    private let PEDESTRIAN_STILL_ACCEL: Double = 1.0    // m/s²
+    private let PEDESTRIAN_STILL_ROTATION: Double = 0.5 // rad/s
+    private let PEDESTRIAN_STILL_WINDOW: TimeInterval = 1.2  // s
+    /// A stopped vehicle idles quietly for longer than a pothole-free moment on the move, so
+    /// this is deliberately longer than the pedestrian window.
+    private let VEHICLE_STOP_QUIET_WINDOW: TimeInterval = 2.5  // s
+    /// Velocity change measured along the direction of travel since GPS last stated the speed.
+    /// Added to the held speed so braking and pulling away are followed immediately, while a
+    /// quiet cruise (a ≈ 0) leaves the held value untouched.
+    private var heldSpeedCorrection: Double = 0
+    /// Acceleration below this is indistinguishable from residual bias and must never be
+    /// integrated; braking and pulling away are an order of magnitude above it.
+    private let HELD_SPEED_ACCEL_FLOOR: Double = 0.25   // m/s²
+
+    /// Steps per second over the last couple of seconds, or 0 when the feet have stopped.
+    private var imuStepCadence: Double {
+        let now = Date()
+        let recent = imuStepTimes.filter { now.timeIntervalSince($0) <= 2.5 }
+        guard recent.count >= 2, let first = recent.first, let last = recent.last else { return 0 }
+        let span = last.timeIntervalSince(first)
+        guard span > 0.2 else { return 0 }
+        return Double(recent.count - 1) / span
+    }
+
+    /// Walking RIGHT NOW: a step landed within the last stride and the rhythm is a real
+    /// walking cadence. Sporadic knocks cannot satisfy both.
+    private var imuIsStepping: Bool {
+        guard let last = imuStepTimes.last, Date().timeIntervalSince(last) < 1.2 else { return false }
+        return imuStepCadence >= 1.0
+    }
+
+    /// Positive evidence of standing still, for pedestrians only: quiet on every axis, not
+    /// rotating, and no step for over a second. Never consulted in vehicle context — a
+    /// cruising aircraft looks identical and must never be called stopped.
+    private var pedestrianIsStandingStill: Bool {
+        guard pedestrianQuietDuration >= PEDESTRIAN_STILL_WINDOW else { return false }
+        guard let last = imuStepTimes.last else { return true }
+        return Date().timeIntervalSince(last) >= PEDESTRIAN_STILL_WINDOW
+    }
+
     private let ZUPT_ACCEL_THRESHOLD: Double = 0.25     // m/s²
     /// Gyro magnitude ceiling — a stationary device is not rotating either.
     private let ZUPT_ROTATION_THRESHOLD: Double = 0.35  // rad/s
@@ -1721,6 +1794,25 @@ class WorkoutSession: ObservableObject {
         // vetoes the ZUPT.
         let peakAccel = zuptWindow.map(\.accel).max() ?? 0
         let peakRotation = zuptWindow.map(\.rotation).max() ?? 0
+        recentMotionPeakAccel = peakAccel
+        recentMotionPeakRotation = peakRotation
+        // Pedestrian stillness runs off the same window but at a much coarser threshold: a
+        // hand-held phone is never as quiet as one on a table, and the question here is only
+        // "are the feet moving", not "is the device at rest".
+        if peakAccel < PEDESTRIAN_STILL_ACCEL && peakRotation < PEDESTRIAN_STILL_ROTATION {
+            pedestrianQuietDuration += dt
+        } else {
+            pedestrianQuietDuration = 0
+        }
+        detectStep(verticalResidual: up, dt: dt)
+        // Track the velocity change along the direction of travel, for the held vehicle speed.
+        // Only real acceleration accumulates: below the floor this is bias, and integrating
+        // bias is exactly what made open-ended integration unusable.
+        let travelRadians = motionHeadingDegrees * .pi / 180
+        let alongTrack = rN * cos(travelRadians) + rE * sin(travelRadians)
+        if abs(alongTrack) > HELD_SPEED_ACCEL_FLOOR {
+            heldSpeedCorrection = min(max(heldSpeedCorrection + alongTrack * dt, -DR_MAX_SPEED), DR_MAX_SPEED)
+        }
         // CRITICAL for cruise (aircraft, highway): a body coasting at constant velocity has
         // ~zero acceleration and ~zero rotation — identical to being parked. ZUPT alone
         // cannot tell them apart and was zeroing real cruise velocity, so a plane at 900 km/h
@@ -2523,7 +2615,80 @@ class WorkoutSession: ObservableObject {
         // steps you are walking, and its stride-model distance is right, whereas integrating
         // walking acceleration diverges. Only a genuinely stepless vehicle/aircraft falls
         // through to integration.
-        if pedometerIsCounting, let pedometerTotal = fallbackPedometerDistance {
+        //
+        // FIRST CHOICE: STEPS SEEN BY THE ACCELEROMETER, NOT REPORTED BY CMPedometer.
+        //
+        // CMPedometer is accurate but SLOW, and both of its lags were visible in one 2-minute
+        // walk (velocity_debug_20260810_174247):
+        //
+        //   standing still  09:43:29-09:43:48  reported up to 5.9 km/h, laid down ~7 m of route
+        //   walking         09:44:11-09:44:37  reported 0.0 km/h and 0 m for 27 seconds
+        //
+        // In both windows the accelerometer already knew: standing still it read 0.04-0.45 m/s²
+        // with 0.02-0.31 rad/s of rotation, and walking it read 0.8-13.4 m/s² with 0.2-8.5
+        // rad/s. That is not a marginal separation, and it is available every 20 ms instead of
+        // every several seconds.
+        //
+        // So detect steps directly from the vertical acceleration and take the speed from
+        // measured cadence × stride length, where the stride length is LEARNED from CMPedometer
+        // (its distance ÷ its steps) rather than assumed. The pedometer stays the authority on
+        // total distance and corrects any shortfall as soon as it reports; it just no longer
+        // decides WHEN we are walking.
+        //
+        // This branch is gated on !vehicleContextIsCurrent, so nothing here can touch a car or
+        // an aircraft: in the air there are no steps, there is no cadence, and the speed comes
+        // from HOLD, which is unchanged.
+        if imuIsStepping, !vehicleContextIsCurrent {
+            let stepsThisTick = imuStepsPendingTick
+            imuStepsPendingTick = 0
+            // Speed from cadence, which is a direct measurement of how fast the feet are
+            // going, and which falls to zero within about a second of the last step rather
+            // than decaying for twenty.
+            let cadenceSpeed = imuStepCadence * learnedStrideLength
+            // Never start behind what has already been laid down. The pedometer path may have
+            // been running first, advancing pdrAppendedDistance, while this counter was still
+            // at zero — leaving `owed` negative and emitting no distance at all until the step
+            // count caught up.
+            walkedDistanceEstimate = max(walkedDistanceEstimate, pdrAppendedDistance)
+            walkedDistanceEstimate += Double(stepsThisTick) * learnedStrideLength
+            if let pedometerTotal = fallbackPedometerDistance {
+                // The pedometer is still the authority on TOTAL distance — it models stride
+                // far better than a single learned average — so never fall behind it.
+                walkedDistanceEstimate = max(walkedDistanceEstimate, pedometerTotal)
+                lastFallbackPedometerDistance = pedometerTotal
+            }
+            let owed = max(0, walkedDistanceEstimate - pdrAppendedDistance)
+            // Bleed the owed distance along the CURRENT heading rather than drawing it as one
+            // straight segment later; the cap is generous enough to catch up within a few
+            // ticks but never large enough to invent a jump.
+            distance = min(owed, max(cadenceSpeed * dt * 2.0, 1.0))
+            pdrAppendedDistance += distance
+            estimatedFallbackSpeed = cadenceSpeed
+            fallbackPedometerSpeed = cadenceSpeed
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelNorth = estimatedFallbackSpeed * cos(hr)
+            motionVelEast = estimatedFallbackSpeed * sin(hr)
+            sourceTag = "PDR(step)"
+        } else if pedometerIsCounting, pedestrianIsStandingStill, !vehicleContextIsCurrent {
+            // STANDING STILL — SAY SO IMMEDIATELY.
+            //
+            // pedometerIsCounting stays true for 20 s after the last step so sparse distance
+            // updates can be bridged, and during that window a stale CMPedometer pace kept
+            // being re-applied as the live speed. Standing at a urinal therefore read 5.9 km/h
+            // and drew several metres of route, which is exactly why a there-and-back walk no
+            // longer closes on itself.
+            //
+            // The evidence for "not moving" is positive and pedestrian-specific: near-zero
+            // acceleration AND near-zero rotation, held for over a second, with no step
+            // detected. It is deliberately unavailable to vehicles — a cruising aircraft is
+            // also quiet, and calling that "stopped" is the one failure this mode cannot have.
+            distance = 0
+            fallbackPedometerSpeed = 0
+            estimatedFallbackSpeed = 0
+            motionVelNorth = 0
+            motionVelEast = 0
+            sourceTag = "PDR(still)"
+        } else if pedometerIsCounting, let pedometerTotal = fallbackPedometerDistance {
             // PEDOMETER (walking). CMPedometer delivers updates SPARSELY (seconds to tens of
             // seconds apart), so the cumulative distance jumps when an update lands and holds
             // flat between. The DELTA is still exactly the distance walked since the last tick
@@ -2627,8 +2792,32 @@ class WorkoutSession: ObservableObject {
             // needs no calibration, and cannot diverge. For the case this mode exists for — an
             // aircraft at cruise — it is very nearly right for hours. In a tunnel it is right
             // to within whatever the driver did while inside.
-            estimatedFallbackSpeed = held
-            distance = held * dt
+            //
+            // BUT A HELD SPEED MUST STILL OBEY THE ACCELEROMETER.
+            //
+            // Freezing the number outright meant a car that braked to a stop kept reporting the
+            // speed it was doing before the red light, and one that pulled away from a stop
+            // kept reporting zero — reported as "goes to 0 too slow, and up from 0 too slow",
+            // while the cruise value in between was accurate. Braking and pulling away are the
+            // two things an accelerometer measures WELL: 1–4 m/s² sustained for seconds, far
+            // above the ~0.1 m/s² residual bias that makes open-ended integration useless.
+            //
+            // So hold the GPS-measured speed and correct it by the along-track velocity change
+            // actually measured since: v = v₀ + ∫a·dt, which is not a heuristic but the
+            // definition. Only samples above a noise floor accumulate, so a quiet cruise adds
+            // nothing and the held value is preserved exactly — which is precisely the flight
+            // case: at cruise a ≈ 0, so v stays at v₀ and the speed can never decay to zero
+            // just because the air is smooth.
+            let corrected = max(0, held + heldSpeedCorrection)
+            // On the GROUND ONLY, sustained quiet also means stopped. A stopped car idles at
+            // 0.1–0.3 m/s² while a moving one is noisier, so this catches the stop even when
+            // the braking integral misses it. Never available airborne — a smooth cruise is
+            // quiet too, and calling that "stopped" is the one mistake this mode cannot make.
+            let stoppedOnGround = !flightPhase.isAirborne
+                && (pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW || isDeviceStationaryByActivity)
+            estimatedFallbackSpeed = stoppedOnGround ? 0 : corrected
+            if stoppedOnGround { heldSpeedCorrection = -held }
+            distance = estimatedFallbackSpeed * dt
             // Name a held ZERO explicitly. Engaging this mode while stopped freezes zero, and a
             // route that never moves looks identical to a broken estimator unless it says so.
             // Flight phase labels the reading but never sets it. Cabin pressure can say whether
@@ -2636,6 +2825,8 @@ class WorkoutSession: ObservableObject {
             // held near 1,800–2,400 m by pressurisation whatever the aircraft's real height.
             if flightPhase.isAirborne {
                 sourceTag = "HOLD(\(flightPhase.phase.rawValue))"
+            } else if stoppedOnGround {
+                sourceTag = "HOLD(stopped)"
             } else {
                 sourceTag = held > 0.5 ? "HOLD" : "HOLD(0 — set a speed)"
             }
@@ -2898,6 +3089,16 @@ class WorkoutSession: ObservableObject {
         fallbackPedometerSpeed = 0
         lastPedometerUpdateTime = nil
         pdrAppendedDistance = 0
+        // Step-detector state is per-workout too: a stride learned on someone else's walk or
+        // a step counted before this one began must not carry over.
+        imuStepTimes = []
+        imuStepsPendingTick = 0
+        walkedDistanceEstimate = 0
+        pedestrianQuietDuration = 0
+        stepDetectSlowVertical = 0
+        stepDetectArmed = true
+        lastFallbackPedometerDistanceForStride = nil
+        heldSpeedCorrection = 0
         // Start the pedometer REGARDLESS of the selected activity type. Distance is routed by
         // whether steps are actually being counted, not by the label — the user selects a
         // vehicle/flight type but may still be walking on the ground, where accelerometer
@@ -2934,7 +3135,30 @@ class WorkoutSession: ObservableObject {
                         self.fallbackPedometerDistance = d
                         self.lastPedometerUpdateTime = now
                     }
-                    if let pace, pace > 0 { self.fallbackPedometerSpeed = 1.0 / pace }
+                    // LEARN THE STRIDE. CMPedometer models stride length properly (height,
+                    // cadence, calibration from past walks), so its distance ÷ its steps is
+                    // the best estimate of this user's stride available — and it is what makes
+                    // the accelerometer step count convertible into metres.
+                    if let d = distance, steps > self.lastFallbackStepCount,
+                       let prevD = self.lastFallbackPedometerDistanceForStride {
+                        let stride = (d - prevD) / Double(steps - self.lastFallbackStepCount)
+                        if stride > 0.30, stride < 1.20 {
+                            self.learnedStrideLength += (stride - self.learnedStrideLength) * 0.3
+                        }
+                    }
+                    self.lastFallbackPedometerDistanceForStride = distance
+
+                    // CMPedometer's currentPace IS NOT LIVE WHEN YOU STOP.
+                    //
+                    // It reports the pace of the walking that has happened, and it holds that
+                    // value while you stand still — the same 1.615 m/s was re-applied every
+                    // update for twenty seconds at a urinal, overwriting the decay put in to
+                    // handle exactly this, and reporting 5.9 km/h while stationary. Only trust
+                    // it when this very update also brought new steps, which is the only proof
+                    // that the pace describes the present rather than the past.
+                    if let pace, pace > 0, steps > self.lastFallbackStepCount {
+                        self.fallbackPedometerSpeed = 1.0 / pace
+                    }
                     // CADENCE, not "any step". Road vibration in a VEHICLE makes CMPedometer
                     // emit sporadic phantom steps; treating those as walking locked the app
                     // into pedometer distance and reported ~3 km/h while actually driving.
@@ -2944,13 +3168,24 @@ class WorkoutSession: ObservableObject {
                         if let prev = self.lastStepSampleTime {
                             let elapsed = now.timeIntervalSince(prev)
                             if elapsed > 0.5 {
-                                let cadence = Double(added) / elapsed          // steps/s
+                                // ATTRIBUTE STEPS TO WHEN THEY HAPPENED, NOT TO THE WHOLE GAP.
+                                // Steps that arrive after a long silence were taken in the last
+                                // seconds of it, not spread evenly across it — you cannot walk
+                                // during the part where no steps were counted. Dividing by the
+                                // full elapsed time diluted a real 2 steps/s down to 0.5 after
+                                // any pause, so the cadence gate then needed several more
+                                // updates to climb back over 1.0. Measured cost: 27 seconds of
+                                // walking reported as 0.0 km/h after standing still.
+                                let cadence = Double(added) / min(elapsed, 5.0)  // steps/s
                                 // SEED on the first measurement instead of smoothing up from
                                 // zero. Blending 50/50 from 0 meant a real 1.5 steps/s first
                                 // read as 0.75 — below the gate — so PDR needed THREE sparse
                                 // pedometer updates (~30 s) to engage, which is most of a short
                                 // walk. Meanwhile the walk fell through to integration.
-                                if self.stepCadence <= 0 {
+                                // Seed rather than blend after a long silence too: a cadence
+                                // measured before a pause says nothing about the walk that has
+                                // just started, and averaging with it only slows the response.
+                                if self.stepCadence <= 0 || elapsed > 5.0 {
                                     self.stepCadence = cadence
                                 } else {
                                     self.stepCadence = self.stepCadence * 0.5 + cadence * 0.5
@@ -3030,8 +3265,43 @@ class WorkoutSession: ObservableObject {
         fallbackPedometerSpeed = 0
         lastPedometerUpdateTime = nil
         pdrAppendedDistance = 0
+        // Step-detector state is per-workout too: a stride learned on someone else's walk or
+        // a step counted before this one began must not carry over.
+        imuStepTimes = []
+        imuStepsPendingTick = 0
+        walkedDistanceEstimate = 0
+        pedestrianQuietDuration = 0
+        stepDetectSlowVertical = 0
+        stepDetectArmed = true
+        lastFallbackPedometerDistanceForStride = nil
+        heldSpeedCorrection = 0
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
+    }
+
+    /// Count footfalls in the vertical acceleration. A step is a sharp upward spike as the foot
+    /// lands; high-passing removes posture and slow tilt drift, the hysteresis stops one
+    /// footfall ringing into several, and the 0.25 s refractory period caps the rate at a
+    /// physically possible 4 steps/s. Deliberately simple: what matters is the TIMING of the
+    /// steps — their length is learned from CMPedometer, which measures it properly.
+    private func detectStep(verticalResidual up: Double, dt: TimeInterval) {
+        let tau = 0.5
+        let alpha = min(dt / (tau + dt), 1.0)
+        stepDetectSlowVertical += (up - stepDetectSlowVertical) * alpha
+        let highPassed = up - stepDetectSlowVertical
+
+        if stepDetectArmed, highPassed > STEP_PEAK_ACCEL {
+            let now = Date()
+            let sinceLast = imuStepTimes.last.map { now.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+            if sinceLast >= STEP_MIN_INTERVAL {
+                imuStepTimes.append(now)
+                imuStepsPendingTick += 1
+                if imuStepTimes.count > 12 { imuStepTimes.removeFirst() }
+            }
+            stepDetectArmed = false
+        } else if highPassed < STEP_RESET_ACCEL {
+            stepDetectArmed = true
+        }
     }
 
     private func reanchorAfterEstimatedFallback(with location: FlightLocation) {
@@ -3550,6 +3820,8 @@ class WorkoutSession: ObservableObject {
         // Remember a genuine vehicle speed so it can be held once GPS goes.
         if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
             lastMeasuredVehicleSpeed = location.speed
+            // A fresh measurement supersedes everything integrated since the last one.
+            heldSpeedCorrection = 0
             if vehicleContextIsCurrent, !deviceIsBeingHandled {
                 learnedSpeed.learn(gpsSpeed: location.speed)
             }
