@@ -91,7 +91,10 @@ class WorkoutSession: NSObject, ObservableObject {
     private var pedometerFallbackDistanceAdded: Double = 0.0  // how much pedometer distance was added during this gap
     private var pedometerFallbackStartTime: Date?             // when pedometer fallback engaged (to detect "no steps → vehicle")
     private let GPS_GAP_THRESHOLD: TimeInterval = 5.0  // seconds without valid GPS before switching to pedometer
-    private let WATCH_DEAD_RECKON_THRESHOLD: TimeInterval = 3.0  // engage watch's own accel dead reckoning fast
+    /// Matched to the iPhone's ESTIMATED_LOCATION_GAP_THRESHOLD so both devices decide GPS is
+    /// gone at the same moment; a watch that switched two seconds earlier reported a different
+    /// distance for the same gap.
+    private let WATCH_DEAD_RECKON_THRESHOLD: TimeInterval = 5.0
     private let PEDOMETER_NO_STEP_GRACE: TimeInterval = 5.0   // if pedometer adds ~nothing this long, motion takes over
     private var lastPedometerFallbackLogTime: Date = .distantPast
     private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
@@ -186,6 +189,61 @@ class WorkoutSession: NSObject, ObservableObject {
     private var longRunMeanX: Double = 0
     private var longRunMeanY: Double = 0
     private let DR_MAX_SPEED: Double = 360.0               // m/s: divergence backstop (~1300 km/h)
+
+    // MARK: - Step detection and held-speed correction (identical method to the iPhone)
+    //
+    // CMPedometer is the authority on how far a walk went but is far too slow to say WHEN it
+    // started and stopped — measured on iPhone at 16-27 s late in both directions. Steps are
+    // plainly visible in the vertical acceleration, so detect them here and let the pedometer
+    // correct the total afterwards. Same thresholds and same structure as the iPhone so the
+    // two devices cannot disagree about what they are measuring.
+    private var stepDetectSlowVertical: Double = 0
+    private var stepDetectArmed = true
+    private var imuStepTimes: [Date] = []
+    private var imuStepsPendingTick = 0
+    private var learnedStrideLength: Double = 0.70
+    private var walkedDistanceEstimate: Double = 0
+    private var lastPedometerDistanceForStride: Double?
+    private var lastStepCountForStride: Int = 0
+    private let STEP_PEAK_ACCEL: Double = 1.2
+    private let STEP_RESET_ACCEL: Double = 0.4
+    private let STEP_MIN_INTERVAL: TimeInterval = 0.25
+    private var pedestrianQuietDuration: TimeInterval = 0
+    private let PEDESTRIAN_STILL_ACCEL: Double = 1.0
+    private let PEDESTRIAN_STILL_ROTATION: Double = 0.5
+    private let PEDESTRIAN_STILL_WINDOW: TimeInterval = 1.2
+    private let VEHICLE_STOP_QUIET_WINDOW: TimeInterval = 2.5
+    /// Velocity change measured along the direction of travel since GPS last stated the speed.
+    private var heldSpeedCorrection: Double = 0
+    private let HELD_SPEED_ACCEL_FLOOR: Double = 0.25
+    /// A held speed above this could be an aircraft, and an aircraft at cruise is quiet — so
+    /// quiet must never be read as stopped there. The iPhone uses cabin pressure for this; the
+    /// watch has no barometric flight phase, so it uses the speed itself, which is safe in the
+    /// only direction that matters: nothing fast is ever zeroed by stillness.
+    private let MAX_GROUND_STOP_SPEED: Double = 60.0        // m/s (216 km/h)
+    /// How old a fix may be and still anchor a dead-reckoned route (see iPhone: Core Location
+    /// returns a cached position on the first callback after startUpdatingLocation).
+    private let MAX_ANCHOR_FIX_AGE: TimeInterval = 5.0
+
+    private var imuStepCadence: Double {
+        let now = Date()
+        let recent = imuStepTimes.filter { now.timeIntervalSince($0) <= 2.5 }
+        guard recent.count >= 2, let first = recent.first, let last = recent.last else { return 0 }
+        let span = last.timeIntervalSince(first)
+        guard span > 0.2 else { return 0 }
+        return Double(recent.count - 1) / span
+    }
+
+    private var imuIsStepping: Bool {
+        guard let last = imuStepTimes.last, Date().timeIntervalSince(last) < 1.2 else { return false }
+        return imuStepCadence >= 1.0
+    }
+
+    private var pedestrianIsStandingStill: Bool {
+        guard pedestrianQuietDuration >= PEDESTRIAN_STILL_WINDOW else { return false }
+        guard let last = imuStepTimes.last else { return true }
+        return Date().timeIntervalSince(last) >= PEDESTRIAN_STILL_WINDOW
+    }
     private let ZUPT_ACCEL_THRESHOLD: Double = 0.25         // m/s² peak residual within window
     private let ZUPT_ROTATION_THRESHOLD: Double = 0.35      // rad/s — a resting device is not rotating
     private let ZUPT_WINDOW: TimeInterval = 0.75            // s of quiet before velocity is zeroed
@@ -1646,8 +1704,51 @@ class WorkoutSession: NSObject, ObservableObject {
     /// replay: gates on forced/non-step mode, runs the ZUPT stationarity check, learns the
     /// gated bias, and trapezoidally integrates the world-frame residual into the velocity
     /// vector. Operates on the already-low-passed `worldAccelX/Y` (X≈north, Y≈west).
+    /// Count footfalls in the vertical acceleration — identical to the iPhone's detector, so
+    /// both devices call the same motion a step.
+    private func detectStep(verticalResidual up: Double, dt: TimeInterval) {
+        let tau = 0.5
+        let alpha = min(dt / (tau + dt), 1.0)
+        stepDetectSlowVertical += (up - stepDetectSlowVertical) * alpha
+        let highPassed = up - stepDetectSlowVertical
+
+        if stepDetectArmed, highPassed > STEP_PEAK_ACCEL {
+            let now = Date()
+            let sinceLast = imuStepTimes.last.map { now.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+            if sinceLast >= STEP_MIN_INTERVAL {
+                imuStepTimes.append(now)
+                imuStepsPendingTick += 1
+                if imuStepTimes.count > 12 { imuStepTimes.removeFirst() }
+            }
+            stepDetectArmed = false
+        } else if highPassed < STEP_RESET_ACCEL {
+            stepDetectArmed = true
+        }
+    }
+
     private func integrateWorldMotionResidual(dt dtS: Double, up azW: Double, rotationRate rotMag: Double) {
         guard isUsingMotionFallback else { return }
+
+        // These run for EVERY workout type, before the vehicle-only integration guard below:
+        // knowing whether the feet are moving is exactly as useful on a walk as in a car, and
+        // the iPhone makes the same measurements at the same rate.
+        let residualX = worldAccelX - accelBiasX
+        let residualY = worldAccelY - accelBiasY
+        let residualMagnitude = sqrt(residualX * residualX + residualY * residualY + azW * azW)
+        if residualMagnitude < PEDESTRIAN_STILL_ACCEL && rotMag < PEDESTRIAN_STILL_ROTATION {
+            pedestrianQuietDuration += dtS
+        } else {
+            pedestrianQuietDuration = 0
+        }
+        detectStep(verticalResidual: azW, dt: dtS)
+        // Velocity change along the direction of travel, for the held vehicle speed. Only real
+        // acceleration accumulates — below the floor this is bias (Y is WEST, hence the minus).
+        let travelRadians = motionHeadingDegrees * .pi / 180
+        let alongTrack = residualX * cos(travelRadians) - residualY * sin(travelRadians)
+        if abs(alongTrack) > HELD_SPEED_ACCEL_FLOOR {
+            heldSpeedCorrection = min(max(heldSpeedCorrection + alongTrack * dtS, -DR_MAX_SPEED), DR_MAX_SPEED)
+        }
+
         let isStep = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
         guard forceMotionFallback || !isStep else { return }
 
@@ -2027,10 +2128,14 @@ class WorkoutSession: NSObject, ObservableObject {
             if let prev = lastStepSampleTimeWatch {
                 let elapsed = now.timeIntervalSince(prev)
                 if elapsed > 0.5 {
-                    let cadence = Double(added) / elapsed
+                    // Attribute steps to when they happened, not to the whole gap: steps that
+                    // arrive after a silence were taken in the last seconds of it, and
+                    // dividing by the full elapsed time diluted a real 2 steps/s to 0.5 after
+                    // any pause (see iPhone — it cost 27 s of walking reported as 0.0 km/h).
+                    let cadence = Double(added) / min(elapsed, 5.0)
                     // Seed on the first measurement rather than smoothing up from zero, which
                     // delayed PDR by several sparse pedometer updates (see iPhone version).
-                    if stepCadenceWatch <= 0 {
+                    if stepCadenceWatch <= 0 || elapsed > 5.0 {
                         stepCadenceWatch = cadence
                     } else {
                         stepCadenceWatch = stepCadenceWatch * 0.5 + cadence * 0.5
@@ -2046,7 +2151,54 @@ class WorkoutSession: NSObject, ObservableObject {
         // Route by DETECTED stepping, not the activity label: if steps are being counted you
         // are walking and the pedometer is right; integrating walking accel diverges.
         let distance: Double
-        if pedometerManager.isDistanceAvailable, pedometerIsCounting {
+        // The vehicle guard the iPhone gets from vehicleContextIsCurrent: a wrist in a moving
+        // car can swing rhythmically, and a held vehicle speed is proof we are in one.
+        if imuIsStepping, (lastMeasuredVehicleSpeedWatch ?? 0) < 8.0 {
+            // FIRST CHOICE: STEPS SEEN BY THE ACCELEROMETER (identical to the iPhone).
+            // Speed is measured cadence x stride, where the stride is learned from
+            // CMPedometer's own distance / steps rather than assumed. The pedometer stays the
+            // authority on total distance; it no longer decides when we are walking.
+            let stepsThisTick = imuStepsPendingTick
+            imuStepsPendingTick = 0
+            let cadenceSpeed = imuStepCadence * learnedStrideLength
+            walkedDistanceEstimate = max(walkedDistanceEstimate, pdrAppendedDistanceWatch)
+            walkedDistanceEstimate += Double(stepsThisTick) * learnedStrideLength
+            if pedometerManager.isDistanceAvailable {
+                let pedometerTotal = pedometerManager.currentDistance
+                // Learn this wearer's stride from the pedometer's own distance and steps.
+                if let prevD = lastPedometerDistanceForStride, steps > lastStepCountForStride {
+                    let stride = (pedometerTotal - prevD) / Double(steps - lastStepCountForStride)
+                    if stride > 0.30, stride < 1.20 {
+                        learnedStrideLength += (stride - learnedStrideLength) * 0.3
+                    }
+                }
+                if steps > lastStepCountForStride {
+                    lastPedometerDistanceForStride = pedometerTotal
+                    lastStepCountForStride = steps
+                }
+                walkedDistanceEstimate = max(walkedDistanceEstimate, pedometerTotal)
+                lastPedometerDistanceForDR = pedometerTotal
+            }
+            let owed = max(0, walkedDistanceEstimate - pdrAppendedDistanceWatch)
+            distance = min(owed, max(cadenceSpeed * dt * 2.0, 1.0))
+            pdrAppendedDistanceWatch += distance
+            motionFallbackSpeed = cadenceSpeed
+            smoothedPedometerSpeedWatch = cadenceSpeed
+            accelSource = "PDR(step)"
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelX = motionFallbackSpeed * cos(hr)
+            motionVelY = -motionFallbackSpeed * sin(hr)
+        } else if pedometerIsCounting, pedestrianIsStandingStill, motionFallbackSpeed < MAX_GROUND_STOP_SPEED {
+            // STANDING STILL — SAY SO IMMEDIATELY. pedometerIsCounting stays true for 20 s
+            // after the last step to bridge sparse distance updates, and during that window a
+            // stale pedometer speed kept drawing route that was never walked.
+            distance = 0
+            smoothedPedometerSpeedWatch = 0
+            motionFallbackSpeed = 0
+            motionVelX = 0
+            motionVelY = 0
+            accelSource = "PDR(still)"
+        } else if pedometerManager.isDistanceAvailable, pedometerIsCounting {
             let pedometerTotal = pedometerManager.currentDistance
             // Smooth speed from cumulative-distance updates, and lay distance down PER TICK
             // along the CURRENT heading — not the raw cumulative delta, whose sparse jumps
@@ -2103,6 +2255,8 @@ class WorkoutSession: NSObject, ObservableObject {
             smoothedPedometerSpeedWatch = 0
             lastPedometerUpdateTimeWatch = nil
             pdrAppendedDistanceWatch = 0
+            walkedDistanceEstimate = 0
+            lastPedometerDistanceForStride = nil
 
             // SAME PRIORITY CHAIN AS THE IPHONE, and for the same measured reasons.
             //
@@ -2122,8 +2276,19 @@ class WorkoutSession: NSObject, ObservableObject {
                 motionFallbackSpeed = relayed
                 accelSource = "iPhone-DR"
             } else if let held = lastMeasuredVehicleSpeedWatch {
-                motionFallbackSpeed = held
-                accelSource = "HOLD"
+                // A HELD SPEED MUST STILL OBEY THE ACCELEROMETER (identical to the iPhone).
+                // Freezing it meant braking to a stop kept reporting the pre-stop speed and
+                // pulling away kept reporting zero, while cruise in between was accurate. So
+                // hold the GPS-measured speed and correct it by the along-track velocity
+                // change actually measured since: v = v0 + integral a dt. Only samples above a
+                // noise floor accumulate, so a quiet cruise adds nothing and the held value
+                // survives exactly — which is the flight case.
+                let corrected = max(0, held + heldSpeedCorrection)
+                let stoppedOnGround = corrected < MAX_GROUND_STOP_SPEED
+                    && pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW
+                motionFallbackSpeed = stoppedOnGround ? 0 : corrected
+                if stoppedOnGround { heldSpeedCorrection = -held }
+                accelSource = stoppedOnGround ? "HOLD(stopped)" : "HOLD"
             } else {
                 motionFallbackSpeed = 0
                 accelSource = "waiting"
@@ -2142,7 +2307,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.
-        if pedometerIsCounting { accelSource = "PDR" }
+        if pedometerIsCounting, !accelSource.hasPrefix("PDR") { accelSource = "PDR" }
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         fallbackDebugStatus = String(
             format: "DR[%@]%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
@@ -2519,6 +2684,22 @@ class WorkoutSession: NSObject, ObservableObject {
         // independently, so when the toggle is turned OFF the next real fix reanchors
         // cleanly (via the "GPS RETURN AFTER A DEAD-RECKONING GAP" block below).
         if forceMotionFallback {
+            // ONE RECENT FIX AS THE ORIGIN, exactly as the iPhone does. Dead reckoning gives
+            // the SHAPE of the route but cannot know where it starts, and without an anchor
+            // the watch fell back to whatever position happened to be last known — which may
+            // be stale or missing. Core Location returns a CACHED position on its first
+            // callback, so age is checked as well as accuracy: a cached fix reports the good
+            // accuracy it had when it was taken, and pins the whole route where you were
+            // before you pressed start.
+            let fixAge = Date().timeIntervalSince(location.timestamp)
+            if flight.locations.isEmpty,
+               location.horizontalAccuracy >= 0,
+               location.horizontalAccuracy <= MAX_HORIZONTAL_ACCURACY,
+               fixAge < MAX_ANCHOR_FIX_AGE {
+                flight.locations.append(location)
+                currentMetrics.currentAltitude = location.altitude
+                print("⌚ 🧭 Velocity mode anchored to GPS ±\(Int(location.horizontalAccuracy))m — all later points are dead-reckoned")
+            }
             return
         }
 
@@ -2573,6 +2754,7 @@ class WorkoutSession: NSObject, ObservableObject {
         // moment of signal loss and degrades gracefully — unlike integration, which diverges.
         if location.speed >= 0, location.horizontalAccuracy < 35.0 {
             lastMeasuredVehicleSpeedWatch = location.speed
+            heldSpeedCorrection = 0
         }
 
         // FROZEN iPHONE RELAY GUARD: "connected to iPhone" does NOT mean the iPhone
