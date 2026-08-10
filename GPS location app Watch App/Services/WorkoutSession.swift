@@ -2067,7 +2067,26 @@ class WorkoutSession: NSObject, ObservableObject {
             // Catch-up toward the cumulative, capped per tick (see iPhone comment) so a sparse
             // pedometer jump spreads over ticks along the heading instead of one straight line.
             let owed = max(0, pedometerTotal - pdrAppendedDistanceWatch)
-            let perTickCap = max(smoothedPedometerSpeedWatch * dt * 1.5, 1.5)
+
+            // THE 1.5 m FLOOR MUST NOT APPLY ONCE THE STEPS HAVE STOPPED.
+            //
+            // It exists so a sparse CMPedometer update can be bled out over several ticks
+            // instead of drawn as one long straight segment. But it was a FLOOR, so it kept
+            // emitting 1.5 m every tick regardless of speed — and pedometerIsCounting stays
+            // true for 20 s after the last step, so standing still could lay down tens of
+            // metres of route that were never walked. Logged live while stationary:
+            //
+            //     speed 0.77 km/h -> distance 1.50 m
+            //     speed 0.31 km/h -> distance 1.50 m
+            //     speed 0.10 km/h -> distance 1.50 m
+            //     speed 0.03 km/h -> distance 1.50 m
+            //
+            // The speed decay added earlier was working; the distance simply ignored it. Steps
+            // land at 1.5-3 per second, so a gap over 2 s means stepping has stopped and there
+            // is nothing left to catch up on.
+            let stepsAreCurrent = (lastStepIncrementTime.map { now.timeIntervalSince($0) } ?? .greatestFiniteMagnitude) < 2.0
+            let perTickCap = stepsAreCurrent ? max(smoothedPedometerSpeedWatch * dt * 1.5, 1.5)
+                                             : smoothedPedometerSpeedWatch * dt
             distance = min(owed, perTickCap)
             pdrAppendedDistanceWatch += distance
             motionFallbackSpeed = smoothedPedometerSpeedWatch
