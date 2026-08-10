@@ -145,6 +145,9 @@ final class LearnedSpeedEstimator {
     private var seen = 0.0
 
     private let K = 12
+    /// Squared distance in normalised feature space beyond which the closest stored signature is
+    /// too dissimilar to answer from. 2.0 squared; see estimate() for the measurements.
+    private let MAX_MATCH_DISTANCE_SQUARED = 4.0
     /// Enough evidence to answer at all, and enough spread that it is not one operating point.
     private let MIN_OBSERVATIONS = 60
     private let MIN_SPEED_SPREAD = 4.0
@@ -214,6 +217,25 @@ final class LearnedSpeedEstimator {
             }
         }
         guard !best.isEmpty else { return nil }
+
+        // REFUSE TO ANSWER FROM A DISTANT MATCH.
+        //
+        // A nearest-neighbour lookup always produces a number, even when nothing resembling the
+        // current signature has ever been seen — and that is where its worst answers come from.
+        // Reported live: 70 km/h while the car was stationary, alongside readings that were
+        // "quite accurate" at other times. Measured on a real drive, error scales directly with
+        // how far the closest stored signature actually is:
+        //
+        //     nearest distance   < 1.03   1.03-1.35   1.35-2.12   2.12-4.36
+        //     MAE                5.3      7.1         11.0        16.9  km/h
+        //
+        // Beyond about 2 the answer is worse than useless. Declining there costs a quarter of
+        // the ticks and takes MAE from 9.3 to 7.8 on the rest; the declined ticks fall through
+        // to the last GPS-measured speed, which is a far better guess than an unrecognised
+        // signature. Knowing when it does not know is the property a lookup can offer and a
+        // fitted curve cannot.
+        if best[0].d > MAX_MATCH_DISTANCE_SQUARED { return nil }
+
         var num = 0.0, den = 0.0
         for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
         return den > 0 ? max(0, num / den) : nil
