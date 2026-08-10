@@ -105,6 +105,10 @@ class LocationManager: NSObject, ObservableObject {
         }
 
         isTracking = true
+        // START EVERY WORKOUT FROM A CLEAN FILTER — same reason as on iPhone: the Kalman state
+        // otherwise carries the previous workout's position into this one's first fix, which in
+        // Velocity Mode is the anchor for the entire dead-reckoned route.
+        kalmanFilter.reset()
         locationManager.startUpdatingLocation()
         // Heading is needed for magnetic declination: Core Motion's attitude reference frame
         // is MAGNETIC north while every saved coordinate is TRUE north, and CLHeading is the

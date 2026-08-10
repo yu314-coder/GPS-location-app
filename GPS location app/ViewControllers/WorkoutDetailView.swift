@@ -19,6 +19,7 @@ struct WorkoutDetailView: View {
     @State private var isRecalculating = false
     @State private var showRecalculateAlert = false
     @State private var recalculateMessage = ""
+    @State private var healthKitRouteBadge: String?
 
     /// The richer of the two records, for display as well as export.
     ///
@@ -108,6 +109,26 @@ struct WorkoutDetailView: View {
                                     Image(systemName: "chart.xyaxis.line")
                                         .foregroundColor(.white)
                                     Text("\(String(format: "%.1f", metrics.signalCoverage))% GPS quality")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.black.opacity(0.6))
+                                .cornerRadius(8)
+                            }
+
+                            // WHAT HEALTHKIT ACTUALLY KEPT — the copy the Fitness app draws.
+                            // The map above is this app's own record; when the two disagree
+                            // (Fitness showing one long straight line for a track drawn
+                            // correctly here) there was previously no way to tell which layer
+                            // was at fault. "max" is the largest step between consecutive
+                            // stored points: on a walk it should be a few metres.
+                            if let healthKitRouteBadge {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "heart.text.square")
+                                        .foregroundColor(.white)
+                                    Text(healthKitRouteBadge)
                                         .font(.caption)
                                         .fontWeight(.medium)
                                 }
@@ -827,6 +848,7 @@ struct WorkoutDetailView: View {
         }
         .onAppear {
             loadDetailsIfNeeded()
+            loadHealthKitRouteSummary()
         }
         .onDisappear {
             detailedFlight = nil
@@ -1080,6 +1102,22 @@ struct WorkoutDetailView: View {
                 }
 
                 self.showRecalculateAlert = true
+            }
+        }
+    }
+
+    /// Read the HealthKit copy of this workout's route back out of HealthKit, so the badge can
+    /// say what Fitness is actually drawing rather than what this app recorded.
+    private func loadHealthKitRouteSummary() {
+        guard healthKitRouteBadge == nil, let uuid = flight.workoutUUID else { return }
+        healthKitManager.routeDiagnostics(for: uuid) { routes, points, maxGap in
+            DispatchQueue.main.async {
+                guard routes > 0 else {
+                    healthKitRouteBadge = "HK route: none"
+                    return
+                }
+                let seriesNote = routes > 1 ? " (\(routes) series)" : ""
+                healthKitRouteBadge = "HK \(points) pts · max \(Int(maxGap.rounded()))m" + seriesNote
             }
         }
     }

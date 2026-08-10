@@ -84,14 +84,30 @@ class KalmanFilterEngine {
         positionVariance = (1 - kalmanGain) * positionVariance
         velocityVariance *= 0.95  // Gradual decrease
 
-        // Calculate filtered horizontal accuracy
-        let filteredAccuracy = sqrt(positionVariance)
-
-        // Return filtered location
+        // CARRY THE FIX'S OWN ACCURACY THROUGH — NEVER INVENT ONE.
+        //
+        // This used to report sqrt(positionVariance) as the horizontal accuracy, in metres.
+        // It is not metres and it is not accuracy: the state here is in DEGREES of latitude
+        // and longitude, the measurement noise is 50 (degrees², i.e. ~5500 km), and the
+        // variance simply decays geometrically towards its own fixed point no matter what the
+        // GPS is doing. Measured on a real walk (velocity_debug_20260810_170623): every fix
+        // was labelled 0.94 m accurate while consecutive positions jumped 270 m, 320 m and
+        // 505 m apart. The number is a filter-convergence curve, not a measurement.
+        //
+        // Everything downstream reads horizontalAccuracy as if Core Location produced it, so a
+        // fabricated sub-metre value silently disabled EVERY accuracy gate in the app: the
+        // noisy-fix rejection could never fire, the Velocity-mode anchor accepted any fix
+        // however wild, the learned speed model was taught from garbage GPS speeds, the
+        // dead-reckoning uncertainty always started from the 5 m floor, and the workout
+        // summary reported "100% GPS quality" for a track whose fixes were hundreds of metres
+        // apart.
+        //
+        // Filtering a position cannot make it more accurate than the measurement it came from,
+        // so pass the fix's own accuracy along unchanged and let the gates work again.
         return CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
             altitude: rawLocation.altitude,
-            horizontalAccuracy: filteredAccuracy,
+            horizontalAccuracy: rawLocation.horizontalAccuracy,
             verticalAccuracy: rawLocation.verticalAccuracy,
             course: rawLocation.course,
             speed: rawLocation.speed,

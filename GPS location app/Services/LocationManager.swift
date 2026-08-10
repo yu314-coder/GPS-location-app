@@ -175,6 +175,14 @@ class LocationManager: NSObject, ObservableObject {
         isTracking = true
         print("   Setting isTracking = true")
 
+        // START EVERY WORKOUT FROM A CLEAN FILTER. The Kalman state was only cleared by an
+        // explicit reset(), so a new workout inherited the position and velocity of the last
+        // one — and with a gain of roughly 1/50 the first "fix" it returns is ~98% that stale
+        // extrapolation. In Velocity Mode that first fix becomes the ANCHOR the whole
+        // dead-reckoned route is projected from, so a stale one puts an otherwise perfect
+        // track in the wrong place entirely.
+        kalmanFilter.reset()
+
         locationManager.allowsBackgroundLocationUpdates = (authorizationStatus == .authorizedAlways)
         locationManager.showsBackgroundLocationIndicator = (authorizationStatus == .authorizedAlways)
 

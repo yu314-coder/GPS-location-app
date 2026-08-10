@@ -1730,6 +1730,47 @@ class HealthKitManager: ObservableObject {
         healthStore.execute(query)
     }
 
+    /// What HealthKit actually kept, read back from HealthKit itself.
+    ///
+    /// The app's own record and the copy the Fitness app draws are two different things, and
+    /// until now only the first was inspectable — so a route this app displays correctly while
+    /// Fitness draws it as one long straight line could only be argued about, never checked.
+    /// Reports how many route series are attached (more than one is itself a bug), how many
+    /// points survived, and the largest step between consecutive points: a walk whose real
+    /// steps are 1–3 m apart cannot legitimately contain a 500 m one.
+    func routeDiagnostics(for workoutUUID: UUID,
+                          completion: @escaping (_ routes: Int, _ points: Int, _ maxGap: Double) -> Void) {
+        fetchWorkout(uuid: workoutUUID) { [weak self] workout, _ in
+            guard let self, let workout else {
+                completion(0, 0, 0)
+                return
+            }
+            let routeType = HKSeriesType.workoutRoute()
+            let predicate = HKQuery.predicateForObjects(from: workout)
+            let query = HKSampleQuery(sampleType: routeType, predicate: predicate,
+                                      limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, results, _ in
+                let routes = (results as? [HKWorkoutRoute]) ?? []
+                guard let route = routes.first else {
+                    completion(0, 0, 0)
+                    return
+                }
+                var all: [CLLocation] = []
+                let routeQuery = HKWorkoutRouteQuery(route: route) { _, locations, done, _ in
+                    if let locations { all.append(contentsOf: locations) }
+                    guard done else { return }
+                    let sorted = all.sorted { $0.timestamp < $1.timestamp }
+                    var maxGap: Double = 0
+                    for i in 1..<max(sorted.count, 1) {
+                        maxGap = max(maxGap, sorted[i].distance(from: sorted[i - 1]))
+                    }
+                    completion(routes.count, sorted.count, maxGap)
+                }
+                self.healthStore.execute(routeQuery)
+            }
+            self.healthStore.execute(query)
+        }
+    }
+
     // Check if a workout with the given UUID still exists in HealthKit
     func workoutExists(uuid: UUID, completion: @escaping (Bool) -> Void) {
         let workoutType = HKObjectType.workoutType()

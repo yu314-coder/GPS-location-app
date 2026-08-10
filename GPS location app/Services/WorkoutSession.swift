@@ -334,6 +334,14 @@ class WorkoutSession: ObservableObject {
     private let POOR_FIX_ACCURACY: Double = 100.0
     /// Accuracy that counts as "GPS is working", which is what makes dropping a bad fix safe.
     private let GOOD_FIX_ACCURACY: Double = 35.0
+    /// Speed a fix would have to imply for it to be a hallucination rather than a position:
+    /// 90 m/s is 324 km/h, above anything on the ground and below any airliner cruise, so no
+    /// genuine fix is ever refused. Used only to veto re-anchoring, which warps the whole track.
+    private let IMPOSSIBLE_REANCHOR_SPEED: Double = 90.0
+    /// How many implausible fixes in a row may be refused before one is accepted anyway, so a
+    /// drifted dead-reckoned track can never permanently refuse the GPS that would correct it.
+    private let MAX_CONSECUTIVE_REANCHOR_REJECTIONS = 5
+    private var consecutiveImplausibleReanchors = 0
     private var lastGoodAccuracyFixTime: Date = .distantPast
     /// The last speed GPS actually measured while in a vehicle, held when GPS is lost. Exact at
     /// the moment of loss, degrades gracefully, needs no calibration and cannot diverge.
@@ -1090,12 +1098,19 @@ class WorkoutSession: ObservableObject {
         sessionDiagnostics.persistToDisk(workoutStart: flight.startDate)
         // Everything learned about this car and placement outlives the workout.
         learnedSpeed.save()
-        // The manual velocity override is a per-workout choice; never let it leak forward.
-        forceMotionFallback = false
         stopEstimatedFallbackTimer()
 
-        // Stop location tracking
+        // Stop location tracking FIRST, then drop the velocity override.
+        //
+        // Order matters. Clearing forceMotionFallback while Core Location is still delivering
+        // sends any fix that arrives (including one already queued) down the normal path,
+        // where it re-anchors the workout: reanchorAfterEstimatedFallback rubber-sheets the
+        // ENTIRE dead-reckoned track onto that fix and appends it as the final point. One
+        // wild fix at the moment of stopping is therefore enough to stretch a finished route
+        // to wherever GPS last hallucinated.
         locationManager.stopTracking()
+        // The manual velocity override is a per-workout choice; never let it leak forward.
+        forceMotionFallback = false
 
         // End workout session
         let endDate = Date()
@@ -3020,6 +3035,33 @@ class WorkoutSession: ObservableObject {
     }
 
     private func reanchorAfterEstimatedFallback(with location: FlightLocation) {
+        // REFUSE AN IMPOSSIBLE ANCHOR. This is the single most destructive fix in the app: it
+        // rubber-sheets every dead-reckoned point since the last real position onto whatever
+        // coordinate arrives, so one bad fix does not add one bad point — it re-shapes the
+        // whole track. And bad fixes are not hypothetical here: in
+        // velocity_debug_20260810_170623 consecutive positions arrived 270 m, 320 m and 505 m
+        // apart one second apart, in a walk that covered 70 m in total.
+        //
+        // The test is physics, not accuracy: how fast would we have had to travel to be there?
+        // 90 m/s (324 km/h) is far above anything a phone in a car or on foot can do, and far
+        // below any airliner cruise, so it rejects hallucinated positions without ever
+        // rejecting a genuine one — including in the air, which is the case this mode exists
+        // for. A fix that fails is simply ignored; dead reckoning keeps running and the next
+        // plausible fix re-anchors normally.
+        // A run of rejections is capped so this can never lock the track out of GPS: a wild fix
+        // is an isolated excursion that snaps back within a second or two, whereas a position
+        // that keeps insisting on itself is reality — even if dead reckoning disagrees.
+        if let previous = flight.locations.last,
+           consecutiveImplausibleReanchors < MAX_CONSECUTIVE_REANCHOR_REJECTIONS {
+            let gap = max(location.timestamp.timeIntervalSince(previous.timestamp), 1.0)
+            let impliedSpeed = location.distance(to: previous) / gap
+            if impliedSpeed > IMPOSSIBLE_REANCHOR_SPEED {
+                consecutiveImplausibleReanchors += 1
+                print("🚫 Re-anchor rejected (\(consecutiveImplausibleReanchors)/\(MAX_CONSECUTIVE_REANCHOR_REJECTIONS)): fix implies \(Int(impliedSpeed * 3.6))km/h over \(Int(gap))s — dead reckoning continues")
+                return
+            }
+        }
+        consecutiveImplausibleReanchors = 0
         endEstimatedLocationFallback(reason: "real GPS fix received")
         // Before accepting the fix, rubber-sheet the dead-reckoned points in this gap so they
         // connect the last real anchor to the true GPS endpoint. This pins the whole gap to
