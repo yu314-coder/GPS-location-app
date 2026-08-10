@@ -338,6 +338,10 @@ class WorkoutSession: ObservableObject {
     /// The last speed GPS actually measured while in a vehicle, held when GPS is lost. Exact at
     /// the moment of loss, degrades gracefully, needs no calibration and cannot diverge.
     private var lastMeasuredVehicleSpeed: Double?
+    /// Metres dead-reckoned since the last real GPS fix, and the accuracy of that fix. Together
+    /// they give each estimated point an uncertainty that grows with how far it has been carried.
+    private var distanceSinceLastRealFix: Double = 0
+    private var anchorAccuracyForDR: Double = 10.0
     /// Consecutive GPS fixes showing vehicle-like speed, so one spike cannot latch vehicle mode.
     private var consecutiveVehicleSpeedFixes = 0
     private var vehicleLaunchDetected = false
@@ -3195,11 +3199,30 @@ class WorkoutSession: ObservableObject {
             distanceMeters: distanceMeters,
             bearingDegrees: headingDegrees
         )
+        // HONEST, GROWING UNCERTAINTY — not a flat 250 m.
+        //
+        // Every dead-reckoned point used to be written with 250 m accuracy. That was a
+        // placeholder meaning "dead reckoned", not a measurement, and it is wrong in both
+        // directions: consecutive points here are 1–3 m apart and anchored to a 1 m GPS fix, so
+        // 250 m wildly overstates the error early on, while on a long GPS-less stretch it
+        // understates it. It also has a practical cost — anything consuming the route
+        // (the Fitness app, GPX importers, other apps) reasonably discards or simplifies away
+        // points claiming a quarter-kilometre of uncertainty, which is why a 98-point track that
+        // this app draws correctly appeared in Fitness as a straight line.
+        //
+        // Dead-reckoning error grows with distance travelled since the last real fix, so model
+        // it that way: start from the anchor's own accuracy and add a fraction of the distance
+        // dead-reckoned since. 10% is a deliberately conservative reading of the measured
+        // heading and speed errors, and it is capped so a very long stretch cannot claim
+        // certainty it does not have.
+        let drift = min(anchorAccuracyForDR + 0.10 * distanceSinceLastRealFix,
+                        ESTIMATED_LOCATION_HORIZONTAL_ACCURACY)
+        distanceSinceLastRealFix += distanceMeters
         let location = CLLocation(
             coordinate: coordinate,
             altitude: previousLocation.altitude,
-            horizontalAccuracy: ESTIMATED_LOCATION_HORIZONTAL_ACCURACY,
-            verticalAccuracy: ESTIMATED_LOCATION_VERTICAL_ACCURACY,
+            horizontalAccuracy: drift,
+            verticalAccuracy: max(drift, ESTIMATED_LOCATION_VERTICAL_ACCURACY / 10),
             course: headingDegrees,
             speed: max(distanceMeters / max(timestamp.timeIntervalSince(previousLocation.timestamp), 0.5), 0.0),
             timestamp: timestamp
@@ -3360,6 +3383,9 @@ class WorkoutSession: ObservableObject {
                 let anchor = location.withMotion(
                     currentMotionSnapshot(movementDirection: validCourse(location.course)))
                 flight.locations.append(anchor)
+                // Dead-reckoning uncertainty now grows from THIS fix's accuracy.
+                anchorAccuracyForDR = max(location.horizontalAccuracy, 5.0)
+                distanceSinceLastRealFix = 0
                 print("📍 🧭 Velocity mode anchored to GPS ±\(Int(location.horizontalAccuracy))m — all later points are dead-reckoned")
             }
             return
@@ -3429,6 +3455,10 @@ class WorkoutSession: ObservableObject {
 
         // Add to flight (after GPS filtering passed), with the current motion snapshot.
         flight.locations.append(location.withMotion(currentMotionSnapshot(movementDirection: validCourse(location.course))))
+        // A real fix resets the dead-reckoning uncertainty: anything estimated after this is
+        // carried from here, not from wherever the last fix happened to be.
+        anchorAccuracyForDR = max(location.horizontalAccuracy, 5.0)
+        distanceSinceLastRealFix = 0
         lastRealLocationTime = Date()
         NotificationCenter.default.post(
             name: .workoutLocationUpdated,
