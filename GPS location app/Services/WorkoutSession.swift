@@ -452,6 +452,9 @@ class WorkoutSession: ObservableObject {
     /// Acceleration below this is indistinguishable from residual bias and must never be
     /// integrated; braking and pulling away are an order of magnitude above it.
     private let HELD_SPEED_ACCEL_FLOOR: Double = 0.25   // m/s²
+    /// How old a fix may be and still be allowed to anchor a dead-reckoned route. Core
+    /// Location's first callback is routinely a cached position from minutes ago.
+    private let MAX_ANCHOR_FIX_AGE: TimeInterval = 5.0
 
     /// Steps per second over the last couple of seconds, or 0 when the feet have stopped.
     private var imuStepCadence: Double {
@@ -3321,6 +3324,13 @@ class WorkoutSession: ObservableObject {
         // A run of rejections is capped so this can never lock the track out of GPS: a wild fix
         // is an isolated excursion that snaps back within a second or two, whereas a position
         // that keeps insisting on itself is reality — even if dead reckoning disagrees.
+        // A stale fix must not re-anchor either: re-anchoring warps every dead-reckoned point
+        // since the last real position onto this coordinate, and a cached one describes where
+        // the phone was, not where it is.
+        if Date().timeIntervalSince(location.timestamp) > MAX_ANCHOR_FIX_AGE {
+            print("🚫 Re-anchor rejected: fix is \(Int(Date().timeIntervalSince(location.timestamp)))s old")
+            return
+        }
         if let previous = flight.locations.last,
            consecutiveImplausibleReanchors < MAX_CONSECUTIVE_REANCHOR_REJECTIONS {
             let gap = max(location.timestamp.timeIntervalSince(previous.timestamp), 1.0)
@@ -3689,9 +3699,24 @@ class WorkoutSession: ObservableObject {
             // So: one accurate fix, only while no point exists yet, purely as the origin.
             // lastRealLocationTime is deliberately left alone — GPS is not a distance source
             // here, and dead reckoning runs unconditionally in this mode anyway.
+            // THE ANCHOR MUST BE A FIX FROM NOW, NOT A CACHED ONE.
+            //
+            // Core Location hands back its last known position on the FIRST callback after
+            // startUpdatingLocation — often within milliseconds, and often minutes old and
+            // hundreds of metres away, from wherever the phone last had a fix. In Velocity
+            // Mode that first callback becomes the anchor for the entire route, because every
+            // later fix is deliberately ignored. Open the app, press start a second later, and
+            // the whole otherwise-correct track gets pinned to where you were before.
+            //
+            // Accuracy cannot catch this: a cached fix reports the accuracy it had when it was
+            // taken, which was good. Age is the only thing that distinguishes it, so require
+            // the fix to be current. Dead reckoning keeps running meanwhile and its movement is
+            // buffered, so nothing is lost by waiting a second or two for a real one.
+            let fixAge = Date().timeIntervalSince(location.timestamp)
             if flight.locations.isEmpty,
                location.horizontalAccuracy >= 0,
-               location.horizontalAccuracy <= GPS_MAX_USABLE_ACCURACY {
+               location.horizontalAccuracy <= GPS_MAX_USABLE_ACCURACY,
+               fixAge < MAX_ANCHOR_FIX_AGE {
                 let anchor = location.withMotion(
                     currentMotionSnapshot(movementDirection: validCourse(location.course)))
                 flight.locations.append(anchor)
