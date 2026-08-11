@@ -1750,22 +1750,35 @@ class HealthKitManager: ObservableObject {
             let query = HKSampleQuery(sampleType: routeType, predicate: predicate,
                                       limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, results, _ in
                 let routes = (results as? [HKWorkoutRoute]) ?? []
-                guard let route = routes.first else {
+                guard !routes.isEmpty else {
                     completion(0, 0, 0)
                     return
                 }
+                // EVERY SERIES, NOT JUST THE FIRST.
+                //
+                // Reading only routes.first reported "no gap" while the Fitness map drew a
+                // dotted line — Apple's own way of saying two parts of a route do not join —
+                // with polyline visible at BOTH ends. A second series attached to the same
+                // workout would produce exactly that and be invisible to a diagnostic that
+                // stops at the first one. Merging them by time is also how Fitness draws them,
+                // so the largest gap reported is the one actually rendered.
                 var all: [CLLocation] = []
-                let routeQuery = HKWorkoutRouteQuery(route: route) { _, locations, done, _ in
-                    if let locations { all.append(contentsOf: locations) }
-                    guard done else { return }
-                    let sorted = all.sorted { $0.timestamp < $1.timestamp }
-                    var maxGap: Double = 0
-                    for i in 1..<max(sorted.count, 1) {
-                        maxGap = max(maxGap, sorted[i].distance(from: sorted[i - 1]))
+                var pending = routes.count
+                for route in routes {
+                    let routeQuery = HKWorkoutRouteQuery(route: route) { _, locations, done, _ in
+                        if let locations { all.append(contentsOf: locations) }
+                        guard done else { return }
+                        pending -= 1
+                        guard pending == 0 else { return }
+                        let sorted = all.sorted { $0.timestamp < $1.timestamp }
+                        var maxGap: Double = 0
+                        for i in 1..<max(sorted.count, 1) {
+                            maxGap = max(maxGap, sorted[i].distance(from: sorted[i - 1]))
+                        }
+                        completion(routes.count, sorted.count, maxGap)
                     }
-                    completion(routes.count, sorted.count, maxGap)
+                    self.healthStore.execute(routeQuery)
                 }
-                self.healthStore.execute(routeQuery)
             }
             self.healthStore.execute(query)
         }

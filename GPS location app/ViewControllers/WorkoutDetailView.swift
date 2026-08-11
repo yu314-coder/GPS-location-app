@@ -34,7 +34,9 @@ struct WorkoutDetailView: View {
         // copy physically cannot answer the question.
         let fromGPS = activeFlight.locations.filter { !$0.isEstimated }.count
         let total = activeFlight.locations.count
-        let seriesNote = hk.routes > 1 ? " (\(hk.routes) series)" : ""
+        // Always state the series count. It was previously only shown when above one, which is
+        // exactly the case that needed to be visible, and a cropped screenshot hid it.
+        let seriesNote = " · \(hk.routes)x"
         return "HK \(hk.points) pts · max \(Int(hk.maxGap.rounded()))m · GPS \(fromGPS)/\(total)" + seriesNote
     }
 
