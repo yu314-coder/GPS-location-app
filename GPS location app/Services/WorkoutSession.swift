@@ -4200,6 +4200,27 @@ class WorkoutSession: ObservableObject {
         isPaused = false
         pauseStartTime = nil
 
+        // RE-ANCHOR THE GYRO HEADING ACROSS THE PAUSE.
+        //
+        // Heading is propagated by the CHANGE in cumulative device yaw since the last tick, and
+        // the tick is suspended while paused — but the device keeps turning. It goes in a
+        // pocket, gets set down, gets picked up the other way round. On resume the first tick
+        // therefore saw every degree of that as one instantaneous body turn and rotated the
+        // entire rest of the route by it.
+        //
+        // Nothing about how the phone was handled while stopped says anything about which way
+        // the walk continues, so that rotation is not evidence and must be discarded. Re-anchor
+        // to where the device is NOW and carry on from the heading held before the pause.
+        lastDeviceYawForHeading = locationManager.cumulativeDeviceYawRotation
+        // The walking axis is computed over a trailing window of acceleration that now straddles
+        // the gap, and the forward/back vote it feeds is smoothed across calls. Both describe a
+        // walk that has already ended, so start them fresh rather than letting stale evidence
+        // resolve the direction of a new one.
+        walkAccelWindow.removeAll()
+        walkingSkewEMA = 0
+        walkingSkewEMAValid = false
+        lastWalkAxisTime = nil
+
         print("   State updated: isPaused=\(isPaused)")
         persistActiveWorkoutSnapshot(force: true, reason: "resumeWorkout", shouldLog: true)
 

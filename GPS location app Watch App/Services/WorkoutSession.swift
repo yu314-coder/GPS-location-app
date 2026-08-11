@@ -3271,6 +3271,16 @@ class WorkoutSession: NSObject, ObservableObject {
         isPaused = false
         print("⌚ ✅ isPaused set to false - UI should update immediately")
 
+        // RE-ANCHOR THE GYRO HEADING ACROSS THE PAUSE (same reason as the iPhone). Heading is
+        // propagated by the CHANGE in cumulative yaw since the last tick, and ticks stop while
+        // paused — so a wrist that turned while stopped had every degree of it applied as one
+        // body turn on resume, rotating the whole remaining route. Nothing about how the arm
+        // moved while stopped says which way the walk continues.
+        lastCumulativeYawForHeading = nil
+        // Stale gait evidence describes a walk that has already ended.
+        imuStepTimes = []
+        imuStepsPendingTick = 0
+
         // Log current step count
         if pedometerManager.isPedometerAvailable {
             print("⌚ 👟 Steps at resume: \(pedometerManager.currentStepCount)")
