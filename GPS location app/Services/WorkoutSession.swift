@@ -2758,10 +2758,25 @@ class WorkoutSession: ObservableObject {
             // drive it had never seen, against 18 km/h for guessing the average — modest, but
             // the only approach with evidence behind it, and it improves with every drive.
             // Smoothed lightly: individual windows are noisy, speed is not.
-            let blend = min(dt / (1.5 + dt), 1.0)
-            estimatedFallbackSpeed += (learned - estimatedFallbackSpeed) * blend
+            // A STOPPED CAR IS NOT A SPEED THE MODEL SHOULD GUESS AT.
+            //
+            // The lookup answers from whatever signature is closest, and an idling engine's
+            // signature sits near the slowest ones it was ever taught — so a car waiting at a
+            // light read about 4 km/h. Over one 17-minute drive that was 364 seconds of
+            // invented movement, drawing route that was never driven. Stillness is directly
+            // observable and needs no model: quiet on every axis for over two seconds, or
+            // Apple's classifier confidently saying stationary. Never available airborne,
+            // where a smooth cruise is quiet too.
+            let stoppedOnGround = !flightPhase.isAirborne
+                && (pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW || isDeviceStationaryByActivity)
+            if stoppedOnGround {
+                estimatedFallbackSpeed = 0
+            } else {
+                let blend = min(dt / (1.5 + dt), 1.0)
+                estimatedFallbackSpeed += (learned - estimatedFallbackSpeed) * blend
+            }
             distance = estimatedFallbackSpeed * dt
-            sourceTag = "LEARN"
+            sourceTag = stoppedOnGround ? "LEARN(stopped)" : "LEARN"
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)

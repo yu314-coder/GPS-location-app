@@ -169,7 +169,17 @@ final class LearnedSpeedEstimator {
         } else if let victim = mostRedundantIndex(for: gpsSpeed) {
             observations[victim] = Observation(f: f, speed: gpsSpeed)
         }
+        // Re-measure the model's own compression as evidence accumulates. Rare enough that the
+        // leave-one-out pass costs nothing noticeable, often enough that a drive which visits
+        // new speeds is reflected before the next one.
+        sinceLastCalibration += 1
+        if sinceLastCalibration >= 200 {
+            sinceLastCalibration = 0
+            observationsAtLastCalibration = 0
+            recalibrate()
+        }
     }
+    private var sinceLastCalibration = 0
 
     /// Index of an observation whose speed bucket is the most crowded, so replacing it preserves
     /// coverage. Returns nil if this sample's own bucket is the crowded one, i.e. nothing to gain.
@@ -238,7 +248,100 @@ final class LearnedSpeedEstimator {
 
         var num = 0.0, den = 0.0
         for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
-        return den > 0 ? max(0, num / den) : nil
+        guard den > 0 else { return nil }
+        return max(0, calibrated(num / den))
+    }
+
+    // MARK: - Self-calibration against its own measured bias
+
+    /// A weighted average of neighbours is a LOCAL CONSTANT fit, and every local constant fit
+    /// regresses to the mean: near the top of the speeds ever seen, all twelve neighbours lie
+    /// below the query, so the answer is dragged down; near the bottom they all lie above, so
+    /// it is dragged up. That is not a tuning problem, it is what averaging does at the edges
+    /// of a distribution, and it showed up on a real drive as a straight line through the
+    /// middle of the range (velocity_debug_20260811_085038):
+    ///
+    ///     true  14.6  24.8  35.1  46.3  55.7  63.6  72.3 km/h
+    ///     est   20.7  28.1  36.7  42.0  48.1  48.6  51.1 km/h
+    ///
+    /// A slope of about 0.53 — the estimate moves half as far as the road does, which under-
+    /// reports every fast stretch and over-reports every slow one. Correcting it needs no new
+    /// sensor and no new assumption: the compression is measurable from the observations
+    /// already stored, by predicting each one from the others and regressing what was predicted
+    /// against what GPS actually measured. Inverting that line removes the bias, and because it
+    /// is re-measured as evidence accumulates, it tracks this phone and this car rather than a
+    /// constant baked in from one drive.
+    private var calibrationSlope: Double = 1.0
+    private var calibrationIntercept: Double = 0.0
+    private var observationsAtLastCalibration = 0
+
+    private func calibrated(_ raw: Double) -> Double {
+        calibrationIntercept + calibrationSlope * raw
+    }
+
+    /// Leave-one-out over a sample of the stored observations: predict each from the others and
+    /// fit actual ≈ intercept + slope × predicted. Sampled and capped so the cost stays bounded
+    /// as the store fills, and only adopted when the fit is sane — a degenerate or wild fit
+    /// leaves the estimate uncorrected rather than making it worse.
+    func recalibrate() {
+        guard observations.count >= MIN_OBSERVATIONS * 2, !featureMean.isEmpty else { return }
+        guard observations.count != observationsAtLastCalibration else { return }
+        observationsAtLastCalibration = observations.count
+
+        let stride = max(1, observations.count / 300)
+        var n = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0
+        var index = 0
+        while index < observations.count {
+            let held = observations[index]
+            // Fit on the MOVING regime only. Stationary samples are the most numerous thing in
+            // the store and would dominate a least-squares fit, flattening the very slope being
+            // measured; and a stopped vehicle is now recognised directly rather than estimated,
+            // so the correction has no reason to describe it. Measured on the drive above:
+            // fitting on everything gives x1.15 and MAE 5.3, fitting on movement x1.26 and 5.0.
+            guard held.speed >= 1.5 else { index += stride; continue }
+            var best = [(d: Double, s: Double)]()
+            best.reserveCapacity(K)
+            for (j, o) in observations.enumerated() where j != index {
+                var d = 0.0
+                for i in 0..<held.f.count {
+                    let sd = max(featureVar[i].squareRoot(), 1e-6)
+                    let z = (held.f[i] - o.f[i]) / sd
+                    d += z * z
+                }
+                if best.count < K {
+                    best.append((d, o.speed))
+                    if best.count == K { best.sort { $0.d < $1.d } }
+                } else if d < best[K - 1].d {
+                    best[K - 1] = (d, o.speed)
+                    var i = K - 1
+                    while i > 0 && best[i].d < best[i - 1].d { best.swapAt(i, i - 1); i -= 1 }
+                }
+            }
+            index += stride
+            guard best.count == K, best[0].d <= MAX_MATCH_DISTANCE_SQUARED else { continue }
+            var num = 0.0, den = 0.0
+            for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
+            guard den > 0 else { continue }
+            let predicted = num / den
+            n += 1; sx += predicted; sy += held.speed
+            sxx += predicted * predicted; sxy += predicted * held.speed
+        }
+
+        guard n >= 40 else { return }
+        let denominator = n * sxx - sx * sx
+        guard abs(denominator) > 1e-9 else { return }
+        let slope = (n * sxy - sx * sy) / denominator
+        let intercept = (sy - slope * sx) / n
+        // A correction that stretches by more than 4x, or shrinks at all, is not a compression
+        // being undone — it is a bad fit, and applying it would be worse than leaving the
+        // estimate alone.
+        guard slope >= 1.0, slope <= 4.0, intercept.isFinite, abs(intercept) < 20.0 else {
+            print("🧠 Calibration rejected (slope \(String(format: "%.2f", slope)), intercept \(String(format: "%.1f", intercept)))")
+            return
+        }
+        calibrationSlope = slope
+        calibrationIntercept = intercept
+        print("🧠 Learned speed calibrated over \(Int(n)) held-out samples: ×\(String(format: "%.2f", slope)) \(String(format: "%+.1f", intercept)) m/s")
     }
 
     // MARK: - Persistence
@@ -264,6 +367,9 @@ final class LearnedSpeedEstimator {
             for o in saved { updateNormalisation(o.f) }
         }
         print("🧠 Learned speed model: restored \(saved.count) observations")
+        // Re-measure the compression against everything restored, so the first drive after a
+        // launch is corrected too rather than waiting for 200 fresh observations.
+        recalibrate()
     }
 
     func save() {
