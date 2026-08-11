@@ -38,7 +38,22 @@ class WorkoutSession: NSObject, ObservableObject {
     @Published var lastLocationTime: Date = Date()  // Exposed for UI to monitor GPS health
     @Published var isUsingIPhoneGPSFallback = false
     @Published var fallbackDebugStatus = "GPS OK"   // live on-screen fallback state
-    @Published var forceMotionFallback = false      // UI toggle: force velocity (accel) dead reckoning, ignore GPS
+    /// Velocity Mode. PERSISTED across workouts, matching the iPhone: it could previously only
+    /// be switched on AFTER a workout had started, so the opening seconds of every test were
+    /// ordinary GPS and the track was a mixture of two sources.
+    @Published var forceMotionFallback = false {
+        didSet {
+            guard persistForceMotionFallback else { return }
+            UserDefaults.standard.set(forceMotionFallback, forKey: "velocityModeEnabled")
+        }
+    }
+    private var persistForceMotionFallback = true
+
+    private func setForceMotionFallback(_ value: Bool, persist: Bool) {
+        persistForceMotionFallback = persist
+        forceMotionFallback = value
+        persistForceMotionFallback = true
+    }
     @Published var networkDebugMessage = "GPS active"
     @Published var networkPathStatus = "Net: pending • iPhone: disconnected"
     @Published var nativePedometerStepCount: Int = 0
@@ -551,7 +566,9 @@ class WorkoutSession: NSObject, ObservableObject {
 
             // Reset location filtering statistics
             skippedLocationCount = 0
-            forceMotionFallback = false   // manual velocity override always starts OFF
+            // Restore the standing choice rather than forcing it off, so velocity mode can be
+            // on before the first fix is recorded (see iPhone).
+            setForceMotionFallback(UserDefaults.standard.bool(forKey: "velocityModeEnabled"), persist: false)
             lastLocationTime = Date()
             latestIPhoneMotionAssist = nil
 
@@ -631,8 +648,8 @@ class WorkoutSession: NSObject, ObservableObject {
     /// isActive stayed true (so the workout could not actually stop), and forceMotionFallback
     /// stayed latched ON into the next workout.
     private func teardownActiveWorkoutState() {
-        // The manual velocity override is a per-workout choice; never let it leak forward.
-        forceMotionFallback = false
+        // Clear the runtime flag but keep the standing choice for the next workout.
+        setForceMotionFallback(false, persist: false)
         if isUsingMotionFallback {
             endMotionFallback(reason: "workout stopped")
         }

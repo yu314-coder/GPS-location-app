@@ -145,7 +145,26 @@ class WorkoutSession: ObservableObject {
 
     // MARK: - Forced velocity (inertial dead reckoning) — mirrors the watch implementation
     /// UI toggle: force velocity/acceleration dead reckoning and ignore GPS for distance.
-    @Published var forceMotionFallback = false
+    /// Velocity Mode. PERSISTED across workouts, because it could previously only be switched
+    /// on AFTER a workout had started — so every "pure velocity" test began with a few seconds
+    /// of ordinary GPS recording, and the track was a mixture of the two. Measured on a
+    /// 41-point walk: 3 points came from GPS where exactly 1 (the anchor) was intended.
+    ///
+    /// Internal resets go through `setForceMotionFallback(_:persist:)` so that ending a workout
+    /// clears the runtime flag without erasing the user's choice for the next one.
+    @Published var forceMotionFallback = false {
+        didSet {
+            guard persistForceMotionFallback else { return }
+            UserDefaults.standard.set(forceMotionFallback, forKey: "velocityModeEnabled")
+        }
+    }
+    private var persistForceMotionFallback = true
+
+    private func setForceMotionFallback(_ value: Bool, persist: Bool) {
+        persistForceMotionFallback = persist
+        forceMotionFallback = value
+        persistForceMotionFallback = true
+    }
     /// A speed the USER states, in km/h, used when nothing can measure one.
     ///
     /// The phone cannot measure vehicle speed without GPS — that is now established by
@@ -1022,7 +1041,9 @@ class WorkoutSession: ObservableObject {
         lastEstimatedFallbackTick = nil
         estimatedFallbackSpeed = 0.0
         estimatedFallbackDistanceAdded = 0.0
-        forceMotionFallback = false          // manual velocity override always starts OFF
+        // Restore the user's standing choice instead of forcing it off. Turning it on has to be
+        // possible BEFORE the first fix is recorded, otherwise the opening seconds are GPS.
+        setForceMotionFallback(UserDefaults.standard.bool(forKey: "velocityModeEnabled"), persist: false)
         motionFallbackStatus = "GPS OK"
         resetInertialState(seedSpeed: 0, courseDegrees: 0)
         // Feed the inertial integrator at the device-motion sample rate.
@@ -1187,8 +1208,8 @@ class WorkoutSession: ObservableObject {
         // wild fix at the moment of stopping is therefore enough to stretch a finished route
         // to wherever GPS last hallucinated.
         locationManager.stopTracking()
-        // The manual velocity override is a per-workout choice; never let it leak forward.
-        forceMotionFallback = false
+        // Clear the runtime flag but keep the user's standing choice for the next workout.
+        setForceMotionFallback(false, persist: false)
 
         // End workout session
         let endDate = Date()
@@ -2527,6 +2548,21 @@ class WorkoutSession: ObservableObject {
                         compassMisalignment = existing + 0.1 * delta
                     } else {
                         compassMisalignment = offset
+                        // FIX THE STRETCH ALREADY DRAWN FROM A GUESSED HEADING.
+                        //
+                        // Velocity Mode starts before the direction of travel is known, so the
+                        // heading is seeded from the compass — which points where the PHONE
+                        // points, not where the body is going. Hold it across your chest and
+                        // that is a 90° error, applied to every point until the walking axis
+                        // establishes the truth. The correction for it already existed, but it
+                        // was only ever triggered by the GPS-based learner, and GPS is exactly
+                        // what this mode ignores — so in the one mode that needs it, the early
+                        // stretch was never repaired and a whole short walk came out rotated.
+                        //
+                        // The PCA walking axis is a measurement of body travel, so the first
+                        // time it resolves, it is as valid a "true heading now" as a GPS course
+                        // and the prefix can be rotated onto it.
+                        correctUntrustedHeadingPrefix(trueHeadingNow: target)
                     }
                 }
             }
