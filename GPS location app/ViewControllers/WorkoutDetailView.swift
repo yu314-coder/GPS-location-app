@@ -19,7 +19,24 @@ struct WorkoutDetailView: View {
     @State private var isRecalculating = false
     @State private var showRecalculateAlert = false
     @State private var recalculateMessage = ""
-    @State private var healthKitRouteBadge: String?
+    @State private var healthKitRoute: (routes: Int, points: Int, maxGap: Double)?
+
+    /// Composed here rather than when the HealthKit query returns, so the GPS/total counts read
+    /// the flight AFTER its details have finished loading asynchronously.
+    private var healthKitRouteBadge: String? {
+        guard let hk = healthKitRoute else { return nil }
+        guard hk.routes > 0 else { return "HK route: none" }
+        // HOW MANY POINTS CAME FROM GPS. In Velocity Mode this must be exactly 1 — the anchor —
+        // with everything else dead-reckoned. Reading a long straight line on another app's map
+        // and inferring "it is still using GPS" is a reasonable guess that has now been wrong
+        // twice, so state the fact rather than argue about it. The count comes from this app's
+        // own record: a CLLocation carries no flag saying where it came from, so the HealthKit
+        // copy physically cannot answer the question.
+        let fromGPS = activeFlight.locations.filter { !$0.isEstimated }.count
+        let total = activeFlight.locations.count
+        let seriesNote = hk.routes > 1 ? " (\(hk.routes) series)" : ""
+        return "HK \(hk.points) pts · max \(Int(hk.maxGap.rounded()))m · GPS \(fromGPS)/\(total)" + seriesNote
+    }
 
     /// The richer of the two records, for display as well as export.
     ///
@@ -1109,15 +1126,14 @@ struct WorkoutDetailView: View {
     /// Read the HealthKit copy of this workout's route back out of HealthKit, so the badge can
     /// say what Fitness is actually drawing rather than what this app recorded.
     private func loadHealthKitRouteSummary() {
-        guard healthKitRouteBadge == nil, let uuid = flight.workoutUUID else { return }
+        guard healthKitRoute == nil, let uuid = flight.workoutUUID else { return }
         healthKitManager.routeDiagnostics(for: uuid) { routes, points, maxGap in
             DispatchQueue.main.async {
                 guard routes > 0 else {
-                    healthKitRouteBadge = "HK route: none"
+                    healthKitRoute = (routes: 0, points: 0, maxGap: 0)
                     return
                 }
-                let seriesNote = routes > 1 ? " (\(routes) series)" : ""
-                healthKitRouteBadge = "HK \(points) pts · max \(Int(maxGap.rounded()))m" + seriesNote
+                healthKitRoute = (routes: routes, points: points, maxGap: maxGap)
             }
         }
     }
