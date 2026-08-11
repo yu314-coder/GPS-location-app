@@ -160,15 +160,33 @@ final class LearnedSpeedEstimator {
     }
     var maxLearnedSpeed: Double { observations.map(\.speed).max() ?? 0 }
 
+    /// Observations recorded while Velocity Mode was forced. Held apart from the searchable
+    /// store until the workout ends — see learn(gpsSpeed:quarantined:).
+    private var quarantined: [Observation] = []
+
     /// Record what the accelerometer looked like at a speed GPS actually measured.
-    func learn(gpsSpeed: Double) {
+    ///
+    /// `quarantined` exists because of a leak that made Velocity Mode dishonest. Teaching the
+    /// model from a live fix and then estimating from the SAME 4-second window means the
+    /// nearest neighbour is the observation just stored: its distance is ~0, its weight is
+    /// enormous, and the answer collapses onto the GPS speed that was just handed in. The mode
+    /// exists to predict what happens when GPS is gone, so a reading secretly sourced from GPS
+    /// makes it a test that cannot fail — it would look excellent on the ground and reveal
+    /// nothing about a flight.
+    ///
+    /// Discarding the evidence would be the wrong fix: these are exactly the labelled samples
+    /// the model needs, and forced sessions are when most driving happens here. So keep them,
+    /// but out of reach — they join the searchable store when the workout ends, teaching the
+    /// NEXT trip while contributing nothing to this one's estimate.
+    func learn(gpsSpeed: Double, quarantined isQuarantined: Bool = false) {
         guard gpsSpeed >= 0, let f = currentFeatures() else { return }
         updateNormalisation(f)
-        if observations.count < capacity {
-            observations.append(Observation(f: f, speed: gpsSpeed))
-        } else if let victim = mostRedundantIndex(for: gpsSpeed) {
-            observations[victim] = Observation(f: f, speed: gpsSpeed)
+        let observation = Observation(f: f, speed: gpsSpeed)
+        if isQuarantined {
+            if quarantined.count < capacity { quarantined.append(observation) }
+            return
         }
+        insert(observation)
         // Re-measure the model's own compression as evidence accumulates. Rare enough that the
         // leave-one-out pass costs nothing noticeable, often enough that a drive which visits
         // new speeds is reflected before the next one.
@@ -180,6 +198,26 @@ final class LearnedSpeedEstimator {
         }
     }
     private var sinceLastCalibration = 0
+
+    private func insert(_ observation: Observation) {
+        if observations.count < capacity {
+            observations.append(observation)
+        } else if let victim = mostRedundantIndex(for: observation.speed) {
+            observations[victim] = observation
+        }
+    }
+
+    /// Fold everything learned during a forced session into the searchable store. Called when
+    /// the workout ends, so the evidence is never available to the estimate that produced it.
+    func commitQuarantinedObservations() {
+        guard !quarantined.isEmpty else { return }
+        let count = quarantined.count
+        for o in quarantined { insert(o) }
+        quarantined.removeAll()
+        observationsAtLastCalibration = 0
+        recalibrate()
+        print("🧠 Learned speed model: folded in \(count) observations held back during Velocity Mode")
+    }
 
     /// Index of an observation whose speed bucket is the most crowded, so replacing it preserves
     /// coverage. Returns nil if this sample's own bucket is the crowded one, i.e. nothing to gain.

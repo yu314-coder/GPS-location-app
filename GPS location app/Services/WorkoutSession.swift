@@ -1172,7 +1172,9 @@ class WorkoutSession: ObservableObject {
         // Save the velocity diagnostics before anything is torn down, so a forgotten in-session
         // export no longer costs the whole drive.
         sessionDiagnostics.persistToDisk(workoutStart: flight.startDate)
-        // Everything learned about this car and placement outlives the workout.
+        // Everything learned about this car and placement outlives the workout — including the
+        // samples held back during Velocity Mode, which are only now allowed to be searchable.
+        learnedSpeed.commitQuarantinedObservations()
         learnedSpeed.save()
         stopEstimatedFallbackTimer()
 
@@ -3669,10 +3671,15 @@ class WorkoutSession: ObservableObject {
             // answer. Learning is calibration, not measurement — it is exactly what happens on
             // an ordinary drive before the tunnel or the flight, and it is the entire basis of
             // the approach. Only the estimate is withheld from GPS; the evidence is not.
+            // QUARANTINED. The evidence is kept, but it must not be reachable by the estimate
+            // running right now: teaching the model from this fix and then answering from the
+            // same 4-second window returns the GPS speed itself, which would make Velocity Mode
+            // silently GPS-powered — perfect on the ground and useless in the air. These
+            // samples join the searchable store when the workout ends.
             if location.speed >= 0, location.horizontalAccuracy >= 0,
                location.horizontalAccuracy < 35.0,
                vehicleContextIsCurrent, !deviceIsBeingHandled {
-                learnedSpeed.learn(gpsSpeed: location.speed)
+                learnedSpeed.learn(gpsSpeed: location.speed, quarantined: true)
             }
 
             // DELIBERATELY NOT UPDATING lastMeasuredVehicleSpeed HERE.
