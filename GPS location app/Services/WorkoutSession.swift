@@ -305,6 +305,14 @@ class WorkoutSession: ObservableObject {
     private var headingSeedWasMeasured = false
     private var untrustedHeadingPrefixStart: Int?
     private var untrustedSeedHeading: Double?
+    /// Mean compass offset actually applied while the untrusted prefix was being laid down, and
+    /// a trailing record of the offset so its convergence can be judged. See
+    /// rotateUntrustedPrefixIfOffsetSettled().
+    private var prefixOffsetSum: Double = 0
+    private var prefixOffsetCount: Double = 0
+    private var offsetHistory: [(t: Date, value: Double)] = []
+    private let OFFSET_SETTLE_WINDOW: TimeInterval = 60.0
+    private let OFFSET_SETTLE_TOLERANCE: Double = 20.0
     /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
     private var walkAccelWindow: [(north: Double, east: Double)] = []
     private let WALK_WINDOW_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
@@ -1264,6 +1272,14 @@ class WorkoutSession: ObservableObject {
         learnedSpeed.commitQuarantinedObservations()
         learnedSpeed.save()
         stopEstimatedFallbackTimer()
+        // LAST CHANCE. A short walk can end before the offset formally settles, and rotating by
+        // the best value available still beats leaving the opening stretch visibly wrong.
+        if untrustedHeadingPrefixStart != nil, let settled = compassMisalignment {
+            let applied = prefixOffsetCount > 0 ? prefixOffsetSum / prefixOffsetCount : 0
+            var rotation = settled - applied
+            if rotation > 180 { rotation -= 360 } else if rotation < -180 { rotation += 360 }
+            rotateUntrustedPrefix(by: rotation)
+        }
 
         // Stop location tracking FIRST, then drop the velocity override.
         //
@@ -2238,7 +2254,7 @@ class WorkoutSession: ObservableObject {
             compassMisalignment = offset
             // First time the true travel direction is known: fix the stretch that was drawn
             // from a compass-seeded (device-orientation) heading.
-            correctUntrustedHeadingPrefix(trueHeadingNow: course)
+            rotateUntrustedPrefixIfOffsetSettled()
         }
     }
 
@@ -2250,15 +2266,43 @@ class WorkoutSession: ObservableObject {
     /// learned is therefore drawn rotated by one CONSTANT error, which is exactly what makes it
     /// correctable: rotating that run about its anchor by the now-known difference restores the
     /// real shape instead of leaving the route starting off in the wrong direction.
-    private func correctUntrustedHeadingPrefix(trueHeadingNow: Double) {
+    /// WAIT FOR THE OFFSET TO SETTLE BEFORE REWRITING HISTORY.
+    ///
+    /// The opening stretch is drawn before the compass-to-travel offset is known, so it needs
+    /// rotating once the truth arrives. This used to fire the instant an offset was first
+    /// learned — which on a real walk was seven seconds in, at +16°, while the value it
+    /// eventually settled on was −51° (velocity_debug_20260811_185250). Correcting by a number
+    /// that is itself 100° wrong is worse than not correcting at all, and it consumed the one
+    /// chance to do it: the prefix marker was cleared and never revisited.
+    ///
+    /// The offset is noisy early and steady later, so judge it by whether it has stopped
+    /// moving: unchanged within 20° over a minute. On that walk the first four minutes carried
+    /// a median heading error of 96-111° and the rest 13-26°, and rotating the prefix by the
+    /// settled offset takes the track's bounding box from 183 x 89 m to 185 x 176 m against a
+    /// GPS truth of 193 x 197 m — most of the shape, recovered from data already recorded.
+    private func rotateUntrustedPrefixIfOffsetSettled() {
+        guard untrustedHeadingPrefixStart != nil, let current = compassMisalignment else { return }
+        let now = Date()
+        offsetHistory.append((now, current))
+        offsetHistory.removeAll { now.timeIntervalSince($0.t) > OFFSET_SETTLE_WINDOW * 1.5 }
+        guard let oldest = offsetHistory.first,
+              now.timeIntervalSince(oldest.t) >= OFFSET_SETTLE_WINDOW else { return }
+        guard angularDistance(current, oldest.value) <= OFFSET_SETTLE_TOLERANCE else { return }
+        // Each prefix point was drawn with whatever offset was in effect at the time; the
+        // correction is the difference between that and the settled value.
+        let applied = prefixOffsetCount > 0 ? prefixOffsetSum / prefixOffsetCount : 0
+        var rotation = current - applied
+        if rotation > 180 { rotation -= 360 } else if rotation < -180 { rotation += 360 }
+        rotateUntrustedPrefix(by: rotation)
+    }
+
+    private func rotateUntrustedPrefix(by rotationDegrees: Double) {
         guard let start = untrustedHeadingPrefixStart,
-              let seedHeading = untrustedSeedHeading,
               start > 0, flight.locations.count > start else {
             untrustedHeadingPrefixStart = nil
             return
         }
-        var rotation = trueHeadingNow - seedHeading
-        if rotation > 180 { rotation -= 360 } else if rotation < -180 { rotation += 360 }
+        let rotation = rotationDegrees
         // A tiny correction is not worth rewriting history for.
         guard abs(rotation) > 5 else { untrustedHeadingPrefixStart = nil; return }
 
@@ -2622,6 +2666,9 @@ class WorkoutSession: ObservableObject {
                         compassMisalignment = existing + 0.1 * delta
                     } else {
                         compassMisalignment = offset
+                        // NOT rotating the prefix here any more — see
+                        // rotateUntrustedPrefixIfOffsetSettled for why the first value learned
+                        // is exactly the wrong one to trust.
                         // FIX THE STRETCH ALREADY DRAWN FROM A GUESSED HEADING.
                         //
                         // Velocity Mode starts before the direction of travel is known, so the
@@ -2636,7 +2683,7 @@ class WorkoutSession: ObservableObject {
                         // The PCA walking axis is a measurement of body travel, so the first
                         // time it resolves, it is as valid a "true heading now" as a GPS course
                         // and the prefix can be rotated onto it.
-                        correctUntrustedHeadingPrefix(trueHeadingNow: target)
+
                     }
                 }
             }
@@ -2680,6 +2727,15 @@ class WorkoutSession: ObservableObject {
             if err > 180 { err -= 360 } else if err < -180 { err += 360 }
             motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + gain * err)
             resolvedHeading = motionHeadingDegrees
+        }
+        // Record what offset the points being laid down right now are actually using, and check
+        // whether it has settled enough to rewrite the opening stretch. This runs every tick of
+        // the fallback, which is the only path alive in Velocity Mode — the GPS-based learner
+        // that used to trigger the rotation is by definition never called there.
+        if untrustedHeadingPrefixStart != nil {
+            prefixOffsetSum += (compassMisalignment ?? 0)
+            prefixOffsetCount += 1
+            rotateUntrustedPrefixIfOffsetSettled()
         }
         // NOTE: the velocity vector no longer snaps the heading either. It is a product of the
         // integrated velocity, so when that diverges it dragged the heading away from the
@@ -3208,6 +3264,9 @@ class WorkoutSession: ObservableObject {
         headingSeedWasMeasured = (measuredCourse != nil)
         untrustedHeadingPrefixStart = headingSeedWasMeasured ? nil : flight.locations.count
         untrustedSeedHeading = headingSeedWasMeasured ? nil : course
+        prefixOffsetSum = 0
+        prefixOffsetCount = 0
+        offsetHistory = []
         // PDR distance source for step activities: pedometer from the start of the gap.
         fallbackPedometerDistance = nil
         lastFallbackPedometerDistance = 0
