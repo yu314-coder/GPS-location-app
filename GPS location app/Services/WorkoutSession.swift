@@ -311,6 +311,9 @@ class WorkoutSession: ObservableObject {
     /// EMA of the gait-skewness forward/back vote, so a single noisy ~1.6 s window (2-3 steps)
     /// cannot flip the resolved travel direction 180° on its own. See walkingAxisHeading().
     private var walkingSkewEMA: Double = 0
+    /// Last resolved walking axis, recorded per tick purely so the 180° decision is inspectable
+    /// afterwards: an offset pinned near ±180° in a log is the signature of it choosing wrong.
+    private var lastResolvedWalkAxis: Double?
     private var walkingSkewEMAValid = false
     private var wasPedometerCountingForSkewReset = false
     private var isStepBasedWorkout: Bool {
@@ -463,7 +466,35 @@ class WorkoutSession: ObservableObject {
     private let PEDESTRIAN_STILL_WINDOW: TimeInterval = 1.2  // s
     /// A stopped vehicle idles quietly for longer than a pothole-free moment on the move, so
     /// this is deliberately longer than the pedestrian window.
-    private let VEHICLE_STOP_QUIET_WINDOW: TimeInterval = 2.5  // s
+    private let VEHICLE_STOP_QUIET_WINDOW: TimeInterval = 2.5
+    /// Speed below which quiet is allowed to finish the job and call it stopped.
+    private let VEHICLE_STOP_CONFIRM_SPEED: Double = 2.5      // m/s (9 km/h)
+    /// How long Apple's classifier must say STATIONARY before that alone may zero a vehicle
+    /// that the accelerometer still believes is moving.
+    private let STATIONARY_DWELL_TO_STOP: TimeInterval = 5.0
+    private var stationaryActivitySince: Date?
+
+    /// Is a GROUND vehicle actually stopped?
+    ///
+    /// QUIET IS NOT ENOUGH ON ITS OWN, and assuming it was is what made a phone resting on a
+    /// leg read 30 km/h, then 0, then 30 again on a smooth road. A cruising vehicle really is
+    /// quiet — that is the whole reason the ZUPT tiers refuse to fire while driving — so quiet
+    /// may only CONFIRM a stop that something else has already measured, never cause one.
+    ///
+    /// Two things can measure it. The along-track integral, which has to swing by the whole
+    /// speed for a car to actually stop and is a large, unambiguous signal while braking; and
+    /// Apple's activity classifier, which is independent of the accelerometer entirely but slow
+    /// enough that it needs a dwell time before it may contradict a moving estimate.
+    ///
+    /// Never available airborne: a smooth cruise is quiet, the classifier reports nothing
+    /// useful, and calling that "stopped" is the one mistake this mode cannot make.
+    private func vehicleIsStoppedOnGround(correctedSpeed: Double) -> Bool {
+        guard !flightPhase.isAirborne else { return false }
+        guard pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW else { return false }
+        if correctedSpeed < VEHICLE_STOP_CONFIRM_SPEED { return true }
+        guard let since = stationaryActivitySince else { return false }
+        return Date().timeIntervalSince(since) >= STATIONARY_DWELL_TO_STOP
+    }  // s
     /// Velocity change measured along the direction of travel since GPS last stated the speed.
     /// Added to the held speed so braking and pulling away are followed immediately, while a
     /// quiet cruise (a ≈ 0) leaves the held value untouched.
@@ -1061,7 +1092,10 @@ class WorkoutSession: ObservableObject {
             self.learnedSpeed.ingest(vertical: up)
             // Keep the raw vertical trace alongside the model's own view of it. Everything the
             // estimator computes is a lossy summary; a spectrum can only be taken from this.
-            self.sessionDiagnostics.recordRaw(verticalAccel: up, at: Date())
+            self.sessionDiagnostics.recordRaw(verticalAccel: up,
+                                              north: north - self.accelBiasNorth,
+                                              east: east - self.accelBiasEast,
+                                              at: Date())
         }
         vibrationSpeed.reset()
         learnedSpeed.resetWindow()
@@ -2524,6 +2558,7 @@ class WorkoutSession: ObservableObject {
             // pull dragged the heading BACKWARDS against the gyro — the visible turn lag.
             // Drift correction only needs the straight stretches, where the axis is honest.
             if !turningNow, !compassIsDisturbed, pedometerIsCounting, let axis = walkingAxisHeading() {
+                lastResolvedWalkAxis = axis
                 // walkingAxisHeading() now returns a DIRECTED heading (forward end resolved
                 // from gait skewness), so it must NOT be re-resolved against the current
                 // belief — doing that is what allowed a 180° error to persist.
@@ -2805,8 +2840,7 @@ class WorkoutSession: ObservableObject {
             // observable and needs no model: quiet on every axis for over two seconds, or
             // Apple's classifier confidently saying stationary. Never available airborne,
             // where a smooth cruise is quiet too.
-            let stoppedOnGround = !flightPhase.isAirborne
-                && (pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW || isDeviceStationaryByActivity)
+            let stoppedOnGround = vehicleIsStoppedOnGround(correctedSpeed: estimatedFallbackSpeed)
             if stoppedOnGround {
                 estimatedFallbackSpeed = 0
             } else {
@@ -2869,8 +2903,7 @@ class WorkoutSession: ObservableObject {
             // 0.1–0.3 m/s² while a moving one is noisier, so this catches the stop even when
             // the braking integral misses it. Never available airborne — a smooth cruise is
             // quiet too, and calling that "stopped" is the one mistake this mode cannot make.
-            let stoppedOnGround = !flightPhase.isAirborne
-                && (pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW || isDeviceStationaryByActivity)
+            let stoppedOnGround = vehicleIsStoppedOnGround(correctedSpeed: corrected)
             estimatedFallbackSpeed = stoppedOnGround ? 0 : corrected
             if stoppedOnGround { heldSpeedCorrection = -held }
             distance = estimatedFallbackSpeed * dt
@@ -3051,6 +3084,8 @@ class WorkoutSession: ObservableObject {
             calSamples: vd.samples,
             extrapolating: vd.isExtrapolating,
             handlingRotation: handlingRotationLevel,
+            walkAxis: lastResolvedWalkAxis,
+            walkSkew: walkingSkewEMAValid ? walkingSkewEMA : nil,
             // The LIVE GPS speed, not lastFix.speed — in Force Velocity lastFix is the frozen
             // anchor, so that column read one constant value for an entire drive and was
             // useless as ground truth.
@@ -3268,7 +3303,13 @@ class WorkoutSession: ObservableObject {
                 guard let self, let activity else { return }
                 // Only trust a CONFIDENT stationary call, so a brief misclassification cannot
                 // zero a genuinely moving vehicle.
+                let wasStationary = self.isDeviceStationaryByActivity
                 self.isDeviceStationaryByActivity = activity.stationary && activity.confidence != .low
+                if self.isDeviceStationaryByActivity {
+                    if !wasStationary { self.stationaryActivitySince = Date() }
+                } else {
+                    self.stationaryActivitySince = nil
+                }
                 self.activityIsAutomotive = activity.automotive
                 if activity.automotive { self.lastVehicleEvidenceTime = Date() }
             }

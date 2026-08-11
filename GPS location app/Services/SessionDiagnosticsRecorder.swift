@@ -32,6 +32,11 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let extrapolating: Bool
         // Raw context
         let handlingRotation: Double
+        /// Resolved walking axis and the smoothed skew vote that decides which of its two ends
+        /// is forward. Recorded because that single binary choice is what turns a whole route
+        /// 180°, and it was previously invisible in every log.
+        let walkAxis: Double?
+        let walkSkew: Double?
         let gpsSpeed: Double?
         let gpsAccuracy: Double?
         let latitude: Double?
@@ -91,6 +96,13 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let t: TimeInterval        // seconds since capture start
         let verticalAccel: Double  // world-frame, gravity removed, m/s²
         let gpsSpeed: Double       // m/s, negative when unknown
+        // HORIZONTAL residual, world frame. Added because the walking-axis resolution — the
+        // thing that decides which end of the PCA axis is "forward", and therefore whether a
+        // whole route is drawn 180° out — is computed from exactly these two numbers, and with
+        // only the vertical channel recorded it could not be replayed or tested offline. A
+        // candidate rule can now be scored against a real walk before it is shipped.
+        let northAccel: Double     // m/s², bias-removed
+        let eastAccel: Double      // m/s², bias-removed
     }
     private var raw: [RawSample] = []
     private let rawCapacity = 90_000
@@ -106,21 +118,24 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// alone accounted for the difference between a 113 deg and a 48 deg p90.
     var latestGPSAccuracy: Double = -1
 
-    func recordRaw(verticalAccel: Double, at time: Date) {
+    func recordRaw(verticalAccel: Double, north: Double = 0, east: Double = 0, at time: Date) {
         if rawStart == nil { rawStart = time }
         guard let start = rawStart else { return }
         raw.append(RawSample(t: time.timeIntervalSince(start),
                              verticalAccel: verticalAccel,
-                             gpsSpeed: latestGPSSpeed))
+                             gpsSpeed: latestGPSSpeed,
+                             northAccel: north,
+                             eastAccel: east))
         if raw.count > rawCapacity { raw.removeFirst(raw.count - rawCapacity) }
     }
 
     var rawCount: Int { raw.count }
 
     private func rawCSV() -> String {
-        var out = "t_seconds,vertical_accel_ms2,gps_speed_ms\n"
+        var out = "t_seconds,vertical_accel_ms2,gps_speed_ms,north_accel_ms2,east_accel_ms2\n"
         for s in raw {
-            out += String(format: "%.3f,%.6f,%.3f\n", s.t, s.verticalAccel, s.gpsSpeed)
+            out += String(format: "%.3f,%.6f,%.3f,%.6f,%.6f\n",
+                          s.t, s.verticalAccel, s.gpsSpeed, s.northAccel, s.eastAccel)
         }
         return out
     }
@@ -219,7 +234,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "heading_deg,compass_deg,offset_deg,"
         out += "vib_feature_u,fit_p0,fit_p1,fit_p2,cal_min_u,cal_max_u,"
         out += "cal_min_speed_ms,cal_max_speed_ms,cal_samples,extrapolating,"
-        out += "handling_rot_rads,gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
+        out += "handling_rot_rads,walk_axis_deg,walk_skew_ema,"
+        out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m\n"
 
         let iso = ISO8601DateFormatter()
@@ -236,6 +252,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.minCalSpeed) + "," + Self.fmt(r.maxCalSpeed) + ","
             out += Self.fmt(r.calSamples) + ",\(r.extrapolating ? 1 : 0),"
             out += Self.fmt(r.handlingRotation) + ","
+            out += Self.fmt(r.walkAxis) + "," + Self.fmt(r.walkSkew) + ","
             out += Self.fmt(r.gpsSpeed) + "," + Self.fmt(r.gpsAccuracy) + ","
             out += Self.fmt(r.latitude) + "," + Self.fmt(r.longitude) + ","
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","

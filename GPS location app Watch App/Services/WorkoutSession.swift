@@ -228,6 +228,7 @@ class WorkoutSession: NSObject, ObservableObject {
     private let PEDESTRIAN_STILL_ROTATION: Double = 0.5
     private let PEDESTRIAN_STILL_WINDOW: TimeInterval = 1.2
     private let VEHICLE_STOP_QUIET_WINDOW: TimeInterval = 2.5
+    private let VEHICLE_STOP_CONFIRM_SPEED: Double = 2.5      // m/s (9 km/h)
     /// Velocity change measured along the direction of travel since GPS last stated the speed.
     private var heldSpeedCorrection: Double = 0
     private let HELD_SPEED_ACCEL_FLOOR: Double = 0.25
@@ -2301,7 +2302,13 @@ class WorkoutSession: NSObject, ObservableObject {
                 // noise floor accumulate, so a quiet cruise adds nothing and the held value
                 // survives exactly — which is the flight case.
                 let corrected = max(0, held + heldSpeedCorrection)
+                // QUIET ALONE MUST NOT ZERO A MOVING VEHICLE (see iPhone). A phone resting on a
+                // leg on a smooth road is quiet, and treating that as stopped made the speed
+                // drop 30 -> 0 -> 30. Quiet may only confirm a stop the along-track integral
+                // has already measured — braking swings it by the whole speed, so it cannot be
+                // missed — and never above a speed that could be an aircraft.
                 let stoppedOnGround = corrected < MAX_GROUND_STOP_SPEED
+                    && corrected < VEHICLE_STOP_CONFIRM_SPEED
                     && pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW
                 motionFallbackSpeed = stoppedOnGround ? 0 : corrected
                 if stoppedOnGround { heldSpeedCorrection = -held }
