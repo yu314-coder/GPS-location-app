@@ -314,6 +314,38 @@ class WorkoutSession: ObservableObject {
     /// Last resolved walking axis, recorded per tick purely so the 180° decision is inspectable
     /// afterwards: an offset pinned near ±180° in a log is the signature of it choosing wrong.
     private var lastResolvedWalkAxis: Double?
+    private var lastWalkAxisTime: Date?
+
+    /// THE WALKING AXIS MAY REFINE THE COMPASS, NEVER OVERRULE IT.
+    ///
+    /// I built the opposite of this first, reasoning that the axis is far steadier per tick
+    /// (0.0° median vs the compass's 11.1°) and orientation-independent, so it should be the
+    /// datum. Scoring both against the GPS track on the same walk says otherwise
+    /// (velocity_debug_20260811_181810, 115 ten-second windows):
+    ///
+    ///     source                      median   within 45°
+    ///     compass alone                 55°       43%
+    ///     compass + learned offset     120°        3%
+    ///     recorded heading             126°        3%
+    ///     axis, skew-resolved          156°        1%
+    ///
+    /// The axis was steady and consistently WRONG — 156° off, and still 90° off after resolving
+    /// its forward end against the compass, so the axis LINE itself was wrong, not just which
+    /// end of it. PCA had locked onto lateral body sway rather than fore-aft travel, which a
+    /// hand-held phone makes easy: the eigenvalue test only asks that one direction dominates,
+    /// and sway dominates just as cleanly as stride.
+    ///
+    /// The damage came through the learned misalignment: heading = compass + offset, the offset
+    /// is learned as axis − compass, so a 90° axis error becomes a 90° heading error and turned
+    /// the best available signal (55°) into the worst (126°). Bounding what the axis may assert
+    /// bounds that: a disagreement beyond this is evidence the axis is not measuring gait, not
+    /// evidence that the body is travelling sideways.
+    ///
+    /// This limits pocket carry, where a large offset is genuine — that case needs its own
+    /// measurement before the bound is widened for it.
+    private let MAX_AXIS_COMPASS_DISAGREEMENT: Double = 60.0
+
+
     private var walkingSkewEMAValid = false
     private var wasPedometerCountingForSkewReset = false
     private var isStepBasedWorkout: Bool {
@@ -2557,8 +2589,15 @@ class WorkoutSession: ObservableObject {
             // trailing window, so mid-turn it still points at the pre-turn direction and the
             // pull dragged the heading BACKWARDS against the gyro — the visible turn lag.
             // Drift correction only needs the straight stretches, where the axis is honest.
-            if !turningNow, !compassIsDisturbed, pedometerIsCounting, let axis = walkingAxisHeading() {
+            var axisAgreesWithCompass = true
+            if let axisNow = walkingAxisHeading(), let compassNow = locationManager.currentCompassHeading {
+                let expected = normalizedHeading(compassNow + (compassMisalignment ?? 0))
+                axisAgreesWithCompass = angularDistance(axisNow, expected) <= MAX_AXIS_COMPASS_DISAGREEMENT
+            }
+            if !turningNow, !compassIsDisturbed, pedometerIsCounting, axisAgreesWithCompass,
+               let axis = walkingAxisHeading() {
                 lastResolvedWalkAxis = axis
+                lastWalkAxisTime = Date()
                 // walkingAxisHeading() now returns a DIRECTED heading (forward end resolved
                 // from gait skewness), so it must NOT be re-resolved against the current
                 // belief — doing that is what allowed a 180° error to persist.
