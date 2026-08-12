@@ -3181,6 +3181,9 @@ class WorkoutSession: ObservableObject {
             handlingRotation: handlingRotationLevel,
             walkAxis: lastResolvedWalkAxis,
             walkSkew: walkingSkewEMAValid ? walkingSkewEMA : nil,
+            learnObs: Double(learnedSpeed.observationCount),
+            learnMaxKmh: learnedSpeed.maxLearnedSpeed * 3.6,
+            learnSlope: learnedSpeed.calibration.slope,
             // The LIVE GPS speed, not lastFix.speed — in Force Velocity lastFix is the frozen
             // anchor, so that column read one constant value for an entire drive and was
             // useless as ground truth.

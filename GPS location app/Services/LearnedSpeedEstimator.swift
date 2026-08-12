@@ -159,6 +159,11 @@ final class LearnedSpeedEstimator {
         return (speeds.max()! - speeds.min()!) >= MIN_SPEED_SPREAD
     }
     var maxLearnedSpeed: Double { observations.map(\.speed).max() ?? 0 }
+    /// The compression correction currently in force, so a log can distinguish "the model has
+    /// never seen this speed" from "it has, and the correction for its flattening is not being
+    /// applied". Those need opposite fixes and look identical from the outside.
+    var calibration: (slope: Double, intercept: Double) { (calibrationSlope, calibrationIntercept) }
+    var quarantinedCount: Int { quarantined.count }
 
     /// Observations recorded while Velocity Mode was forced. Held apart from the searchable
     /// store until the workout ends — see learn(gpsSpeed:quarantined:).
