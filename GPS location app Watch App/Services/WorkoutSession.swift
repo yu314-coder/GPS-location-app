@@ -145,6 +145,10 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastIPhoneRelayTime: Date?                         // freshness for anchoring
     private var frozenIPhoneRelayCount: Int = 0
     private let MOTION_FALLBACK_TICK: TimeInterval = 1.0
+    /// Longest a dead-reckoned workout may go without recording a point, however little the
+    /// estimator has to say. Matches the iPhone.
+    private let MOTION_HEARTBEAT_SECONDS: TimeInterval = 5.0
+    private var lastMotionAppendTime: Date = .distantPast
     // NOTE: there is deliberately NO speed cap anywhere in the velocity dead reckoning —
     // speed is simply the magnitude of the integrated velocity vector.
     // ZUPT state — replaces the old velocity leak and settle-to-rest damping.
@@ -1455,7 +1459,10 @@ class WorkoutSession: NSObject, ObservableObject {
 
     private func appendEstimatedPedometerFallbackLocation(distanceMeters: Double, timestamp: Date,
                                                           speedMetersPerSecond: Double? = nil) {
-        guard distanceMeters > 0.0 else { return }
+        // Zero distance is allowed: a heartbeat point records "we were here and not moving",
+        // which is a genuine observation and the only thing that keeps a stalled estimator from
+        // producing a completely empty track.
+        guard distanceMeters >= 0.0 else { return }
 
         // Resolve the point to dead-reckon FROM. Normally the last recorded location.
         // But a workout that STARTS with no GPS (basement / subway / airplane) has no
@@ -1970,12 +1977,21 @@ class WorkoutSession: NSObject, ObservableObject {
             return  // already ran this second (the other timer beat us to it)
         }
         lastFallbackTickTime = now
-        checkMotionFallback()
-        // In forced velocity mode the pedometer is intentionally OFF — motion (velocity)
-        // is the sole distance source, so steps can't mix in or double-count.
-        if !forceMotionFallback {
-            checkPedometerFallback()
+        // ONE STRATEGY, whether the user forced it or GPS simply went away.
+        //
+        // The separate pedometer fallback used to own walking gaps, so the AUTOMATIC switch —
+        // the one a real flight, tunnel or basement actually uses — ran a weaker method than
+        // Velocity Mode: CMPedometer distance only, with none of the accelerometer step
+        // detection, cadence-and-stride speed, standing-still zeroing, held vehicle speed or
+        // heading work that went into the shared chain.
+        //
+        // That chain already routes to the pedometer the moment steps are detected, so nothing
+        // is lost by retiring the separate path — and keeping both alive after removing the
+        // yield would have had them BOTH adding distance for the same steps.
+        if isUsingPedometerFallback {
+            endPedometerFallback(reason: "motion fallback owns the gap")
         }
+        checkMotionFallback()
     }
 
     private func checkMotionFallback() {
@@ -2005,14 +2021,20 @@ class WorkoutSession: NSObject, ObservableObject {
                 return
             }
 
-            // Yield the gap to the pedometer ONLY while it is ACTIVELY producing real
-            // step distance (a basement/underground WALK with actual footsteps, where
-            // step counting beats accelerometer integration). A pedometer that was armed
-            // but is adding ~nothing does NOT block dead reckoning — fall straight through.
-            if isStepBased && isUsingPedometerFallback && pedometerFallbackDistanceAdded > 1.0 {
-                if isUsingMotionFallback { endMotionFallback(reason: "pedometer producing step distance") }
-                return
-            }
+            // NO LONGER YIELDING THE GAP TO A SEPARATE PEDOMETER PATH.
+            //
+            // This handed every walking GPS gap to an older, simpler fallback that only
+            // accumulates CMPedometer distance — so the automatic switch, which is what a real
+            // flight or basement actually uses, ran a different and weaker strategy than
+            // Velocity Mode does, and none of the work that made Velocity Mode good reached it:
+            // no accelerometer step detection, no cadence-and-stride speed, no standing-still
+            // zeroing, no held vehicle speed obeying measured braking, no heading datum.
+            //
+            // The reason it existed was that step counting beats accelerometer integration for
+            // a walk. That is still true and is no longer an argument for a separate path: the
+            // shared chain routes to the pedometer itself the moment steps are detected, and
+            // falls through to the vehicle sources only when there are none. One strategy,
+            // reached the same way whether the user forced it or GPS simply went away.
         }
 
         if !isUsingMotionFallback {
@@ -2347,7 +2369,18 @@ class WorkoutSession: NSObject, ObservableObject {
         // even though the pedometer baseline had already advanced, permanently losing that
         // distance.
         pendingMotionDistance += distance
-        guard pendingMotionDistance >= 0.1 else { return }
+
+        // ALWAYS RECORD SOMETHING — the guarantee the iPhone already makes and the watch did
+        // not. Below the threshold this returned outright, so whenever the estimator produced
+        // no distance — standing still, the model declining, waiting for evidence — the watch
+        // recorded NO POINTS AT ALL and the workout came back with an empty track. A recording
+        // that captures nothing cannot be reviewed, exported or debugged; it is the one outcome
+        // with no recovery, and a stationary point is a real observation ("we were here, not
+        // moving"). So append on distance as before, or on a heartbeat if too long has passed.
+        let sinceLastAppend = now.timeIntervalSince(lastMotionAppendTime)
+        let heartbeatDue = sinceLastAppend >= MOTION_HEARTBEAT_SECONDS
+        guard pendingMotionDistance >= 0.1 || heartbeatDue else { return }
+        lastMotionAppendTime = now
         let appendDistance = pendingMotionDistance
         pendingMotionDistance = 0
 
