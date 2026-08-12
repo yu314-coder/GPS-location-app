@@ -259,6 +259,8 @@ class WorkoutSession: ObservableObject {
     /// Per-tick pull of the dead-reckoned heading toward the compass. The gyro gives turns but
     /// no absolute datum; the compass has no drift. Small so real turns are never fought.
     private let COMPASS_CORRECTION_GAIN: Double = 0.25
+    /// Guards the always-on compass datum from re-applying a correction a branch already made.
+    private var compassCorrectionAppliedThisTick = false
     /// Angle from the phone's magnetic heading to the actual direction of travel, learned from
     /// the PCA walking axis. The compass alone measures device orientation, so this offset is
     /// what turns it into a usable absolute datum for travel direction.
@@ -2497,6 +2499,10 @@ class WorkoutSession: ObservableObject {
         let previousTick = lastEstimatedFallbackTick ?? now.addingTimeInterval(-ESTIMATED_LOCATION_TICK_INTERVAL)
         let dt = min(max(now.timeIntervalSince(previousTick), 0.5), 2.0)
         lastEstimatedFallbackTick = now
+        // Cleared once per tick, before any branch can set it — a reset inside one branch would
+        // latch the flag for every path that does not take that branch, permanently disabling
+        // the always-on datum for vehicles and aircraft.
+        compassCorrectionAppliedThisTick = false
 
         // The velocity VECTOR is integrated at sensor rate in integrateWorldAccelSample,
         // which also owns drift correction via ZUPT. There is deliberately NO velocity leak
@@ -2737,13 +2743,27 @@ class WorkoutSession: ObservableObject {
                 var err = target - motionHeadingDegrees
                 if err > 180 { err -= 360 } else if err < -180 { err += 360 }
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + gain * err)
+                compassCorrectionAppliedThisTick = true
             }
             resolvedHeading = motionHeadingDegrees
         }
         if let rh = resolvedHeading { motionHeadingDegrees = rh }
         // ABSOLUTE DATUM, ALWAYS. Applied outside the branches above so a diverged velocity
         // vector can never lock the heading away from the only drift-free reference we have.
-        if !compassIsDisturbed, let compass = locationManager.currentCompassHeading {
+        //
+        // ONCE PER TICK, THOUGH. This is a safety net for the paths that do not correct to the
+        // compass themselves, but nothing stopped it running again after a path that already
+        // had — so while walking, the correction was applied TWICE every tick and its effective
+        // gain was 0.44 rather than the 0.25 intended, nearly double the pull toward the
+        // compass and half again the pull toward the walking axis.
+        //
+        // That is not neutral, because which of the two is right changes from walk to walk. On
+        // one hand-held walk the axis was 156° wrong and the compass 55° right; on the next the
+        // axis was 11° right and the compass 58° wrong, and the recorded heading there carried
+        // a systematic −20 to −45° bias, understating every turn — the pull toward a compass
+        // that was wrong, at twice the weight it was meant to have.
+        if !compassIsDisturbed, !compassCorrectionAppliedThisTick,
+           let compass = locationManager.currentCompassHeading {
             let (misalignment, gain) = effectiveCompassMisalignment
             let target = normalizedHeading(compass + misalignment)
             var err = target - motionHeadingDegrees
