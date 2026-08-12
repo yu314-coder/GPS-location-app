@@ -542,6 +542,29 @@ class WorkoutSession: ObservableObject {
     /// Acceleration below this is indistinguishable from residual bias and must never be
     /// integrated; braking and pulling away are an order of magnitude above it.
     private let HELD_SPEED_ACCEL_FLOOR: Double = 0.25   // m/s²
+    /// THE MODEL DECLINING MUST NOT MEAN THE CAR STOPPED.
+    ///
+    /// The lookup returns nil when nothing it has stored resembles the present signature, which
+    /// is the right behaviour — answering from a distant match is where its worst readings came
+    /// from. But nothing was catching that nil. The chain fell through to the held GPS speed,
+    /// and once Velocity Mode could be switched on BEFORE a workout starts (build 105) that is
+    /// never populated, so a declined tick recorded zero metres.
+    ///
+    /// Measured on one drive (velocity_debug_20260812_175348): the model declined on 196 of 758
+    /// ticks — 26% — while GPS says the car was doing 31 km/h on average and 61 at times, and
+    /// every one of those seconds recorded nothing. Holding the model's own last answer instead
+    /// takes that drive from MAE 15.2 to 12.0 km/h and distance from −32% to −20%.
+    ///
+    /// Held speed still yields to the stop detector, so a car waiting at a light still reads
+    /// zero; this only fills gaps in a vehicle that is demonstrably moving.
+    private var lastLearnedAnswer: Double?
+    private var lastLearnedAnswerTime: Date?
+    private let LEARNED_HOLD_MAX_AGE: TimeInterval = 120.0
+    private var recentLearnedAnswer: Double? {
+        guard let v = lastLearnedAnswer, let t = lastLearnedAnswerTime,
+              Date().timeIntervalSince(t) < LEARNED_HOLD_MAX_AGE else { return nil }
+        return v
+    }
     /// How old a fix may be and still be allowed to anchor a dead-reckoned route. Core
     /// Location's first callback is routinely a cached position from minutes ago.
     private let MAX_ANCHOR_FIX_AGE: TimeInterval = 5.0
@@ -2920,7 +2943,7 @@ class WorkoutSession: ObservableObject {
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
         } else if vehicleContextIsCurrent, !deviceIsBeingHandled,
-                  let learned = learnedSpeed.estimate() {
+                  let learned = learnedSpeed.estimate() ?? recentLearnedAnswer {
             // LEARNED FROM THIS CAR. A lookup over accelerometer signatures previously seen at
             // GPS-measured speeds. Measured on real drives at roughly 10 km/h mean error on a
             // drive it had never seen, against 18 km/h for guessing the average — modest, but
@@ -2943,7 +2966,12 @@ class WorkoutSession: ObservableObject {
                 estimatedFallbackSpeed += (learned - estimatedFallbackSpeed) * blend
             }
             distance = estimatedFallbackSpeed * dt
-            sourceTag = stoppedOnGround ? "LEARN(stopped)" : "LEARN"
+            if learnedSpeed.estimate() != nil {
+                lastLearnedAnswer = learned
+                lastLearnedAnswerTime = Date()
+            }
+            sourceTag = stoppedOnGround ? "LEARN(stopped)"
+                : (learnedSpeed.estimate() == nil ? "LEARN(held)" : "LEARN")
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
