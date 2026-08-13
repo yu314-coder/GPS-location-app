@@ -353,7 +353,19 @@ class WorkoutSession: ObservableObject {
     ///
     /// This limits pocket carry, where a large offset is genuine — that case needs its own
     /// measurement before the bound is widened for it.
-    private let MAX_AXIS_COMPASS_DISAGREEMENT: Double = 60.0
+    /// Swept against three hand-held walks with GPS truth, simulating the heading as
+    /// compass + offset with the axis gated and the offset clamped at each bar:
+    ///
+    ///     bar     13 Aug (recorded 146°)   12 Aug (20°)   11 Aug (41°)
+    ///      60°            43°                   28°           49°
+    ///      90°            43°                   23°           48°
+    ///     180° (unbounded) 124°                  28°          102°
+    ///
+    /// 90° repairs the broken walk without costing the good one. It is also the physically
+    /// meaningful line: a phone can point sideways from the direction of travel — hand at the
+    /// side, pocket, across the chest — but "behind you" is not a way to carry a phone, it is
+    /// the 180° ambiguity resolving backwards.
+    private let MAX_AXIS_COMPASS_DISAGREEMENT: Double = 90.0
 
 
     private var walkingSkewEMAValid = false
@@ -2662,10 +2674,23 @@ class WorkoutSession: ObservableObject {
             // trailing window, so mid-turn it still points at the pre-turn direction and the
             // pull dragged the heading BACKWARDS against the gyro — the visible turn lag.
             // Drift correction only needs the straight stretches, where the axis is honest.
+            // AGAINST THE RAW COMPASS, NOT THE OFFSET COMPASS.
+            //
+            // This gate was comparing the axis to compass + learned misalignment — and the
+            // misalignment is learned FROM the axis. So the reference moved to meet whatever
+            // the axis claimed, the gate could never fire, and the pair walked off together:
+            // measured on one walk the offset grew +96° → +154° → +192° → +232° while the axis
+            // sat a median of 143° from the compass and exceeded the 60° bar on 92% of ticks.
+            // The recorded heading ended 146° from the GPS track where the raw compass was 40°.
+            // That is exactly the self-reinforcement the original code warned about, which I
+            // reintroduced while trying to bound it.
+            //
+            // The compass is not accurate, but it does not drift and it cannot be talked into
+            // agreeing. Judging the axis against it caps the total error at the bar rather than
+            // letting it run to a half-turn.
             var axisAgreesWithCompass = true
             if let axisNow = walkingAxisHeading(), let compassNow = locationManager.currentCompassHeading {
-                let expected = normalizedHeading(compassNow + (compassMisalignment ?? 0))
-                axisAgreesWithCompass = angularDistance(axisNow, expected) <= MAX_AXIS_COMPASS_DISAGREEMENT
+                axisAgreesWithCompass = angularDistance(axisNow, compassNow) <= MAX_AXIS_COMPASS_DISAGREEMENT
             }
             if !turningNow, !compassIsDisturbed, pedometerIsCounting, axisAgreesWithCompass,
                let axis = walkingAxisHeading() {
@@ -2689,6 +2714,10 @@ class WorkoutSession: ObservableObject {
                 if let compass = locationManager.currentCompassHeading {
                     var offset = target - compass
                     if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
+                    // Never more than the axis is allowed to disagree by. A body does not travel a
+                    // half-turn from where the phone points; an offset that large is the axis being
+                    // wrong, and applying it rotates the whole route.
+                    offset = min(max(offset, -MAX_AXIS_COMPASS_DISAGREEMENT), MAX_AXIS_COMPASS_DISAGREEMENT)
                     if let existing = compassMisalignment {
                         var delta = offset - existing
                         if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }

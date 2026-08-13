@@ -148,6 +148,30 @@ class WorkoutSession: NSObject, ObservableObject {
     /// signal here that is independent of the accelerometer, and both things that need it were
     /// guessing without it: phantom pedometer steps in a car could not be told from walking,
     /// and a stopped vehicle had to be inferred from quiet alone.
+    /// Compass-to-travel offset, learned from GPS COURSE while GPS is available and reused as
+    /// the absolute heading datum once it is gone. The iPhone learns this from its PCA walking
+    /// axis; a wrist has no usable axis (arm swing puts the principal direction roughly
+    /// perpendicular to travel), so the watch learns it from the only true travel direction it
+    /// ever sees. Bounded exactly as on the iPhone: beyond a right angle it is not a carry
+    /// offset, it is a sign error, and applying it rotates the whole route.
+    private var compassMisalignmentWatch: Double?
+    private let MAX_AXIS_COMPASS_DISAGREEMENT: Double = 90.0
+    private let COMPASS_CORRECTION_GAIN_WATCH: Double = 0.25
+
+    private func learnCompassMisalignmentWatch(courseDegrees: Double) {
+        guard let compass = locationManager.currentCompassHeading else { return }
+        var offset = courseDegrees - compass
+        if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
+        guard abs(offset) <= MAX_AXIS_COMPASS_DISAGREEMENT else { return }
+        if let existing = compassMisalignmentWatch {
+            var delta = offset - existing
+            if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
+            compassMisalignmentWatch = existing + 0.1 * delta
+        } else {
+            compassMisalignmentWatch = offset
+        }
+    }
+
     private let activityManager = CMMotionActivityManager()
     private var activityUpdatesActive = false
     private var isVehicleByActivity = false
@@ -2185,6 +2209,17 @@ class WorkoutSession: NSObject, ObservableObject {
             motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
         }
         lastCumulativeYawForHeading = cumulativeYawRotationDeg
+        // ABSOLUTE DATUM FROM THE COMPASS, as on the iPhone. The gyro gives relative turn only,
+        // so any seed error plus its own drift persists for the whole workout unless something
+        // drift-free trims it. The watch previously had nothing to do that when the iPhone was
+        // not relaying — which is precisely the flight case.
+        if let compass = locationManager.currentCompassHeading, let offset = compassMisalignmentWatch {
+            let target = normalizedHeading(compass + offset)
+            var err = target - motionHeadingDegrees
+            if err > 180 { err -= 360 } else if err < -180 { err += 360 }
+            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN_WATCH * err)
+        }
+
         // Correct the ABSOLUTE heading toward the best available reference (the gyro only gives
         // relative turn). Velocity vector under real acceleration is best; else the iPhone's
         // relayed heading (it recovers absolute direction the watch cannot).
@@ -2894,6 +2929,10 @@ class WorkoutSession: NSObject, ObservableObject {
         if location.speed >= 0, location.horizontalAccuracy < 35.0 {
             lastMeasuredVehicleSpeedWatch = location.speed
             heldSpeedCorrection = 0
+            // Course over ground is the only true direction of travel the watch ever sees.
+            if location.speed > 1.0, location.course >= 0, location.course <= 360 {
+                learnCompassMisalignmentWatch(courseDegrees: location.course)
+            }
             // Ordinary GPS: learn directly, since nothing here is answering from it.
             if location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
                 learnedSpeed.learn(gpsSpeed: location.speed)
