@@ -369,6 +369,18 @@ class WorkoutSession: ObservableObject {
     /// side, pocket, across the chest — but "behind you" is not a way to carry a phone, it is
     /// the 180° ambiguity resolving backwards.
     private let MAX_AXIS_COMPASS_DISAGREEMENT: Double = 90.0
+    /// How long, and how tightly, axis − compass must hold steady before the axis may teach the
+    /// misalignment. A pocketed phone holds one angle for a whole walk; a wrong axis does not.
+    private let AXIS_STABILITY_WINDOW: TimeInterval = 12.0
+    private let AXIS_STABILITY_TOLERANCE: Double = 30.0
+    private var axisOffsetHistory: [(t: Date, value: Double)] = []
+
+    /// Wrap to (−180, 180]. The accumulator needs this; nothing else was doing it.
+    private func normalizedSignedAngle(_ degrees: Double) -> Double {
+        var d = degrees.truncatingRemainder(dividingBy: 360)
+        if d > 180 { d -= 360 } else if d <= -180 { d += 360 }
+        return d
+    }
 
 
     private var walkingSkewEMAValid = false
@@ -2694,9 +2706,29 @@ class WorkoutSession: ObservableObject {
             // ONCE per tick: walkingAxisHeading() advances the smoothed forward/back vote as a
             // side effect, so calling it twice moved that vote at double the intended rate.
             let axisThisTick = walkingAxisHeading()
-            var axisAgreesWithCompass = true
+            // STABILITY, NOT PROXIMITY TO THE COMPASS.
+            //
+            // Gating on "the axis must lie within X° of the compass" cannot work, because the
+            // case it must support — a phone upside down in a pocket — is precisely the case
+            // where the true difference is 120–180°. On such a walk the gate admitted only axes
+            // near a compass that was itself 122° wrong, so every axis it accepted was ~173°
+            // from the real track. It was selecting the bad ones.
+            //
+            // What actually separates a usable axis from a wrong one is that a carry offset
+            // HOLDS STILL. A phone sits at a fixed angle in a pocket for a whole walk, so
+            // axis − compass is steady. An axis locked onto lateral sway, or flipped by a bad
+            // forward/back vote, wanders. So require the difference to have been consistent for
+            // a sustained run before it is allowed to teach anything.
+            var axisAgreesWithCompass = false
             if let axisNow = axisThisTick, let compassNow = locationManager.currentCompassHeading {
-                axisAgreesWithCompass = angularDistance(axisNow, compassNow) <= MAX_AXIS_COMPASS_DISAGREEMENT
+                let difference = normalizedSignedAngle(axisNow - compassNow)
+                axisOffsetHistory.append((now, difference))
+                axisOffsetHistory.removeAll { now.timeIntervalSince($0.t) > AXIS_STABILITY_WINDOW * 1.5 }
+                if let oldest = axisOffsetHistory.first,
+                   now.timeIntervalSince(oldest.t) >= AXIS_STABILITY_WINDOW {
+                    let spread = axisOffsetHistory.map { angularDistance($0.value, difference) }.max() ?? 180
+                    axisAgreesWithCompass = spread <= AXIS_STABILITY_TOLERANCE
+                }
             }
             // LOG THE AXIS THE GATE REJECTED, TOO.
             //
@@ -2732,23 +2764,25 @@ class WorkoutSession: ObservableObject {
                 if let compass = locationManager.currentCompassHeading {
                     var offset = target - compass
                     if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
-                    // Never more than the axis is allowed to disagree by. A body does not travel a
-                    // half-turn from where the phone points; an offset that large is the axis being
-                    // wrong, and applying it rotates the whole route.
-                    offset = min(max(offset, -MAX_AXIS_COMPASS_DISAGREEMENT), MAX_AXIS_COMPASS_DISAGREEMENT)
                     if let existing = compassMisalignment {
                         var delta = offset - existing
                         if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
-                        // CLAMP THE ACCUMULATOR, NOT ONLY THE SAMPLE.
+                        // NORMALISE the accumulator; do not clamp it.
                         //
-                        // Build 119 bounded each incoming offset to ±90° and I took that to mean
-                        // the learned value was bounded too. It is not: this is a running blend
-                        // that is never normalised, so repeated one-sided updates walk it past a
-                        // half-turn a tenth at a time. Logged on a real walk afterwards, still
-                        // reaching −268° with every sample that fed it inside ±90.
-                        compassMisalignment = min(max(existing + 0.1 * delta,
-                                                      -MAX_AXIS_COMPASS_DISAGREEMENT),
-                                                  MAX_AXIS_COMPASS_DISAGREEMENT)
+                        // Two different faults got conflated here. The −268° seen in a log was
+                        // never an implausible angle — wrapped, it is +92° — it was a running
+                        // blend that nothing ever normalised, growing a tenth at a time. The fix
+                        // for that is wrapping, and wrapping alone.
+                        //
+                        // Clamping to ±90° on top of it broke the carry position that matters
+                        // most: a phone upside down in a trouser pocket points its top edge at
+                        // the ground and behind the walker, so CLHeading reads roughly backwards
+                        // and the true offset is 120–180°. Measured on one such walk, the
+                        // compass error held a median of −122° with only ±30° of spread — a
+                        // fixed offset, correctable in principle, that the clamp made
+                        // permanently uncorrectable. Pocket carry is also the BEST case for dead
+                        // reckoning, since the phone finally moves with the body.
+                        compassMisalignment = normalizedSignedAngle(existing + 0.1 * delta)
                     } else {
                         compassMisalignment = offset
                         // NOT rotating the prefix here any more — see
