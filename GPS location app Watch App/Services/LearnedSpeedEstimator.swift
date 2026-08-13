@@ -333,7 +333,21 @@ final class LearnedSpeedEstimator {
         guard calibrationCurve.count >= 2 else {
             return calibrationIntercept + calibrationSlope * raw
         }
-        if raw <= calibrationCurve[0].estimate { return calibrationCurve[0].actual }
+        // BELOW THE FIRST BIN, RUN TO THE ORIGIN — do not clamp to it.
+        //
+        // The curve is fitted on MOVING observations only, so its lowest bin sits around 5 km/h.
+        // Clamping everything below that to the bin's value meant a stopped car reading 0.5 km/h
+        // came out at 5-8. Measured on a 16-minute drive: 345 seconds of near-stationary traffic
+        // reported at 7.9 km/h against a true 1.0, about 660 m of invented distance — which was
+        // quietly cancelling the shortfall at the top of the range and making the total look
+        // better than either half deserved.
+        //
+        // Zero estimate means zero speed, so interpolate from the origin instead.
+        if raw <= calibrationCurve[0].estimate {
+            let first = calibrationCurve[0]
+            guard first.estimate > 1e-6 else { return first.actual }
+            return first.actual * (raw / first.estimate)
+        }
         for i in 1..<calibrationCurve.count where raw <= calibrationCurve[i].estimate {
             let a = calibrationCurve[i - 1], b = calibrationCurve[i]
             let span = max(b.estimate - a.estimate, 1e-9)
