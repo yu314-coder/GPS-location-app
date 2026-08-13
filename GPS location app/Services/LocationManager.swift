@@ -441,7 +441,11 @@ class LocationManager: NSObject, ObservableObject {
     /// Adjust device-motion update rate to relieve thermal pressure.
     func applyThermalMotionInterval(hot: Bool) {
         guard motionManager.isDeviceMotionActive else { return }
-        motionManager.deviceMotionUpdateInterval = hot ? 1.0 : 0.5
+        // Cooling down restores the DEAD-RECKONING rate, not the old idle one. This used to put
+        // the sensor back to 0.5 s, which since the automatic switch also needs 50 Hz would
+        // have silently disabled the speed model and the footfall detector for the rest of the
+        // workout the first time the phone got warm and cooled again.
+        motionManager.deviceMotionUpdateInterval = hot ? 1.0 : 0.02
     }
 
     // MARK: - GPS Timeout Monitoring

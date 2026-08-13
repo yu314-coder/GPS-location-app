@@ -541,6 +541,12 @@ class WorkoutSession: ObservableObject {
     /// How long Apple's classifier must say STATIONARY before that alone may zero a vehicle
     /// that the accelerometer still believes is moving.
     private let STATIONARY_DWELL_TO_STOP: TimeInterval = 5.0
+    /// Above this, only a MEASURED deceleration may bring the speed down — never quiet, never a
+    /// classifier. An airliner cruises at roughly 250 m/s.
+    private let MAX_GROUND_STOP_SPEED: Double = 60.0        // m/s (216 km/h)
+    /// The activity classifier may only confirm a stop at speeds a ground vehicle could
+    /// plausibly be crawling at.
+    private let CLASSIFIER_STOP_MAX_SPEED: Double = 8.0     // m/s (29 km/h)
     private var stationaryActivitySince: Date?
 
     /// Is a GROUND vehicle actually stopped?
@@ -558,10 +564,23 @@ class WorkoutSession: ObservableObject {
     /// Never available airborne: a smooth cruise is quiet, the classifier reports nothing
     /// useful, and calling that "stopped" is the one mistake this mode cannot make.
     private func vehicleIsStoppedOnGround(correctedSpeed: Double) -> Bool {
+        // NOTHING FAST IS EVER CALLED STOPPED BY INFERENCE. A body at 250 m/s cannot reach zero
+        // without a deceleration, and a deceleration is the one thing an accelerometer measures
+        // unmistakably — it is already in correctedSpeed. Absent that, no amount of quiet and no
+        // classifier may zero the speed. This ceiling does not depend on knowing we are flying,
+        // which matters because the barometric phase estimator reads CABIN pressure and cannot
+        // be relied on to say so.
+        guard correctedSpeed < MAX_GROUND_STOP_SPEED else { return false }
         guard !flightPhase.isAirborne else { return false }
         guard pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW else { return false }
         if correctedSpeed < VEHICLE_STOP_CONFIRM_SPEED { return true }
-        guard let since = stationaryActivitySince else { return false }
+        // THE CLASSIFIER DESCRIBES THE PERSON, NOT THE VEHICLE.
+        //
+        // A passenger sitting still in a cruising aircraft is genuinely stationary, and Apple's
+        // classifier will say so. Combined with the quiet of smooth cruise that was enough to
+        // return "stopped" at any speed whatsoever — the exact reading this mode exists to
+        // prevent. It may now only confirm a stop we are already nearly at.
+        guard correctedSpeed < CLASSIFIER_STOP_MAX_SPEED, let since = stationaryActivitySince else { return false }
         return Date().timeIntervalSince(since) >= STATIONARY_DWELL_TO_STOP
     }  // s
     /// Velocity change measured along the direction of travel since GPS last stated the speed.
@@ -2495,8 +2514,20 @@ class WorkoutSession: ObservableObject {
 
     private func checkEstimatedLocationFallback() {
         guard isActive && !isPaused else { return }
-        // High motion sample rate only while forced (thermal-friendly otherwise).
-        locationManager.setHighRateMotion(forceMotionFallback)
+        // THE AUTOMATIC SWITCH MUST RUN AT THE SAME RATE AS THE FORCED ONE.
+        //
+        // This enabled 50 Hz only while Velocity Mode was forced, and 2 Hz otherwise. The
+        // automatic path then executed the same code against a twenty-fifth of the data, so it
+        // was not the same method at all: the learned speed model reads a 4-second spectrum that
+        // is meaningless at 2 Hz, the footfall detector cannot see a 2 Hz gait in 2 Hz samples,
+        // and the along-track velocity change is integrated from a handful of points.
+        //
+        // Rate must also be high BEFORE the gap, not just during it — the model needs four
+        // seconds of history to answer at all, and GPS does not announce that it is about to
+        // fail. A tunnel, a lift and a departure gate all arrive without warning, which is the
+        // whole reason the automatic path exists. So it runs high while the workout is active;
+        // the thermal governor still throttles it when the device is genuinely hot.
+        locationManager.setHighRateMotion(true)
 
         let anchor = flight.locations.last(where: { !$0.isEstimated && $0.isValid })
         let timeSinceRealFix = Date().timeIntervalSince(lastRealLocationTime)
