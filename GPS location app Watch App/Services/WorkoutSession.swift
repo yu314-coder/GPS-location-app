@@ -144,6 +144,36 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastIPhoneRelayCoord: (lat: Double, lon: Double)?  // detect frozen (stale) iPhone relay
     private var lastIPhoneRelayTime: Date?                         // freshness for anchoring
     private var frozenIPhoneRelayCount: Int = 0
+    /// Apple's activity classifier, which the watch did not consult at all. It is the only
+    /// signal here that is independent of the accelerometer, and both things that need it were
+    /// guessing without it: phantom pedometer steps in a car could not be told from walking,
+    /// and a stopped vehicle had to be inferred from quiet alone.
+    private let activityManager = CMMotionActivityManager()
+    private var activityUpdatesActive = false
+    private var isVehicleByActivity = false
+    private var isStationaryByActivity = false
+
+    private func startActivityClassifier() {
+        guard CMMotionActivityManager.isActivityAvailable(), !activityUpdatesActive else { return }
+        activityUpdatesActive = true
+        activityManager.startActivityUpdates(to: .main) { [weak self] activity in
+            guard let self, let activity else { return }
+            self.isVehicleByActivity = activity.automotive
+            // Only a CONFIDENT stationary call, so a brief misclassification cannot zero a
+            // genuinely moving vehicle.
+            self.isStationaryByActivity = activity.stationary && activity.confidence != .low
+        }
+        print("⌚ 🚗 Activity classifier engaged (automotive/stationary detection)")
+    }
+
+    private func stopActivityClassifier() {
+        guard activityUpdatesActive else { return }
+        activityManager.stopActivityUpdates()
+        activityUpdatesActive = false
+        isVehicleByActivity = false
+        isStationaryByActivity = false
+    }
+
     /// The same learned speed model the iPhone runs, on the same 50 Hz vertical acceleration.
     /// Without it the watch had no speed source of its own in a vehicle at all: it could only
     /// relay the iPhone's estimate or hold the last GPS speed, so a watch flying without its
@@ -591,6 +621,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // Everything this watch has learned about this vehicle outlives the workout.
             learnedSpeed.resetWindow()
             learnedSpeed.load()
+            startActivityClassifier()
             lastLocationTime = Date()
             latestIPhoneMotionAssist = nil
 
@@ -673,6 +704,7 @@ class WorkoutSession: NSObject, ObservableObject {
         // Fold in what Velocity Mode held back, then persist — same order as the iPhone.
         learnedSpeed.commitQuarantinedObservations()
         learnedSpeed.save()
+        stopActivityClassifier()
         // Clear the runtime flag but keep the standing choice for the next workout.
         setForceMotionFallback(false, persist: false)
         if isUsingMotionFallback {
@@ -2204,7 +2236,10 @@ class WorkoutSession: NSObject, ObservableObject {
                     } else {
                         stepCadenceWatch = stepCadenceWatch * 0.5 + cadence * 0.5
                     }
-                    if stepCadenceWatch >= 1.0 { lastStepIncrementTime = now }
+                    // Not while the classifier says we are in a car — vehicle vibration makes
+                    // CMPedometer emit phantom steps, and the 5 s attribution cap lets them
+                    // clear the cadence bar. See the iPhone for the measurement.
+                    if stepCadenceWatch >= 1.0, !isVehicleByActivity { lastStepIncrementTime = now }
                 }
             }
             lastStepSampleTimeWatch = now
@@ -2370,7 +2405,7 @@ class WorkoutSession: NSObject, ObservableObject {
                 // missed — and never above a speed that could be an aircraft.
                 let stoppedOnGround = corrected < MAX_GROUND_STOP_SPEED
                     && corrected < VEHICLE_STOP_CONFIRM_SPEED
-                    && pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW
+                    && (pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW || isStationaryByActivity)
                 motionFallbackSpeed = stoppedOnGround ? 0 : corrected
                 if stoppedOnGround { heldSpeedCorrection = -held }
                 accelSource = stoppedOnGround ? "HOLD(stopped)" : "HOLD"

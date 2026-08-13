@@ -3430,8 +3430,21 @@ class WorkoutSession: ObservableObject {
                                 } else {
                                     self.stepCadence = self.stepCadence * 0.5 + cadence * 0.5
                                 }
-                                // Only a genuine walking cadence counts as "stepping".
-                                if self.stepCadence >= 1.0 {
+                                // AND NOT WHILE THE CLASSIFIER SAYS WE ARE IN A CAR.
+                                //
+                                // Vehicle vibration makes CMPedometer emit sporadic phantom
+                                // steps. The cadence test was the whole defence against them,
+                                // and capping the attribution window at 5 s — added so a walk
+                                // resuming after a pause is recognised at once — broke it: six
+                                // phantom steps spread over thirty seconds used to score 0.2
+                                // steps/s and be rejected, and now score 6/5 = 1.2 and pass.
+                                // Seen live during a drive as "PDR [car]", with pedometer
+                                // distance driving a 7 km car route.
+                                //
+                                // Apple's classifier already knew — it was reporting [car] at
+                                // the time — so ask it. Walking genuinely reports walking or
+                                // unknown, never automotive, so nothing real is refused here.
+                                if self.stepCadence >= 1.0, !self.activityIsAutomotive {
                                     self.lastStepIncrementTime = now
                                     // Counted steps at a walking cadence are direct evidence of
                                     // being on foot, and outrank any earlier GPS speed spike.
