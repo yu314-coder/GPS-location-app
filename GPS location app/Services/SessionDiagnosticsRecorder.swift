@@ -37,6 +37,10 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// 180°, and it was previously invisible in every log.
         let walkAxis: Double?
         let walkSkew: Double?
+        /// The axis before the gate, and whether the gate refused it — so a log can show
+        /// whether the gate is protecting the heading or starving it.
+        let walkAxisRaw: Double?
+        let walkAxisGated: Double?
         /// What the learned speed model actually knows: how many observations, the fastest it
         /// has ever been taught, and the compression correction in force.
         let learnObs: Double?
@@ -239,7 +243,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "heading_deg,compass_deg,offset_deg,"
         out += "vib_feature_u,fit_p0,fit_p1,fit_p2,cal_min_u,cal_max_u,"
         out += "cal_min_speed_ms,cal_max_speed_ms,cal_samples,extrapolating,"
-        out += "handling_rot_rads,walk_axis_deg,walk_skew_ema,"
+        out += "handling_rot_rads,walk_axis_deg,walk_skew_ema,walk_axis_raw_deg,walk_axis_gated,"
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m\n"
@@ -259,6 +263,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.calSamples) + ",\(r.extrapolating ? 1 : 0),"
             out += Self.fmt(r.handlingRotation) + ","
             out += Self.fmt(r.walkAxis) + "," + Self.fmt(r.walkSkew) + ","
+            out += Self.fmt(r.walkAxisRaw) + "," + Self.fmt(r.walkAxisGated) + ","
             out += Self.fmt(r.learnObs) + "," + Self.fmt(r.learnMaxKmh) + "," + Self.fmt(r.learnSlope) + ","
             out += Self.fmt(r.gpsSpeed) + "," + Self.fmt(r.gpsAccuracy) + ","
             out += Self.fmt(r.latitude) + "," + Self.fmt(r.longitude) + ","

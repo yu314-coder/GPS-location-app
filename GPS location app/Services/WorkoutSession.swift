@@ -324,6 +324,9 @@ class WorkoutSession: ObservableObject {
     /// Last resolved walking axis, recorded per tick purely so the 180° decision is inspectable
     /// afterwards: an offset pinned near ±180° in a log is the signature of it choosing wrong.
     private var lastResolvedWalkAxis: Double?
+    /// The axis BEFORE the gate, and whether the gate refused it.
+    private var lastRawWalkAxis: Double?
+    private var axisWasGated = false
     private var lastWalkAxisTime: Date?
 
     /// THE WALKING AXIS MAY REFINE THE COMPASS, NEVER OVERRULE IT.
@@ -2695,9 +2698,17 @@ class WorkoutSession: ObservableObject {
             if let axisNow = axisThisTick, let compassNow = locationManager.currentCompassHeading {
                 axisAgreesWithCompass = angularDistance(axisNow, compassNow) <= MAX_AXIS_COMPASS_DISAGREEMENT
             }
-            // Cleared when the axis is not used, so a log says what actually happened. It used
-            // to hold the last accepted value forever, and a stale reading in the log is what
-            // led me to conclude a build was not installed when it was.
+            // LOG THE AXIS THE GATE REJECTED, TOO.
+            //
+            // Build 120 stopped logging a stale axis, which was right, but it also stopped
+            // logging the rejected one — and that is the number needed to decide whether the
+            // gate is protecting the heading or starving it. On a walk where the compass turned
+            // out to carry a fixed −122° carry offset, the gate admitted only axes within 90° of
+            // that wrong compass, so every axis it accepted was itself ~173° from the true
+            // track. Whether the ones it threw away were correct is exactly what is not
+            // recorded.
+            lastRawWalkAxis = axisThisTick
+            axisWasGated = !(axisAgreesWithCompass)
             lastResolvedWalkAxis = nil
             if !turningNow, !compassIsDisturbed, pedometerIsCounting, axisAgreesWithCompass,
                let axis = axisThisTick {
@@ -3274,6 +3285,8 @@ class WorkoutSession: ObservableObject {
             handlingRotation: handlingRotationLevel,
             walkAxis: lastResolvedWalkAxis,
             walkSkew: walkingSkewEMAValid ? walkingSkewEMA : nil,
+            walkAxisRaw: lastRawWalkAxis,
+            walkAxisGated: axisWasGated ? 1 : 0,
             learnObs: Double(learnedSpeed.observationCount),
             learnMaxKmh: learnedSpeed.maxLearnedSpeed * 3.6,
             learnSlope: learnedSpeed.calibration.slope,
