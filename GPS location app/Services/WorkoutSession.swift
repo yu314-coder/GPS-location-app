@@ -2688,12 +2688,19 @@ class WorkoutSession: ObservableObject {
             // The compass is not accurate, but it does not drift and it cannot be talked into
             // agreeing. Judging the axis against it caps the total error at the bar rather than
             // letting it run to a half-turn.
+            // ONCE per tick: walkingAxisHeading() advances the smoothed forward/back vote as a
+            // side effect, so calling it twice moved that vote at double the intended rate.
+            let axisThisTick = walkingAxisHeading()
             var axisAgreesWithCompass = true
-            if let axisNow = walkingAxisHeading(), let compassNow = locationManager.currentCompassHeading {
+            if let axisNow = axisThisTick, let compassNow = locationManager.currentCompassHeading {
                 axisAgreesWithCompass = angularDistance(axisNow, compassNow) <= MAX_AXIS_COMPASS_DISAGREEMENT
             }
+            // Cleared when the axis is not used, so a log says what actually happened. It used
+            // to hold the last accepted value forever, and a stale reading in the log is what
+            // led me to conclude a build was not installed when it was.
+            lastResolvedWalkAxis = nil
             if !turningNow, !compassIsDisturbed, pedometerIsCounting, axisAgreesWithCompass,
-               let axis = walkingAxisHeading() {
+               let axis = axisThisTick {
                 lastResolvedWalkAxis = axis
                 lastWalkAxisTime = Date()
                 // walkingAxisHeading() now returns a DIRECTED heading (forward end resolved
@@ -2721,7 +2728,16 @@ class WorkoutSession: ObservableObject {
                     if let existing = compassMisalignment {
                         var delta = offset - existing
                         if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
-                        compassMisalignment = existing + 0.1 * delta
+                        // CLAMP THE ACCUMULATOR, NOT ONLY THE SAMPLE.
+                        //
+                        // Build 119 bounded each incoming offset to ±90° and I took that to mean
+                        // the learned value was bounded too. It is not: this is a running blend
+                        // that is never normalised, so repeated one-sided updates walk it past a
+                        // half-turn a tenth at a time. Logged on a real walk afterwards, still
+                        // reaching −268° with every sample that fed it inside ±90.
+                        compassMisalignment = min(max(existing + 0.1 * delta,
+                                                      -MAX_AXIS_COMPASS_DISAGREEMENT),
+                                                  MAX_AXIS_COMPASS_DISAGREEMENT)
                     } else {
                         compassMisalignment = offset
                         // NOT rotating the prefix here any more — see
