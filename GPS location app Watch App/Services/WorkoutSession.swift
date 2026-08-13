@@ -144,6 +144,20 @@ class WorkoutSession: NSObject, ObservableObject {
     private var lastIPhoneRelayCoord: (lat: Double, lon: Double)?  // detect frozen (stale) iPhone relay
     private var lastIPhoneRelayTime: Date?                         // freshness for anchoring
     private var frozenIPhoneRelayCount: Int = 0
+    /// The same learned speed model the iPhone runs, on the same 50 Hz vertical acceleration.
+    /// Without it the watch had no speed source of its own in a vehicle at all: it could only
+    /// relay the iPhone's estimate or hold the last GPS speed, so a watch flying without its
+    /// phone reported a frozen number for the whole flight.
+    let learnedSpeed = LearnedSpeedEstimator()
+    private var lastLearnedAnswer: Double?
+    private var lastLearnedAnswerTime: Date?
+    private let LEARNED_HOLD_MAX_AGE: TimeInterval = 120.0
+    private var recentLearnedAnswer: Double? {
+        guard let v = lastLearnedAnswer, let t = lastLearnedAnswerTime,
+              Date().timeIntervalSince(t) < LEARNED_HOLD_MAX_AGE else { return nil }
+        return v
+    }
+
     private let MOTION_FALLBACK_TICK: TimeInterval = 1.0
     /// Longest a dead-reckoned workout may go without recording a point, however little the
     /// estimator has to say. Matches the iPhone.
@@ -574,6 +588,9 @@ class WorkoutSession: NSObject, ObservableObject {
             // Restore the standing choice rather than forcing it off, so velocity mode can be
             // on before the first fix is recorded (see iPhone).
             setForceMotionFallback(UserDefaults.standard.bool(forKey: "velocityModeEnabled"), persist: false)
+            // Everything this watch has learned about this vehicle outlives the workout.
+            learnedSpeed.resetWindow()
+            learnedSpeed.load()
             lastLocationTime = Date()
             latestIPhoneMotionAssist = nil
 
@@ -653,6 +670,9 @@ class WorkoutSession: NSObject, ObservableObject {
     /// isActive stayed true (so the workout could not actually stop), and forceMotionFallback
     /// stayed latched ON into the next workout.
     private func teardownActiveWorkoutState() {
+        // Fold in what Velocity Mode held back, then persist — same order as the iPhone.
+        learnedSpeed.commitQuarantinedObservations()
+        learnedSpeed.save()
         // Clear the runtime flag but keep the standing choice for the next workout.
         setForceMotionFallback(false, persist: false)
         if isUsingMotionFallback {
@@ -1752,6 +1772,10 @@ class WorkoutSession: NSObject, ObservableObject {
     }
 
     private func integrateWorldMotionResidual(dt dtS: Double, up azW: Double, rotationRate rotMag: Double) {
+        // Ingest BEFORE the fallback guard: the model needs four seconds of history to answer
+        // at all, so if it only saw samples once dead reckoning had already started it would be
+        // blind for the first four seconds of every gap.
+        learnedSpeed.ingest(vertical: azW)
         guard isUsingMotionFallback else { return }
 
         // These run for EVERY workout type, before the vehicle-only integration guard below:
@@ -2315,6 +2339,21 @@ class WorkoutSession: NSObject, ObservableObject {
                now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
                 motionFallbackSpeed = relayed
                 accelSource = "iPhone-DR"
+            } else if let learned = learnedSpeed.estimate() ?? recentLearnedAnswer {
+                // ITS OWN LEARNED SPEED. Ranked below the iPhone's estimate — the phone sees
+                // steadier motion than a wrist and runs the same model against more evidence —
+                // but above a frozen hold, which cannot follow a vehicle that changes speed.
+                let corrected = learned
+                let stoppedOnGround = corrected < MAX_GROUND_STOP_SPEED
+                    && corrected < VEHICLE_STOP_CONFIRM_SPEED
+                    && pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW
+                motionFallbackSpeed = stoppedOnGround ? 0 : corrected
+                if learnedSpeed.estimate() != nil {
+                    lastLearnedAnswer = learned
+                    lastLearnedAnswerTime = Date()
+                }
+                accelSource = stoppedOnGround ? "LEARN(stopped)"
+                    : (learnedSpeed.estimate() == nil ? "LEARN(held)" : "LEARN")
             } else if let held = lastMeasuredVehicleSpeedWatch {
                 // A HELD SPEED MUST STILL OBEY THE ACCELEROMETER (identical to the iPhone).
                 // Freezing it meant braking to a stop kept reporting the pre-stop speed and
@@ -2748,6 +2787,14 @@ class WorkoutSession: NSObject, ObservableObject {
             // callback, so age is checked as well as accuracy: a cached fix reports the good
             // accuracy it had when it was taken, and pins the whole route where you were
             // before you pressed start.
+            // QUARANTINED, exactly as on the iPhone: teaching the model from this fix and then
+            // answering from the same 4-second window returns the GPS speed itself, which would
+            // make Velocity Mode silently GPS-powered. These join the searchable store when the
+            // workout ends, so they teach the next trip and not this one.
+            if location.speed >= 0, location.horizontalAccuracy >= 0,
+               location.horizontalAccuracy < 35.0 {
+                learnedSpeed.learn(gpsSpeed: location.speed, quarantined: true)
+            }
             let fixAge = Date().timeIntervalSince(location.timestamp)
             if flight.locations.isEmpty,
                location.horizontalAccuracy >= 0,
@@ -2812,6 +2859,10 @@ class WorkoutSession: NSObject, ObservableObject {
         if location.speed >= 0, location.horizontalAccuracy < 35.0 {
             lastMeasuredVehicleSpeedWatch = location.speed
             heldSpeedCorrection = 0
+            // Ordinary GPS: learn directly, since nothing here is answering from it.
+            if location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
+                learnedSpeed.learn(gpsSpeed: location.speed)
+            }
         }
 
         // FROZEN iPHONE RELAY GUARD: "connected to iPhone" does NOT mean the iPhone
