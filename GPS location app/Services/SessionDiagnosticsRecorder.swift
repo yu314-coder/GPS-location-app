@@ -70,6 +70,11 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     @Published private(set) var latest: Row?
 
     func reset() {
+        try? rawFileHandle?.close()
+        rawFileHandle = nil
+        rawFileURL = nil
+        rawSamplesWritten = 0
+        pendingDeviceMotion = nil
         rows.removeAll(keepingCapacity: true)
         raw.removeAll(keepingCapacity: true)
         rawStart = nil
@@ -112,9 +117,55 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         // candidate rule can now be scored against a real walk before it is shipped.
         let northAccel: Double     // m/s², bias-removed
         let eastAccel: Double      // m/s², bias-removed
+        // RAW, DEVICE FRAME, UNPROCESSED. Everything above is this app's interpretation of the
+        // sensor; these are the sensor. With acceleration, gravity, rotation rate and attitude
+        // recorded as reported, any part of the pipeline — bias removal, the world-frame
+        // rotation, the heading — can be re-derived offline from a flight that cannot be flown
+        // again. Without them a mistake in that pipeline is permanent.
+        var deviceAccelX: Double = 0
+        var deviceAccelY: Double = 0
+        var deviceAccelZ: Double = 0
+        var gravityX: Double = 0
+        var gravityY: Double = 0
+        var gravityZ: Double = 0
+        var rotationX: Double = 0
+        var rotationY: Double = 0
+        var rotationZ: Double = 0
+        var roll: Double = 0
+        var pitch: Double = 0
+        var yaw: Double = 0
+        var headingAccuracy: Double = -1
+    }
+    /// Latest unprocessed motion, stamped onto the next raw sample.
+    private var pendingDeviceMotion: (ax: Double, ay: Double, az: Double,
+                                      gx: Double, gy: Double, gz: Double,
+                                      rx: Double, ry: Double, rz: Double,
+                                      roll: Double, pitch: Double, yaw: Double,
+                                      headingAccuracy: Double)?
+
+    func noteDeviceMotion(accelX: Double, accelY: Double, accelZ: Double,
+                          gravityX: Double, gravityY: Double, gravityZ: Double,
+                          rotationX: Double, rotationY: Double, rotationZ: Double,
+                          roll: Double, pitch: Double, yaw: Double, headingAccuracy: Double) {
+        pendingDeviceMotion = (accelX, accelY, accelZ, gravityX, gravityY, gravityZ,
+                               rotationX, rotationY, rotationZ, roll, pitch, yaw, headingAccuracy)
     }
     private var raw: [RawSample] = []
-    private let rawCapacity = 90_000
+    /// STREAMED TO DISK, NOT HELD IN MEMORY.
+    ///
+    /// This used to keep the last 90,000 samples and drop the oldest — thirty minutes at 50 Hz.
+    /// For a three-hour flight that is the last half hour and nothing else, which is precisely
+    /// backwards: the takeoff and climb, where the acceleration that sets the whole speed
+    /// estimate happens, would be the first thing discarded. And a flight is the one recording
+    /// that cannot be repeated.
+    ///
+    /// So samples are appended to a file as they accumulate and the buffer is emptied. Memory
+    /// stays flat regardless of duration, the data survives a crash or a battery death mid-air,
+    /// and nothing is thrown away.
+    private let rawFlushThreshold = 2_000        // ~40 s at 50 Hz
+    private var rawFileHandle: FileHandle?
+    private var rawFileURL: URL?
+    private var rawSamplesWritten = 0
     private var rawStart: Date?
     /// GPS speed most recently seen, stamped onto raw samples so the two can be correlated.
     var latestGPSSpeed: Double = -1
@@ -130,15 +181,81 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     func recordRaw(verticalAccel: Double, north: Double = 0, east: Double = 0, at time: Date) {
         if rawStart == nil { rawStart = time }
         guard let start = rawStart else { return }
-        raw.append(RawSample(t: time.timeIntervalSince(start),
-                             verticalAccel: verticalAccel,
-                             gpsSpeed: latestGPSSpeed,
-                             northAccel: north,
-                             eastAccel: east))
-        if raw.count > rawCapacity { raw.removeFirst(raw.count - rawCapacity) }
+        var sample = RawSample(t: time.timeIntervalSince(start),
+                               verticalAccel: verticalAccel,
+                               gpsSpeed: latestGPSSpeed,
+                               northAccel: north,
+                               eastAccel: east)
+        if let m = pendingDeviceMotion {
+            sample.deviceAccelX = m.ax; sample.deviceAccelY = m.ay; sample.deviceAccelZ = m.az
+            sample.gravityX = m.gx; sample.gravityY = m.gy; sample.gravityZ = m.gz
+            sample.rotationX = m.rx; sample.rotationY = m.ry; sample.rotationZ = m.rz
+            sample.roll = m.roll; sample.pitch = m.pitch; sample.yaw = m.yaw
+            sample.headingAccuracy = m.headingAccuracy
+        }
+        raw.append(sample)
+        if raw.count >= rawFlushThreshold { flushRawToDisk() }
     }
 
-    var rawCount: Int { raw.count }
+    var rawCount: Int { rawSamplesWritten + raw.count }
+
+    private static func rawHeader() -> String {
+        var out = "t_seconds,vertical_accel_ms2,gps_speed_ms,north_accel_ms2,east_accel_ms2"
+        out += ",dev_accel_x,dev_accel_y,dev_accel_z"
+        out += ",gravity_x,gravity_y,gravity_z"
+        out += ",rot_x,rot_y,rot_z"
+        out += ",att_roll,att_pitch,att_yaw,heading_accuracy\n"
+        return out
+    }
+
+    /// Append what has accumulated and empty the buffer. Opens the file on first use.
+    private func flushRawToDisk() {
+        guard !raw.isEmpty else { return }
+        if rawFileHandle == nil {
+            let df = DateFormatter()
+            df.dateFormat = "yyyyMMdd_HHmmss"
+            let stamp = df.string(from: rawStart ?? Date())
+            do {
+                let base = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                                       appropriateFor: nil, create: true)
+                let dir = base.appendingPathComponent("VelocityLogs", isDirectory: true)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let url = dir.appendingPathComponent("velocity_raw50hz_\(stamp).csv")
+                FileManager.default.createFile(atPath: url.path, contents: Self.rawHeader().data(using: .utf8))
+                rawFileHandle = try FileHandle(forWritingTo: url)
+                rawFileHandle?.seekToEndOfFile()
+                rawFileURL = url
+            } catch {
+                print("❌ Could not open raw trace for streaming: \(error)")
+                raw.removeAll()
+                return
+            }
+        }
+        var chunk = ""
+        chunk.reserveCapacity(raw.count * 160)
+        for s in raw {
+            chunk += String(format: "%.3f,%.6f,%.3f,%.6f,%.6f", s.t, s.verticalAccel, s.gpsSpeed,
+                            s.northAccel, s.eastAccel)
+            chunk += String(format: ",%.6f,%.6f,%.6f", s.deviceAccelX, s.deviceAccelY, s.deviceAccelZ)
+            chunk += String(format: ",%.6f,%.6f,%.6f", s.gravityX, s.gravityY, s.gravityZ)
+            chunk += String(format: ",%.6f,%.6f,%.6f", s.rotationX, s.rotationY, s.rotationZ)
+            chunk += String(format: ",%.6f,%.6f,%.6f,%.2f\n", s.roll, s.pitch, s.yaw, s.headingAccuracy)
+        }
+        if let data = chunk.data(using: .utf8) {
+            rawFileHandle?.write(data)
+            rawSamplesWritten += raw.count
+        }
+        raw.removeAll(keepingCapacity: true)
+    }
+
+    /// Close the stream and return where it landed.
+    @discardableResult
+    func finishRawStream() -> URL? {
+        flushRawToDisk()
+        try? rawFileHandle?.close()
+        rawFileHandle = nil
+        return rawFileURL
+    }
 
     private func rawCSV() -> String {
         var out = "t_seconds,vertical_accel_ms2,gps_speed_ms,north_accel_ms2,east_accel_ms2\n"
@@ -172,18 +289,27 @@ final class SessionDiagnosticsRecorder: ObservableObject {
 
     /// Write both logs for a finished workout. Cheap enough to do on the main actor at stop.
     func persistToDisk(workoutStart: Date) {
-        guard !rows.isEmpty || !raw.isEmpty else { return }
+        // Close the stream first: the raw trace has been written as it went, so this only has to
+        // flush the tail. Nothing here re-serialises hours of samples.
+        let streamed = finishRawStream()
+        guard !rows.isEmpty || streamed != nil else { return }
         let s = Self.stamp(for: workoutStart)
         let dir = Self.logDirectory
         if !rows.isEmpty {
             try? csv().write(to: dir.appendingPathComponent("velocity_debug_\(s).csv"),
                              atomically: true, encoding: .utf8)
         }
-        if !raw.isEmpty {
-            try? rawCSV().write(to: dir.appendingPathComponent("velocity_raw50hz_\(s).csv"),
-                                atomically: true, encoding: .utf8)
+        // The stream names itself from the first sample's clock; rename it to the workout's own
+        // stamp so both files for a session share one name.
+        if let streamed {
+            let target = dir.appendingPathComponent("velocity_raw50hz_\(s).csv")
+            if streamed != target {
+                try? FileManager.default.removeItem(at: target)
+                try? FileManager.default.moveItem(at: streamed, to: target)
+            }
         }
-        print("💾 Velocity logs saved for \(s): \(rows.count) ticks, \(raw.count) raw samples")
+        let minutes = Double(rawSamplesWritten) / 50.0 / 60.0
+        print("💾 Velocity logs saved for \(s): \(rows.count) ticks, \(rawSamplesWritten) raw samples (\(String(format: "%.0f", minutes)) min)")
         Self.pruneOldLogs()
     }
 
@@ -291,12 +417,10 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             print("❌ diagnostics export failed: \(error)")
         }
         // The raw 50 Hz trace, which is what a spectrum can actually be computed from.
-        if !raw.isEmpty {
-            let rawURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("velocity_raw50hz_\(stamp).csv")
-            if (try? rawCSV().write(to: rawURL, atomically: true, encoding: .utf8)) != nil {
-                items.append(rawURL)
-            }
+        // The raw trace lives on disk already — it was streamed there as the workout ran, so
+        // share that file rather than rebuilding one from a buffer that is deliberately empty.
+        if let streamed = finishRawStream() {
+            items.append(streamed)
         }
         guard !items.isEmpty else { return }
 

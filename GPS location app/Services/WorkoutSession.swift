@@ -1224,10 +1224,23 @@ class WorkoutSession: ObservableObject {
             self.learnedSpeed.ingest(vertical: up)
             // Keep the raw vertical trace alongside the model's own view of it. Everything the
             // estimator computes is a lossy summary; a spectrum can only be taken from this.
+            // Stamp the unprocessed sensor values onto the next raw row.
             self.sessionDiagnostics.recordRaw(verticalAccel: up,
                                               north: north - self.accelBiasNorth,
                                               east: east - self.accelBiasEast,
                                               at: Date())
+        }
+        // The unprocessed motion, recorded alongside this app's interpretation of it.
+        locationManager.onRawMotionSample = { [weak self] motion, _ in
+            guard let self else { return }
+            self.sessionDiagnostics.noteDeviceMotion(
+                accelX: motion.userAcceleration.x, accelY: motion.userAcceleration.y,
+                accelZ: motion.userAcceleration.z,
+                gravityX: motion.gravity.x, gravityY: motion.gravity.y, gravityZ: motion.gravity.z,
+                rotationX: motion.rotationRate.x, rotationY: motion.rotationRate.y,
+                rotationZ: motion.rotationRate.z,
+                roll: motion.attitude.roll, pitch: motion.attitude.pitch, yaw: motion.attitude.yaw,
+                headingAccuracy: motion.heading)
         }
         vibrationSpeed.reset()
         learnedSpeed.resetWindow()

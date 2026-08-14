@@ -790,6 +790,7 @@ class LocationManager: NSObject, ObservableObject {
                                                   referenceAcceleration.up,
                                                   rotationMagnitude,
                                                   sampleDt)
+                self.onRawMotionSample?(motion, sampleDt)
             }
             self.onMotionAccelerationUpdate?(
                 acceleration,
@@ -967,6 +968,15 @@ class LocationManager: NSObject, ObservableObject {
     /// watch while running no workout of its own — the primary callback is owned by
     /// WorkoutSession and only exists during an iPhone workout.
     var onWorldAccelSampleSecondary: ((Double, Double, Double, Double, TimeInterval) -> Void)?
+    /// EVERYTHING THE SENSOR SAID, for reconstruction after the fact.
+    ///
+    /// The world-frame channel above is already a processed summary: gravity removed, rotated
+    /// into north/east/up using this app's own attitude handling. If that handling is wrong —
+    /// and it has been, more than once — no amount of re-analysis afterwards can recover from
+    /// it, because the inputs were never recorded. This passes the raw device-frame motion and
+    /// the attitude alongside, so any algorithm can be re-derived offline from what the hardware
+    /// actually reported.
+    var onRawMotionSample: ((_ motion: CMDeviceMotion, _ dt: TimeInterval) -> Void)?
 
     /// Raise the device-motion rate for accurate velocity integration while the user has
     /// forced velocity mode on; drop back to the thermal-friendly rate otherwise.
