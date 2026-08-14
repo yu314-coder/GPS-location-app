@@ -2896,6 +2896,32 @@ class WorkoutSession: NSObject, ObservableObject {
         return normalized >= 0 ? normalized : normalized + 360.0
     }
 
+
+    /// A FIX THAT CONTRADICTS ITSELF IS NOT A POSITION.
+    ///
+    /// This is not a speed limit — those are deliberately disabled here, and nothing about how
+    /// fast the user may travel is being assumed. It is a consistency test between two numbers
+    /// the SAME fix reports. Core Location gives a position and, separately, a speed. When it
+    /// says "I am stationary" while its position has moved 156 m in six seconds, one of those is
+    /// wrong, and the accuracy figure says which: those fixes claimed 10.6 m and 15.3 m of
+    /// uncertainty while landing fifteen times that far from the previous point.
+    ///
+    /// Measured on a two-minute watch walk: two such fixes contributed about 935 m of the 960 m
+    /// recorded, against 23 m from the estimator, and gave a walk a 141 km/h maximum. The track
+    /// was drawn as long straight lines crossing the map.
+    ///
+    /// A genuinely fast fix is unaffected because its own reported speed rises with it: a car at
+    /// 30 m/s reports about 30 m/s and its displacement agrees. Only the self-contradiction is
+    /// refused.
+    private func fixContradictsItself(_ location: FlightLocation, previous: FlightLocation,
+                                      seconds: TimeInterval) -> Bool {
+        guard seconds > 0.5, location.speed >= 0 else { return false }
+        let implied = location.distance(to: previous) / seconds
+        // Generous on both counts: triple the reported speed, or five m/s above it, whichever is
+        // larger. Only a gross disagreement trips this.
+        return implied > max(location.speed * 3.0, location.speed + 5.0)
+    }
+
     private func projectedCoordinate(from coordinate: CLLocationCoordinate2D, distanceMeters: Double, bearingDegrees: Double) -> CLLocationCoordinate2D {
         let earthRadiusMeters = 6_371_000.0
         let angularDistance = distanceMeters / earthRadiusMeters
@@ -2983,6 +3009,16 @@ class WorkoutSession: NSObject, ObservableObject {
         let sourceDistanceJumpThreshold = isIPhoneSource ? max(maxDistanceJump, 500.0) : maxDistanceJump
         let sourceAccelerationThreshold = isIPhoneSource ? max(MAX_ACCELERATION_MPS2, 15.0) : MAX_ACCELERATION_MPS2
         let reanchorGap: TimeInterval = isFlight ? 10.0 : 15.0
+
+        // Refuse a fix that disagrees with its own reported speed, before any of the jump and
+        // accuracy rules get a chance to wave it through.
+        if let previous = flight.locations.last(where: { !$0.isEstimated }) {
+            let seconds = location.timestamp.timeIntervalSince(previous.timestamp)
+            if fixContradictsItself(location, previous: previous, seconds: seconds) {
+                print("⌚ 🚫 Fix rejected: moved \(Int(location.distance(to: previous)))m in \(Int(seconds))s while reporting \(String(format: "%.1f", location.speed))m/s")
+                return
+            }
+        }
 
         func reanchorLocation(_ reason: String) {
             print("⌚ ⚠️ [\(sourceLabel)] \(reason) - reanchoring to new fix")

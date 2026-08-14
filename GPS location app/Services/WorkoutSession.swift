@@ -3766,6 +3766,32 @@ class WorkoutSession: ObservableObject {
         }
     }
 
+
+    /// A FIX THAT CONTRADICTS ITSELF IS NOT A POSITION.
+    ///
+    /// This is not a speed limit — those are deliberately disabled here, and nothing about how
+    /// fast the user may travel is being assumed. It is a consistency test between two numbers
+    /// the SAME fix reports. Core Location gives a position and, separately, a speed. When it
+    /// says "I am stationary" while its position has moved 156 m in six seconds, one of those is
+    /// wrong, and the accuracy figure says which: those fixes claimed 10.6 m and 15.3 m of
+    /// uncertainty while landing fifteen times that far from the previous point.
+    ///
+    /// Measured on a two-minute watch walk: two such fixes contributed about 935 m of the 960 m
+    /// recorded, against 23 m from the estimator, and gave a walk a 141 km/h maximum. The track
+    /// was drawn as long straight lines crossing the map.
+    ///
+    /// A genuinely fast fix is unaffected because its own reported speed rises with it: a car at
+    /// 30 m/s reports about 30 m/s and its displacement agrees. Only the self-contradiction is
+    /// refused.
+    private func fixContradictsItself(_ location: FlightLocation, previous: FlightLocation,
+                                      seconds: TimeInterval) -> Bool {
+        guard seconds > 0.5, location.speed >= 0 else { return false }
+        let implied = location.distance(to: previous) / seconds
+        // Generous on both counts: triple the reported speed, or five m/s above it, whichever is
+        // larger. Only a gross disagreement trips this.
+        return implied > max(location.speed * 3.0, location.speed + 5.0)
+    }
+
     private func reanchorAfterEstimatedFallback(with location: FlightLocation) {
         // REFUSE AN IMPOSSIBLE ANCHOR. This is the single most destructive fix in the app: it
         // rubber-sheets every dead-reckoned point since the last real position onto whatever
@@ -4198,6 +4224,16 @@ class WorkoutSession: ObservableObject {
         if location.horizontalAccuracy < 0 {
             print("🚫 INVALID GPS (no satellite fix) - REJECTED")
             return
+        }
+
+        // Refuse a fix that disagrees with its own reported speed. The iPhone saw exactly this
+        // too — consecutive positions 270 m and 505 m apart while claiming sub-metre accuracy.
+        if let previous = flight.locations.last(where: { !$0.isEstimated }) {
+            let seconds = location.timestamp.timeIntervalSince(previous.timestamp)
+            if fixContradictsItself(location, previous: previous, seconds: seconds) {
+                print("🚫 Fix rejected: moved \(Int(location.distance(to: previous)))m in \(Int(seconds))s while reporting \(String(format: "%.1f", location.speed))m/s")
+                return
+            }
         }
 
         // CONDITIONAL accuracy rejection: drop a bad fix only when something better is actually
