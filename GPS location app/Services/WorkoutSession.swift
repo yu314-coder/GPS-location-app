@@ -547,6 +547,9 @@ class WorkoutSession: ObservableObject {
     /// The activity classifier may only confirm a stop at speeds a ground vehicle could
     /// plausibly be crawling at.
     private let CLASSIFIER_STOP_MAX_SPEED: Double = 8.0     // m/s (29 km/h)
+    /// Cabin vertical speed above which nothing may be called stopped. Well clear of barometric
+    /// flutter, well below any climb or descent.
+    private let CLIMBING_NOT_STOPPED: Double = 0.5          // m/s
     private var stationaryActivitySince: Date?
 
     /// Is a GROUND vehicle actually stopped?
@@ -564,6 +567,21 @@ class WorkoutSession: ObservableObject {
     /// Never available airborne: a smooth cruise is quiet, the classifier reports nothing
     /// useful, and calling that "stopped" is the one mistake this mode cannot make.
     private func vehicleIsStoppedOnGround(correctedSpeed: Double) -> Bool {
+        // NOTHING THAT IS CLIMBING OR DESCENDING IS STOPPED.
+        //
+        // This is the guard that was missing, and it cost the flight. At 09:23:47 the aircraft
+        // was doing 406 km/h and the app recorded ZERO; at 09:24:35, 485 km/h and zero again.
+        // The speed test above could not prevent it because it judges the app's OWN estimate,
+        // and the estimate was already wrong — the learned model was reporting 46 km/h during
+        // the climb, so every guard keyed to that number agreed the aircraft was crawling.
+        //
+        // Cabin vertical speed does not depend on any estimate. It is a direct measurement, it
+        // is available within seconds of rotation rather than the four and a half minutes the
+        // altitude-gain threshold took to latch, and a vehicle that is changing height is not
+        // parked. It cannot invent a speed — it can only refuse to invent a stop.
+        if let climbRate = locationManager.currentVerticalSpeed, abs(climbRate) > CLIMBING_NOT_STOPPED {
+            return false
+        }
         // NOTHING FAST IS EVER CALLED STOPPED BY INFERENCE. A body at 250 m/s cannot reach zero
         // without a deceleration, and a deceleration is the one thing an accelerometer measures
         // unmistakably — it is already in correctedSpeed. Absent that, no amount of quiet and no

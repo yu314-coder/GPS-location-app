@@ -49,7 +49,14 @@ final class FlightPhaseEstimator {
 
     // A pressurised cabin sits far above any building or road gradient, and gets there over
     // minutes rather than seconds.
-    private let AIRBORNE_ALTITUDE_GAIN = 250.0    // m of cabin climb before flight is credible
+    /// Cabin climb before flight is credible. Lowered from 250 m after a real flight: the phase
+    /// did not latch until four and a half minutes after rotation, and for that whole stretch a
+    /// ground-trained speed model was answering — producing 18 to 791 km/h against a true 300 to
+    /// 500, and being zeroed twice at over 400. Pressurisation lags the aircraft, so waiting for
+    /// a quarter kilometre of cabin gain wastes the climb, which is exactly when the speed
+    /// estimate is being established. The 90-second dwell below is what excludes a lift; this
+    /// threshold need only exclude a building.
+    private let AIRBORNE_ALTITUDE_GAIN = 120.0    // m of cabin climb before flight is credible
     private let CLIMB_RATE_THRESHOLD = 0.35       // m/s sustained; a lift does 1–2 m/s for seconds
     private let PHASE_CONFIRM_SECONDS = 90.0      // a lift cannot sustain this
 
