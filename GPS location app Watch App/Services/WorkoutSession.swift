@@ -155,6 +155,9 @@ class WorkoutSession: NSObject, ObservableObject {
     /// ever sees. Bounded exactly as on the iPhone: beyond a right angle it is not a carry
     /// offset, it is a sign error, and applying it rotates the whole route.
     private var compassMisalignmentWatch: Double?
+    /// Recent compass readings, averaged on the circle so arm swing cancels out.
+    private var compassSamplesWatch: [(t: Date, value: Double)] = []
+    private let COMPASS_SMOOTHING_WINDOW: TimeInterval = 3.0
     private let MAX_AXIS_COMPASS_DISAGREEMENT: Double = 90.0
     private let COMPASS_CORRECTION_GAIN_WATCH: Double = 0.25
 
@@ -242,6 +245,7 @@ class WorkoutSession: NSObject, ObservableObject {
     /// Unwrapped cumulative heading change from the watch gyro (vertical-axis integration),
     /// and the value consumed at the previous heading tick.
     private var cumulativeYawRotationDeg: Double = 0
+    private var watchDiagnosticsSource = ""
     private var lastMotionAccelMagnitude: Double = 0
     private var lastMotionRotationMagnitude: Double = 0
     private var lastCumulativeYawForHeading: Double?
@@ -2225,7 +2229,29 @@ class WorkoutSession: NSObject, ObservableObject {
         // so any seed error plus its own drift persists for the whole workout unless something
         // drift-free trims it. The watch previously had nothing to do that when the iPhone was
         // not relaying — which is precisely the flight case.
-        if let compass = locationManager.currentCompassHeading {
+        // SMOOTH IT OVER A STRIDE FIRST. A WRIST IS NOT A POCKET.
+        //
+        // Measured on a watch walk with the same test used for the phone, the compass moved a
+        // median of 27° between consecutive ticks with a p90 of 126° — about three times the
+        // phone's 9.5°/40°, because the arm swings the watch through a wide arc twice per stride
+        // while a pocketed phone barely rotates.
+        //
+        // The swing is symmetric, though: across a full stride the arm points forward as much as
+        // back, so the CIRCULAR MEAN over a couple of seconds estimates where the body faces far
+        // better than any instant does. Averaging on the circle rather than the number line is
+        // what makes 350° and 10° average to 0° instead of 180°.
+        if let rawCompass = locationManager.currentCompassHeading {
+            compassSamplesWatch.append((now, rawCompass))
+            compassSamplesWatch.removeAll { now.timeIntervalSince($0.t) > COMPASS_SMOOTHING_WINDOW }
+        }
+        let smoothedCompass: Double? = {
+            guard !compassSamplesWatch.isEmpty else { return nil }
+            let sn = compassSamplesWatch.reduce(0.0) { $0 + sin($1.value * .pi / 180) }
+            let cs = compassSamplesWatch.reduce(0.0) { $0 + cos($1.value * .pi / 180) }
+            guard abs(sn) > 1e-9 || abs(cs) > 1e-9 else { return nil }
+            return normalizedHeading(atan2(sn, cs) * 180 / .pi)
+        }()
+        if let compass = smoothedCompass {
             // USE THE COMPASS EVEN BEFORE THE OFFSET IS KNOWN, as the iPhone does.
             //
             // This required a learned offset, and the offset can only be learned from GPS
@@ -2490,7 +2516,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         watchDiagnostics.record(.init(
             t: now,
-            source: accelSource,
+            source: watchDiagnosticsSource.isEmpty ? accelSource : watchDiagnosticsSource,
             speed: motionFallbackSpeed,
             distance: distance,
             heading: motionHeadingDegrees,
@@ -2509,6 +2535,10 @@ class WorkoutSession: NSObject, ObservableObject {
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.
         if pedometerIsCounting, !accelSource.hasPrefix("PDR") { accelSource = "PDR" }
+        // Recorded AFTER the label is finalised. Half the previous log read "watch" — the
+        // default tag — because the row was captured before this line ran, so the log said
+        // nothing about which source had actually supplied the speed.
+        watchDiagnosticsSource = accelSource
         let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
         fallbackDebugStatus = String(
             format: "DR[%@]%@ %.0fkm/h →%.0f° cmp%@° +%.0fm",
