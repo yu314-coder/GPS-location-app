@@ -339,7 +339,16 @@ struct FlightMetrics: Codable, Hashable {
             // not a measurement — 1.5 m over 4 ms reads as 1350 km/h, which is how a 1.6 km/h
             // walk came to report a max speed of 1416.2 km/h. Below this gap the pair says
             // nothing about speed, so leave the previous value alone.
-            if timeDelta >= 0.2 && distance > 0 {
+            // A STEP INSIDE THE NOISE IS NOT A SPEED.
+            //
+            // Two fixes 17.9 m apart, each reporting 17 m of accuracy, are indistinguishable
+            // from a phone that did not move — but divided by two seconds they read as 9 m/s,
+            // which is how a 4.2 km/h walk came to report a maximum of 33 km/h. Distance has to
+            // clear the uncertainty of the pair before the pair can be said to describe motion.
+            // Dead-reckoned points carry small accuracies and are unaffected.
+            let combinedUncertainty = max(location.horizontalAccuracy, 0) + max(previous.horizontalAccuracy, 0)
+            let movementIsResolvable = distance >= combinedUncertainty * 0.5
+            if timeDelta >= 0.2 && distance > 0 && movementIsResolvable {
                 currentSpeed = distance / timeDelta
 
                 // Log speed calculation details every 25 points for background monitoring

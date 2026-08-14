@@ -322,7 +322,11 @@ struct FlightMetrics: Codable {
             // A speed derived from two points a few milliseconds apart is a division
             // artifact, not a measurement (see iPhone: a 1.6 km/h walk reported a max speed of
             // 1416.2 km/h). Below this gap the pair says nothing about speed.
-            if timeDelta >= 0.2 && distance > 0 {
+            // A step inside the noise is not a speed — see the iPhone. Two fixes 17.9 m apart
+            // with 17 m accuracy each read as 9 m/s and gave a 4.2 km/h walk a 33 km/h maximum.
+            let combinedUncertainty = max(location.horizontalAccuracy, 0) + max(previous.horizontalAccuracy, 0)
+            let movementIsResolvable = distance >= combinedUncertainty * 0.5
+            if timeDelta >= 0.2 && distance > 0 && movementIsResolvable {
                 currentSpeed = distance / timeDelta
             }
 
