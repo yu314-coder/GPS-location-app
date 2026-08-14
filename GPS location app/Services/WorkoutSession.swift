@@ -609,9 +609,14 @@ class WorkoutSession: ObservableObject {
     private var lastLearnedAnswerTime: Date?
     private let LEARNED_HOLD_MAX_AGE: TimeInterval = 120.0
     private var recentLearnedAnswer: Double? {
-        guard let v = lastLearnedAnswer, let t = lastLearnedAnswerTime,
-              Date().timeIntervalSince(t) < LEARNED_HOLD_MAX_AGE else { return nil }
-        return v
+        guard let v = lastLearnedAnswer, let t = lastLearnedAnswerTime else { return nil }
+        // The two-minute expiry keeps a stale city-driving answer from being held all afternoon.
+        // It must not apply to something that was travelling faster than any road vehicle: an
+        // aircraft cannot come to rest in mid-air, so letting the estimate expire to zero there
+        // would be a reading that is not merely wrong but impossible. Above that speed the last
+        // measurement stands until something measures otherwise.
+        if v >= MAX_GROUND_STOP_SPEED { return v }
+        return Date().timeIntervalSince(t) < LEARNED_HOLD_MAX_AGE ? v : nil
     }
     /// How old a fix may be and still be allowed to anchor a dead-reckoned route. Core
     /// Location's first callback is routinely a cached position from minutes ago.
@@ -3083,8 +3088,28 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if vehicleContextIsCurrent, !deviceIsBeingHandled,
+        } else if vehicleContextIsCurrent, !deviceIsBeingHandled, !flightPhase.isAirborne,
                   let learned = learnedSpeed.estimate() ?? recentLearnedAnswer {
+            // NOT AIRBORNE. The learned model is a GROUND-VEHICLE model — every observation in
+            // it was labelled by GPS on a road — and in the air it does not decline, it answers
+            // confidently and wrongly. Replayed through the real estimator with a synthetic
+            // flight after teaching it a full 0–110 km/h range of driving:
+            //
+            //     phase          reported      truth
+            //     taxi             47 km/h      25
+            //     takeoff roll    103           200
+            //     CRUISE           19           900
+            //     descent          29           600
+            //
+            // Cruise is QUIETER than taxiing, so a model that has only ever seen roads maps it
+            // to the slow end of everything it knows. Nothing collapsed to zero — the guards
+            // hold — but a confident 19 km/h is worse than no answer, because it displaces the
+            // held speed, which at least carries the last real measurement forward and follows
+            // the accelerometer through climb and descent.
+            //
+            // The barometric phase latches once a climb is seen, and cabin altitude really does
+            // rise about 2 km during climb even pressurised, so this is available in the air
+            // even though absolute cabin altitude means nothing.
             // LEARNED FROM THIS CAR. A lookup over accelerometer signatures previously seen at
             // GPS-measured speeds. Measured on real drives at roughly 10 km/h mean error on a
             // drive it had never seen, against 18 km/h for guessing the average — modest, but
@@ -3247,7 +3272,18 @@ class WorkoutSession: ObservableObject {
         // it. This is the backstop: whatever the source computed, if the classifier is
         // confident the device is not moving, the reading is forced to zero. It never fights a
         // genuinely moving vehicle/walk, since it only fires on a CONFIDENT stationary call.
-        if isDeviceStationaryByActivity {
+        // …BUT NOT AT A SPEED NOTHING COULD HAVE STOPPED FROM.
+        //
+        // The classifier reports on the PERSON. A passenger belted into a seat at cruise is
+        // genuinely stationary and it will confidently say so, and this backstop then forced the
+        // speed to zero with no speed test and no airborne test — bypassing every guard in
+        // vehicleIsStoppedOnGround, which exists for exactly this. It is the single most direct
+        // route to a flight reading zero mid-air.
+        //
+        // The same physics applies as everywhere else here: reaching zero from cruise requires a
+        // deceleration, and a deceleration is measurable. Below a speed a ground vehicle could
+        // plausibly be at, a confident stationary call is good evidence and still applies.
+        if isDeviceStationaryByActivity, estimatedFallbackSpeed < MAX_GROUND_STOP_SPEED {
             estimatedFallbackSpeed = 0
             distance = 0
             if !sourceTag.hasSuffix("[still]") { sourceTag += "[still]" }
