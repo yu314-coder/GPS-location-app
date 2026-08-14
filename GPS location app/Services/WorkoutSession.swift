@@ -571,7 +571,7 @@ class WorkoutSession: ObservableObject {
         // which matters because the barometric phase estimator reads CABIN pressure and cannot
         // be relied on to say so.
         guard correctedSpeed < MAX_GROUND_STOP_SPEED else { return false }
-        guard !flightPhase.isAirborne else { return false }
+        guard !isAirborneForEstimation else { return false }
         guard pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW else { return false }
         if correctedSpeed < VEHICLE_STOP_CONFIRM_SPEED { return true }
         // THE CLASSIFIER DESCRIBES THE PERSON, NOT THE VEHICLE.
@@ -590,6 +590,20 @@ class WorkoutSession: ObservableObject {
     /// Acceleration below this is indistinguishable from residual bias and must never be
     /// integrated; braking and pulling away are an order of magnitude above it.
     private let HELD_SPEED_ACCEL_FLOOR: Double = 0.25   // m/s²
+    /// Takeoff-roll detector, independent of cabin pressure. See integrateWorldAccelSample.
+    private let TAKEOFF_ACCEL_FLOOR: Double = 0.5       // m/s² — a roll holds well above this
+    private let TAKEOFF_SPEED_GAIN: Double = 45.0       // m/s (162 km/h) gained in ONE episode
+    private let TAKEOFF_EPISODE_BREAK: TimeInterval = 4.0
+    private var takeoffSpeedGain: Double = 0
+    private var takeoffQuietFor: TimeInterval = 0
+    private var takeoffDetected = false
+
+    /// Airborne by EITHER independent route: the cabin-pressure profile, or a takeoff roll no
+    /// road vehicle could have performed. Used wherever the estimator must not treat the air as
+    /// if it were a road — never to invent a speed.
+    private var isAirborneForEstimation: Bool {
+        flightPhase.isAirborne || takeoffDetected
+    }
     /// THE MODEL DECLINING MUST NOT MEAN THE CAR STOPPED.
     ///
     /// The lookup returns nil when nothing it has stored resembles the present signature, which
@@ -832,7 +846,9 @@ class WorkoutSession: ObservableObject {
                 relativeAltitude: relativeAltitude,
                 pressure: pressure,
                 timestamp: timestamp,
-                accumulateElevation: !self.flightPhase.isAirborne
+                // Either route to knowing we are flying suppresses it, so a missed cabin
+                // profile cannot let cabin altitude be reported as the aircraft's climb.
+                accumulateElevation: !self.isAirborneForEstimation
             )
         }
     }
@@ -1997,6 +2013,30 @@ class WorkoutSession: ObservableObject {
         if abs(alongTrack) > HELD_SPEED_ACCEL_FLOOR {
             heldSpeedCorrection = min(max(heldSpeedCorrection + alongTrack * dt, -DR_MAX_SPEED), DR_MAX_SPEED)
         }
+
+        // A SECOND, PRESSURE-FREE WAY TO KNOW WE ARE FLYING.
+        //
+        // A takeoff roll is the most distinctive thing an accelerometer will ever see on this
+        // phone: two to three m/s² held continuously for twenty-five to forty seconds, ending
+        // somewhere near 80 m/s. Nothing on a road does that in one unbroken episode — a car
+        // reaching 130 km/h from rest accumulates about 36 m/s and does it with lifts and gear
+        // changes that break the episode up. So integrate the along-track acceleration while it
+        // stays positive, reset the episode when it does not, and latch on the total.
+        //
+        // This matters because the airborne decision now selects the speed SOURCE, and until now
+        // it rested entirely on cabin pressure. Pressurisation shows only a few hundred metres of
+        // apparent climb, which the thresholds are set for, but one sensor deciding something
+        // this important is fragile — and unlike pressure, this one cannot be masked by the
+        // aircraft's own air conditioning.
+        if alongTrack > TAKEOFF_ACCEL_FLOOR {
+            takeoffSpeedGain += alongTrack * dt
+            takeoffQuietFor = 0
+            if takeoffSpeedGain >= TAKEOFF_SPEED_GAIN { takeoffDetected = true }
+        } else {
+            takeoffQuietFor += dt
+            // A brief dip does not end a takeoff roll; a few seconds of not accelerating does.
+            if takeoffQuietFor > TAKEOFF_EPISODE_BREAK { takeoffSpeedGain = 0 }
+        }
         // CRITICAL for cruise (aircraft, highway): a body coasting at constant velocity has
         // ~zero acceleration and ~zero rotation — identical to being parked. ZUPT alone
         // cannot tell them apart and was zeroing real cruise velocity, so a plane at 900 km/h
@@ -3088,7 +3128,7 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if vehicleContextIsCurrent, !deviceIsBeingHandled, !flightPhase.isAirborne,
+        } else if vehicleContextIsCurrent, !deviceIsBeingHandled, !isAirborneForEstimation,
                   let learned = learnedSpeed.estimate() ?? recentLearnedAnswer {
             // NOT AIRBORNE. The learned model is a GROUND-VEHICLE model — every observation in
             // it was labelled by GPS on a road — and in the air it does not decline, it answers
@@ -3283,7 +3323,8 @@ class WorkoutSession: ObservableObject {
         // The same physics applies as everywhere else here: reaching zero from cruise requires a
         // deceleration, and a deceleration is measurable. Below a speed a ground vehicle could
         // plausibly be at, a confident stationary call is good evidence and still applies.
-        if isDeviceStationaryByActivity, estimatedFallbackSpeed < MAX_GROUND_STOP_SPEED {
+        if isDeviceStationaryByActivity, !isAirborneForEstimation,
+           estimatedFallbackSpeed < MAX_GROUND_STOP_SPEED {
             estimatedFallbackSpeed = 0
             distance = 0
             if !sourceTag.hasSuffix("[still]") { sourceTag += "[still]" }
@@ -3498,6 +3539,9 @@ class WorkoutSession: ObservableObject {
         stepDetectArmed = true
         lastFallbackPedometerDistanceForStride = nil
         heldSpeedCorrection = 0
+        takeoffSpeedGain = 0
+        takeoffQuietFor = 0
+        takeoffDetected = false
         // Start the pedometer REGARDLESS of the selected activity type. Distance is routed by
         // whether steps are actually being counted, not by the label — the user selects a
         // vehicle/flight type but may still be walking on the ground, where accelerometer
