@@ -685,6 +685,26 @@ extension WatchConnectivityManager: WCSessionDelegate {
 
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
         let metadataType = file.metadata?["type"] as? String
+
+        // A diagnostics CSV from the watch. watchOS has no useful way to share a file, so the
+        // watch records and the phone stores: it lands in the same folder the export UI already
+        // lists, named with a watch_ prefix so it cannot be mistaken for the phone's own log.
+        if metadataType == "diagnosticsLog" {
+            do {
+                let base = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                                       appropriateFor: nil, create: true)
+                let dir = base.appendingPathComponent("VelocityLogs", isDirectory: true)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let destination = dir.appendingPathComponent(file.fileURL.lastPathComponent)
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.copyItem(at: file.fileURL, to: destination)
+                print("📱 ⌚ Stored watch diagnostics log: \(destination.lastPathComponent)")
+            } catch {
+                print("📱 ❌ Could not store watch diagnostics log: \(error)")
+            }
+            return
+        }
+
         guard metadataType == "flight" || metadataType == "flightCheckpoint" else {
             print("📱 Received unknown file from watch")
             return

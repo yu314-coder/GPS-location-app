@@ -34,6 +34,18 @@ struct IPhoneMotionAssist {
 class WatchConnectivityManager: NSObject, ObservableObject {
     static let shared = WatchConnectivityManager()
 
+    /// Send a diagnostics CSV to the iPhone, which collects and shares these logs. Queued
+    /// through WCSession's durable file transfer, so it survives the watch app being suspended
+    /// on the walk back — the same mechanism the flight checkpoints already use.
+    func transferDiagnosticsLog(at fileURL: URL) {
+        let session = WCSession.default
+        guard session.activationState == .activated else {
+            print("⌚ ⚠️ Diagnostics log not sent: session not activated")
+            return
+        }
+        session.transferFile(fileURL, metadata: ["type": "diagnosticsLog"])
+    }
+
     enum IPhoneLocationFeedMode {
         case assist
         case fallback

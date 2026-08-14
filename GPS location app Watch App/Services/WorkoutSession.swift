@@ -172,6 +172,10 @@ class WorkoutSession: NSObject, ObservableObject {
         }
     }
 
+    /// One row per dead-reckoning tick, handed to the iPhone when the workout ends. Every fault
+    /// found in this app was found by reading one of these on the phone; the watch had none.
+    let watchDiagnostics = WatchDiagnosticsRecorder()
+
     private let activityManager = CMMotionActivityManager()
     private var activityUpdatesActive = false
     private var isVehicleByActivity = false
@@ -238,6 +242,8 @@ class WorkoutSession: NSObject, ObservableObject {
     /// Unwrapped cumulative heading change from the watch gyro (vertical-axis integration),
     /// and the value consumed at the previous heading tick.
     private var cumulativeYawRotationDeg: Double = 0
+    private var lastMotionAccelMagnitude: Double = 0
+    private var lastMotionRotationMagnitude: Double = 0
     private var lastCumulativeYawForHeading: Double?
     /// Compass-to-travel offset learned by the iPhone and relayed; nil until known.
     private var relayedCompassMisalignment: Double?
@@ -645,6 +651,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // Everything this watch has learned about this vehicle outlives the workout.
             learnedSpeed.resetWindow()
             learnedSpeed.load()
+            watchDiagnostics.reset()
             startActivityClassifier()
             lastLocationTime = Date()
             latestIPhoneMotionAssist = nil
@@ -728,6 +735,7 @@ class WorkoutSession: NSObject, ObservableObject {
         // Fold in what Velocity Mode held back, then persist — same order as the iPhone.
         learnedSpeed.commitQuarantinedObservations()
         learnedSpeed.save()
+        watchDiagnostics.sendToPhone(workoutStart: flight.startDate)
         stopActivityClassifier()
         // Clear the runtime flag but keep the standing choice for the next workout.
         setForceMotionFallback(false, persist: false)
@@ -1757,6 +1765,10 @@ class WorkoutSession: NSObject, ObservableObject {
 
             let rot = motion.rotationRate
             let rotMag = sqrt(rot.x*rot.x + rot.y*rot.y + rot.z*rot.z)
+            // Kept for the diagnostics log, which is otherwise blind to what the sensors saw.
+            lastMotionRotationMagnitude = rotMag
+            let ua = motion.userAcceleration
+            lastMotionAccelMagnitude = sqrt(ua.x*ua.x + ua.y*ua.y + ua.z*ua.z) * 9.80665
             // Heading-change from the gyro's component about the world-VERTICAL (gravity) axis
             // — no singularity, orientation-independent (see the iPhone LocationManager). Arm
             // swing oscillates and averages out; the NET rotation over a turn is the body's
@@ -2460,6 +2472,24 @@ class WorkoutSession: NSObject, ObservableObject {
         currentMetrics.currentSpeed = motionFallbackSpeed
         currentMetrics.smoothedSpeed = motionFallbackSpeed
 
+        watchDiagnostics.record(.init(
+            t: now,
+            source: accelSource,
+            speed: motionFallbackSpeed,
+            distance: distance,
+            heading: motionHeadingDegrees,
+            compass: locationManager.currentCompassHeading,
+            offset: compassMisalignmentWatch,
+            stepCadence: stepCadenceWatch,
+            quietDuration: pedestrianQuietDuration,
+            learnObservations: learnedSpeed.observationCount,
+            gpsSpeed: watchDiagnostics.latestGPSSpeed >= 0 ? watchDiagnostics.latestGPSSpeed : nil,
+            gpsAccuracy: watchDiagnostics.latestGPSAccuracy >= 0 ? watchDiagnostics.latestGPSAccuracy : nil,
+            truthLatitude: watchDiagnostics.latestGPSLatitude,
+            truthLongitude: watchDiagnostics.latestGPSLongitude,
+            accelMagnitude: lastMotionAccelMagnitude,
+            rotationRate: lastMotionRotationMagnitude))
+
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.
         if pedometerIsCounting, !accelSource.hasPrefix("PDR") { accelSource = "PDR" }
@@ -2849,6 +2879,12 @@ class WorkoutSession: NSObject, ObservableObject {
         // watch's LocationManager still updates its own last-known coordinate
         // independently, so when the toggle is turned OFF the next real fix reanchors
         // cleanly (via the "GPS RETURN AFTER A DEAD-RECKONING GAP" block below).
+        // Ground truth for the log only — never an input to the estimate.
+        watchDiagnostics.latestGPSSpeed = location.speed
+        watchDiagnostics.latestGPSAccuracy = location.horizontalAccuracy
+        watchDiagnostics.latestGPSLatitude = location.latitude
+        watchDiagnostics.latestGPSLongitude = location.longitude
+
         if forceMotionFallback {
             // ONE RECENT FIX AS THE ORIGIN, exactly as the iPhone does. Dead reckoning gives
             // the SHAPE of the route but cannot know where it starts, and without an anchor
