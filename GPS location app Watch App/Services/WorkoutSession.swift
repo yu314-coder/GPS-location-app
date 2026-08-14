@@ -2225,11 +2225,27 @@ class WorkoutSession: NSObject, ObservableObject {
         // so any seed error plus its own drift persists for the whole workout unless something
         // drift-free trims it. The watch previously had nothing to do that when the iPhone was
         // not relaying — which is precisely the flight case.
-        if let compass = locationManager.currentCompassHeading, let offset = compassMisalignmentWatch {
+        if let compass = locationManager.currentCompassHeading {
+            // USE THE COMPASS EVEN BEFORE THE OFFSET IS KNOWN, as the iPhone does.
+            //
+            // This required a learned offset, and the offset can only be learned from GPS
+            // course. A watch that never gets a fix — which is what happens here in practice —
+            // therefore had NO absolute heading reference whatsoever: pure gyro, seeded once and
+            // free-running, so every degree of drift persisted for the whole workout. That is
+            // the failure the compass exists to prevent, and it was disabled in exactly the
+            // situation it was needed.
+            //
+            // With no offset the assumption is zero, which is wrong by however the watch is worn
+            // — so it corrects at half weight, enough to stop unbounded drift without confidently
+            // steering to a number that has not been verified.
+            let offset = compassMisalignmentWatch ?? 0
+            let gain = compassMisalignmentWatch == nil
+                ? COMPASS_CORRECTION_GAIN_WATCH * 0.5
+                : COMPASS_CORRECTION_GAIN_WATCH
             let target = normalizedHeading(compass + offset)
             var err = target - motionHeadingDegrees
             if err > 180 { err -= 360 } else if err < -180 { err += 360 }
-            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + COMPASS_CORRECTION_GAIN_WATCH * err)
+            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + gain * err)
         }
 
         // Correct the ABSOLUTE heading toward the best available reference (the gyro only gives
