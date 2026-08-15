@@ -2385,9 +2385,31 @@ class WorkoutSession: ObservableObject {
         if travelDirection == nil, let previous = lastMisalignmentFix {
             let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
             let to = CLLocation(latitude: location.latitude, longitude: location.longitude)
-            // Long enough that fix noise cannot dominate the bearing, short enough to still be
-            // one direction of travel rather than an average over several turns.
-            if from.distance(from: to) >= 10, from.distance(from: to) <= 120 {
+            // A FIXED 10 m BASELINE ASSUMES FIXES GOOD TO A FEW METRES. THEY OFTEN ARE NOT.
+            //
+            // The bearing between two fixes is only a measurement if the distance between them
+            // is large compared with how well each is known. This gate admits anything under
+            // 20 m accuracy, so a 10 m baseline between two fixes each uncertain by ~18 m is
+            // not a direction at all - it is the angle between two error circles.
+            //
+            // Measured on a 53-second walk: accuracies of 13-19 m produced a learned offset of
+            // -58 deg, which was then applied to a compass that was tracking well. Heading error
+            // as reported: 58 deg median. The same compass with NO offset applied: 11 deg. The
+            // correction was five times worse than the thing it was correcting.
+            //
+            // So scale the baseline to the uncertainty, and require the displacement to be
+            // consistent with the speed actually being measured - noise that jumps 60 m between
+            // two fixes three seconds apart implies 20 m/s, which is not a walk.
+            let separation = from.distance(from: to)
+            let uncertainty = max(previous.horizontalAccuracy, location.horizontalAccuracy)
+            let neededBaseline = max(10, 3 * uncertainty)
+            let elapsed = location.timestamp.timeIntervalSince(previous.timestamp)
+            let impliedSpeed = elapsed > 0 ? separation / elapsed : .infinity
+            // Compare against what the app itself believes, not a constant: the same test has to
+            // hold for a walk and for a motorway.
+            let believedSpeed = max(currentMetrics.currentSpeed, 0.5)
+            let speedIsConsistent = impliedSpeed <= believedSpeed * 2.5 + 1.0
+            if separation >= neededBaseline, separation <= 120, speedIsConsistent {
                 let φ1 = previous.latitude * .pi / 180, φ2 = location.latitude * .pi / 180
                 let Δλ = (location.longitude - previous.longitude) * .pi / 180
                 let y = sin(Δλ) * cos(φ2)
@@ -2867,9 +2889,10 @@ class WorkoutSession: ObservableObject {
                 axisStarvationSince = now
             }
             handlingRotationEMA += 0.1 * (handlingRotationLevel - handlingRotationEMA)
-            // 45 s without an accepted axis is well past any ordinary gap; 0.8 rad/s sustained
-            // is a device being turned in the hand rather than carried steadily.
-            let axisStarved = now.timeIntervalSince(axisStarvationSince ?? now) > 45
+            // 20 s without an accepted axis is already well past any ordinary gap. 45 s was
+            // the first guess and it was wrong: a 53-second walk with the axis refused on every
+            // one of its 53 ticks tripped this once.
+            let axisStarved = now.timeIntervalSince(axisStarvationSince ?? now) > 20
             headingIsUnreliable = axisStarved && handlingRotationEMA > 0.8 && pedometerIsCounting
             lastResolvedWalkAxis = nil
             if !turningNow, !compassIsDisturbed, pedometerIsCounting, axisAgreesWithCompass,
