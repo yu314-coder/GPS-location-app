@@ -2,6 +2,13 @@ import SwiftUI
 import CoreLocation
 
 struct SettingsView: View {
+    /// Developer screen unlock, persisted so it does not have to be rediscovered.
+    @AppStorage("developerUnlocked") private var developerUnlocked = false
+    @State private var versionTapCount = 0
+    @State private var versionTapHint: String?
+    @State private var lastVersionTap = Date.distantPast
+    private let tapsToUnlock = 5
+
     @AppStorage("distanceUnit") private var distanceUnit = "km"
     @AppStorage("speedUnit") private var speedUnit = "km/h"
     @AppStorage("altitudeUnit") private var altitudeUnit = "meters"
@@ -275,16 +282,63 @@ struct SettingsView: View {
 
                     // About Section
                     VStack(spacing: 12) {
-                        HStack {
-                            Text("Version")
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("1.0.0")
-                                .fontWeight(.medium)
+                        // THE REAL VERSION, NOT A LITERAL.
+                        //
+                        // This read "1.0.0" while the app was on build 134. Every diagnosis in
+                        // this project starts with which build produced a recording — one log
+                        // was misread for a whole exchange because the build was unknown — so a
+                        // version string that cannot go stale is worth more than it looks.
+                        //
+                        // Five taps opens the developer screen, the way Android does it: out of
+                        // the way for normal use, reachable without a Mac when a recording needs
+                        // rescuing.
+                        Button {
+                            registerVersionTap()
+                        } label: {
+                            HStack {
+                                Text("Version")
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(Bundle.appVersionDisplay)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.primary)
+                                if developerUnlocked {
+                                    Image(systemName: "hammer.fill")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding()
+                            .background(Color(.secondarySystemGroupedBackground))
+                            .cornerRadius(12)
                         }
-                        .padding()
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .cornerRadius(12)
+                        .buttonStyle(PlainButtonStyle())
+
+                        if let hint = versionTapHint {
+                            Text(hint)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 4)
+                                .transition(.opacity)
+                        }
+
+                        if developerUnlocked {
+                            NavigationLink(destination: DeveloperView()) {
+                                HStack {
+                                    Image(systemName: "hammer")
+                                    Text("Developer")
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding()
+                                .background(Color(.secondarySystemGroupedBackground))
+                                .cornerRadius(12)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
 
                         Link(destination: URL(string: "https://github.com")!) {
                             HStack {
@@ -333,6 +387,45 @@ struct SettingsView: View {
             .onReceive(refreshTimer) { _ in
                 updatePermissionStatus()
             }
+        }
+    }
+
+    @ViewBuilder
+
+    /// Android's gesture, and for the same reason: the screen behind it is needed occasionally
+    /// and would be clutter the rest of the time. Counts only consecutive taps — pausing more
+    /// than two seconds starts again, so it cannot be reached by idly prodding the screen.
+    private func registerVersionTap() {
+        let now = Date()
+        if now.timeIntervalSince(lastVersionTap) > 2.0 { versionTapCount = 0 }
+        lastVersionTap = now
+
+        guard !developerUnlocked else {
+            versionTapHint = "Developer options are already on."
+            clearHintSoon()
+            return
+        }
+
+        versionTapCount += 1
+        let remaining = tapsToUnlock - versionTapCount
+        if remaining <= 0 {
+            developerUnlocked = true
+            versionTapCount = 0
+            versionTapHint = "Developer options are on."
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } else if remaining <= 3 {
+            versionTapHint = remaining == 1
+                ? "1 more tap and you are a developer."
+                : "\(remaining) more taps and you are a developer."
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+        clearHintSoon()
+    }
+
+    private func clearHintSoon() {
+        let shownFor = versionTapHint
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            if versionTapHint == shownFor { withAnimation { versionTapHint = nil } }
         }
     }
 

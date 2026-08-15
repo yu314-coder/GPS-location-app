@@ -222,7 +222,8 @@ class WorkoutSession: ObservableObject {
     /// Learns speed from the accelerometer's spectral signature, on-device, from GPS labels.
     /// Replaces the hand-crafted vibration model — see LearnedSpeedEstimator for the measurements
     /// showing why a learned lookup finds what five hand-built features could not.
-    private let learnedSpeed = LearnedSpeedEstimator()
+    /// Not private: the developer screen reports what it holds and can clear it.
+    let learnedSpeed = LearnedSpeedEstimator()
     private let vibrationSpeed = VibrationSpeedEstimator()
     /// Per-tick record of what the speed model saw and decided, for export and live inspection.
     let sessionDiagnostics = SessionDiagnosticsRecorder()

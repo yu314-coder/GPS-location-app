@@ -274,6 +274,25 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     // prevent. Write them to disk at the end of every workout instead, keyed by start time, so
     // they can be retrieved later from the workout itself.
 
+    /// Every saved log, newest first, for the developer screen's browser.
+    static func allSavedLogs() -> [(url: URL, size: Int, modified: Date)] {
+        let dir = logDirectory
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
+        return names.compactMap { name -> (URL, Int, Date)? in
+            let url = dir.appendingPathComponent(name)
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let size = attrs[.size] as? Int,
+                  let modified = attrs[.modificationDate] as? Date else { return nil }
+            return (url, size, modified)
+        }
+        .sorted { $0.2 > $1.2 }
+        .map { (url: $0.0, size: $0.1, modified: $0.2) }
+    }
+
+    static func deleteAllSavedLogs() {
+        for log in allSavedLogs() { try? FileManager.default.removeItem(at: log.url) }
+    }
+
     private static var logDirectory: URL {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("VelocityLogs", isDirectory: true)
