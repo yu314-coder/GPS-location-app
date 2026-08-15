@@ -33,11 +33,12 @@ struct DeveloperView: View {
                     Text(Bundle.appVersionDisplay)
                         .font(.system(.largeTitle, design: .rounded))
                         .fontWeight(.semibold)
-                    HStack(spacing: 18) {
-                        summaryStat("logs", "\(logs.count)")
-                        summaryStat("observations", "\(WorkoutSession.shared.learnedSpeed.observationCount)")
-                        summaryStat("taught to",
-                                    "\(Int(WorkoutSession.shared.learnedSpeed.maxLearnedSpeed * 3.6)) km/h")
+                    HStack(spacing: 4) {
+                        StatTile(value: "\(logs.count)", label: "logs")
+                        StatTile(value: "\(WorkoutSession.shared.learnedSpeed.observationCount)",
+                                 label: "observations")
+                        StatTile(value: "\(Int(WorkoutSession.shared.learnedSpeed.maxLearnedSpeed * 3.6)) km/h",
+                                 label: "taught to")
                     }
                 }
                 .padding(.vertical, 6)
@@ -63,8 +64,9 @@ struct DeveloperView: View {
                         .font(.system(.footnote, design: .monospaced))
                 }
                 Button(role: .destructive) { showingForgetConfirm = true } label: {
-                    Label("Forget learned speeds", systemImage: "trash")
+                    SettingsRow(symbol: "trash.fill", tint: .red, title: "Forget learned speeds")
                 }
+                .buttonStyle(.plain)
             } header: {
                 Text("Learned speed model")
             } footer: {
@@ -75,7 +77,8 @@ struct DeveloperView: View {
                 NavigationLink {
                     PermissionTestView()
                 } label: {
-                    Label("Permissions & sensor tests", systemImage: "wrench.and.screwdriver")
+                    SettingsRow(symbol: "stethoscope", tint: .teal, title: "Diagnostics",
+                                subtitle: "Permissions, GPS, performance")
                 }
             } header: {
                 Text("Diagnostics")
@@ -113,11 +116,14 @@ struct DeveloperView: View {
                         shareItems = logs.map(\.url)
                         showingShare = true
                     } label: {
-                        Label("Share all (\(logs.count))", systemImage: "square.and.arrow.up")
+                        SettingsRow(symbol: "square.and.arrow.up", tint: .blue,
+                                    title: "Share all", subtitle: "\(logs.count) files")
                     }
+                    .buttonStyle(.plain)
                     Button(role: .destructive) { showingDeleteConfirm = true } label: {
-                        Label("Delete all logs", systemImage: "trash")
+                        SettingsRow(symbol: "trash.fill", tint: .red, title: "Delete all logs")
                     }
+                    .buttonStyle(.plain)
                 }
             } header: {
                 Text("Session logs")
@@ -146,17 +152,6 @@ struct DeveloperView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("The model will have to relearn from GPS across future trips.")
-        }
-    }
-
-    private func summaryStat(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(.system(.subheadline, design: .monospaced))
-                .fontWeight(.medium)
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
         }
     }
 

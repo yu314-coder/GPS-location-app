@@ -2,547 +2,170 @@ import SwiftUI
 import CoreLocation
 import HealthKit
 
-enum TestCategory: String, CaseIterable {
-    case permissions = "Permissions"
-    case gps = "GPS"
-    case healthKit = "HealthKit"
-    case performance = "Performance"
-    case debug = "Debug"
-}
-
+/// REBUILT AS A GROUPED LIST.
+///
+/// This was a segmented control over five hand-laid pages, so finding anything meant first
+/// guessing which of "Permissions / GPS / HealthKit / Performance / Debug" it lived under, and
+/// each page drew its rows its own way. A diagnostics screen is read, not navigated: the point
+/// is to see the state of everything at once and notice the one thing that is wrong. Sections in
+/// a single scroll do that; tabs hide four fifths of it behind a guess.
+///
+/// Same actions, same functions underneath — only the arrangement changed, and it now shares the
+/// icon and status vocabulary with Settings and Developer.
 struct PermissionTestView: View {
     @StateObject private var locationManager = LocationManager()
     @ObservedObject private var healthKitManager = HealthKitManager.shared
 
-    @State private var selectedCategory: TestCategory = .permissions
     @State private var locationStatus = "Not checked"
     @State private var healthKitStatus = "Not checked"
     @State private var testResults: [String] = []
     @State private var didRunHealthKitWriteTest = false
     @State private var healthKitWriteTestStatus: String?
 
-    // GPS Testing
     @State private var gpsUpdateCount = 0
     @State private var lastGPSUpdate: Date?
     @State private var averageAccuracy: Double = 0
     @State private var isMonitoringGPS = false
 
-    // Performance metrics
     @State private var memoryUsage: String = "..."
     @State private var cpuUsage: String = "..."
 
-    // Debug workout generation
     @State private var debugStepCountText = ""
     @State private var isSavingDebugWorkout = false
     @State private var isDeletingDebugWorkout = false
     @State private var debugWorkoutStatus: String?
     @FocusState private var isDebugStepCountFieldFocused: Bool
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
     var body: some View {
-        Group {
-            if horizontalSizeClass == .regular {
-                mainContent
-                    .navigationTitle("Testing & Debug")
-                    .navigationBarTitleDisplayMode(.inline)
-            } else {
-                NavigationStack {
-                    mainContent
-                        .navigationTitle("Testing & Debug")
-                        .navigationBarTitleDisplayMode(.inline)
+        List {
+            Section {
+                SettingsRow(symbol: "location.fill", tint: .blue, title: "Location") {
+                    StatusPill(text: locationStatus, tint: statusColor(locationStatus))
+                }
+                SettingsRow(symbol: "heart.fill", tint: .red, title: "Apple Health") {
+                    StatusPill(text: healthKitStatus, tint: statusColor(healthKitStatus))
+                }
+                Button { checkPermissions() } label: {
+                    SettingsRow(symbol: "arrow.clockwise", tint: .gray, title: "Re-check now")
+                }
+                .buttonStyle(.plain)
+                Button { requestLocationPermission() } label: {
+                    SettingsRow(symbol: "location.circle.fill", tint: .blue,
+                                title: "Request location access")
+                }
+                .buttonStyle(.plain)
+                Button { requestHealthKitPermission() } label: {
+                    SettingsRow(symbol: "heart.circle.fill", tint: .red,
+                                title: "Request Health access")
+                }
+                .buttonStyle(.plain)
+            } header: {
+                Text("Permissions")
+            } footer: {
+                Text("Location must be Always for recording to continue once the screen locks. Health access is per-type and cannot be re-prompted once denied — that needs iOS Settings.")
+            }
+
+            Section {
+                SettingsRow(symbol: "dot.radiowaves.left.and.right", tint: .green, title: "Fixes received") {
+                    Text("\(gpsUpdateCount)").font(.system(.body, design: .monospaced))
+                }
+                SettingsRow(symbol: "scope", tint: .teal, title: "Mean accuracy") {
+                    Text(averageAccuracy > 0 ? String(format: "%.0f m", averageAccuracy) : "—")
+                        .font(.system(.body, design: .monospaced))
+                }
+                if let last = lastGPSUpdate {
+                    SettingsRow(symbol: "clock", tint: .gray, title: "Last fix") {
+                        Text(last, style: .relative).font(.footnote).foregroundColor(.secondary)
+                    }
+                }
+                Button {
+                    isMonitoringGPS ? stopGPSMonitoring() : startGPSMonitoring()
+                } label: {
+                    SettingsRow(symbol: isMonitoringGPS ? "stop.fill" : "play.fill",
+                                tint: isMonitoringGPS ? .red : .green,
+                                title: isMonitoringGPS ? "Stop monitoring" : "Start monitoring")
+                }
+                .buttonStyle(.plain)
+            } header: {
+                Text("GPS")
+            } footer: {
+                Text("Monitoring counts fixes as they arrive, without recording a workout. Useful for judging signal somewhere before relying on it.")
+            }
+
+            Section {
+                SettingsRow(symbol: "memorychip", tint: .indigo, title: "Memory") {
+                    Text(memoryUsage).font(.system(.body, design: .monospaced))
+                }
+                SettingsRow(symbol: "cpu", tint: .orange, title: "CPU") {
+                    Text(cpuUsage).font(.system(.body, design: .monospaced))
+                }
+                Button { testFilesContainer() } label: {
+                    SettingsRow(symbol: "folder.fill", tint: .brown, title: "Test file container")
+                }
+                .buttonStyle(.plain)
+            } header: {
+                Text("Performance")
+            }
+
+            Section {
+                HStack(spacing: 12) {
+                    SettingsIcon(symbol: "figure.walk.motion", tint: .mint)
+                    TextField("Step count", text: $debugStepCountText)
+                        .keyboardType(.numberPad)
+                        .focused($isDebugStepCountFieldFocused)
+                }
+                Button { generateStepOnlyDebugWorkout() } label: {
+                    SettingsRow(symbol: "plus.circle.fill", tint: .mint,
+                                title: isSavingDebugWorkout ? "Saving…" : "Create step-only workout")
+                }
+                .buttonStyle(.plain)
+                .disabled(isSavingDebugWorkout)
+                Button(role: .destructive) { deleteStepOnlyDebugWorkouts() } label: {
+                    SettingsRow(symbol: "trash.fill", tint: .red,
+                                title: isDeletingDebugWorkout ? "Deleting…" : "Delete step-only workouts")
+                }
+                .buttonStyle(.plain)
+                .disabled(isDeletingDebugWorkout)
+                if let status = debugWorkoutStatus {
+                    Text(status).font(.footnote).foregroundColor(.secondary)
+                }
+            } header: {
+                Text("HealthKit debug")
+            } footer: {
+                Text("Writes a workout carrying only a step count, to check how Health and other apps treat one with no route.")
+            }
+
+            Section {
+                if testResults.isEmpty {
+                    Text("Nothing logged yet.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(testResults.reversed(), id: \.self) { line in
+                        Text(line)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("Log")
+                    Spacer()
+                    if !testResults.isEmpty {
+                        Button("Clear") { testResults.removeAll() }
+                            .font(.caption)
+                            .textCase(nil)
+                    }
                 }
             }
         }
+        .navigationTitle("Diagnostics")
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             checkPermissions()
             startPerformanceMonitoring()
-            runHealthKitWriteTestOnce()
         }
-    }
-
-    @ViewBuilder
-    private var mainContent: some View {
-        ZStack {
-                // Gradient background
-                LinearGradient(
-                    colors: [
-                        Color.orange.opacity(0.05),
-                        Color.yellow.opacity(0.02),
-                        Color(.systemGroupedBackground)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
-
-                VStack(spacing: 0) {
-                    // Category Picker
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            ForEach(TestCategory.allCases, id: \.self) { category in
-                                CategoryChip(
-                                    title: category.rawValue,
-                                    icon: categoryIcon(category),
-                                    isSelected: selectedCategory == category,
-                                    action: { selectedCategory = category }
-                                )
-                            }
-                        }
-                        .padding(.horizontal)
-                        .padding(.vertical, 12)
-                    }
-                    .background(Color(.systemBackground).opacity(0.95))
-
-                    // Content
-                    ScrollView {
-                        VStack(spacing: 20) {
-                            switch selectedCategory {
-                            case .permissions:
-                                permissionsSection
-                            case .gps:
-                                gpsTestingSection
-                            case .healthKit:
-                                healthKitTestingSection
-                            case .performance:
-                                performanceSection
-                            case .debug:
-                                debugSection
-                            }
-                        }
-                        .padding()
-                    }
-                }
-            }
-        }
-
-
-    // MARK: - Category Icon Helper
-
-    private func categoryIcon(_ category: TestCategory) -> String {
-        switch category {
-        case .permissions: return "checkmark.shield.fill"
-        case .gps: return "location.fill"
-        case .healthKit: return "heart.fill"
-        case .performance: return "speedometer"
-        case .debug: return "ladybug.fill"
-        }
-    }
-
-    // MARK: - Permissions Section
-
-    private var permissionsSection: some View {
-        VStack(spacing: 16) {
-            // Status Cards
-            VStack(spacing: 12) {
-                TestStatusCard(
-                    icon: "location.fill",
-                    title: "Location Services",
-                    status: locationStatus,
-                    color: statusColor(locationStatus)
-                )
-
-                TestStatusCard(
-                    icon: "heart.fill",
-                    title: "HealthKit",
-                    status: healthKitStatus,
-                    color: statusColor(healthKitStatus)
-                )
-            }
-
-            // Test Actions
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Test Actions")
-                    .font(.headline)
-                    .padding(.top)
-
-                Button(action: checkPermissions) {
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                        Text("Check Current Permissions")
-                        Spacer()
-                    }
-                    .padding()
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .cornerRadius(10)
-                }
-                .buttonStyle(PlainButtonStyle())
-
-                Button(action: requestLocationPermission) {
-                    HStack {
-                        Image(systemName: "location.fill")
-                        Text("REQUEST Location Permission")
-                        Spacer()
-                    }
-                    .padding()
-                    .background(Color.blue.opacity(0.1))
-                    .foregroundColor(.blue)
-                    .cornerRadius(10)
-                }
-                .buttonStyle(PlainButtonStyle())
-
-                Button(action: requestHealthKitPermission) {
-                    HStack {
-                        Image(systemName: "heart.fill")
-                        Text("REQUEST HealthKit Permission")
-                        Spacer()
-                    }
-                    .padding()
-                    .background(Color.red.opacity(0.1))
-                    .foregroundColor(.red)
-                    .cornerRadius(10)
-                }
-                .buttonStyle(PlainButtonStyle())
-
-                Button(action: requestBothPermissions) {
-                    HStack {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                        Text("Request BOTH")
-                        Spacer()
-                    }
-                    .padding()
-                    .background(Color.green.opacity(0.1))
-                    .foregroundColor(.green)
-                    .cornerRadius(10)
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
-
-            // Test Log
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Test Log")
-                    .font(.headline)
-                    .padding(.top)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(testResults.indices, id: \.self) { index in
-                        Text(testResults[index])
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemGroupedBackground))
-                .cornerRadius(10)
-            }
-
-            // Instructions
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Instructions")
-                    .font(.headline)
-                    .padding(.top)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("1. Tap 'REQUEST Location Permission'")
-                    Text("   → iOS dialog should appear")
-                    Text("2. Grant permission")
-                    Text("3. Go to Settings → Privacy → Location")
-                    Text("   → App should now appear with options")
-                    Text("")
-                    Text("4. Tap 'REQUEST HealthKit Permission'")
-                    Text("   → iOS dialog should appear")
-                    Text("5. Grant permission")
-                    Text("6. Go to Settings → Privacy → Health")
-                    Text("   → App should now appear")
-                }
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding()
-                .background(Color(.secondarySystemGroupedBackground))
-                .cornerRadius(10)
-            }
-        }
-    }
-
-    // MARK: - GPS Testing Section
-
-    private var gpsTestingSection: some View {
-        VStack(spacing: 16) {
-            TestStatusCard(
-                icon: "location.circle.fill",
-                title: "GPS Status",
-                status: isMonitoringGPS ? "Monitoring" : "Idle",
-                color: isMonitoringGPS ? .green : .orange
-            )
-
-            VStack(spacing: 12) {
-                HStack {
-                    Text("Updates Received:")
-                    Spacer()
-                    Text("\(gpsUpdateCount)")
-                        .fontWeight(.bold)
-                }
-
-                HStack {
-                    Text("Average Accuracy:")
-                    Spacer()
-                    Text(String(format: "%.1fm", averageAccuracy))
-                        .fontWeight(.bold)
-                }
-
-                if let lastUpdate = lastGPSUpdate {
-                    HStack {
-                        Text("Last Update:")
-                        Spacer()
-                        Text(lastUpdate, style: .time)
-                            .fontWeight(.bold)
-                    }
-                }
-            }
-            .padding()
-            .background(Color(.secondarySystemGroupedBackground))
-            .cornerRadius(10)
-
-            Button(action: {
-                isMonitoringGPS.toggle()
-                if isMonitoringGPS {
-                    startGPSMonitoring()
-                } else {
-                    stopGPSMonitoring()
-                }
-            }) {
-                HStack {
-                    Image(systemName: isMonitoringGPS ? "stop.fill" : "play.fill")
-                    Text(isMonitoringGPS ? "Stop GPS Monitoring" : "Start GPS Monitoring")
-                    Spacer()
-                }
-                .padding()
-                .background(isMonitoringGPS ? Color.red.opacity(0.1) : Color.green.opacity(0.1))
-                .foregroundColor(isMonitoringGPS ? .red : .green)
-                .cornerRadius(10)
-            }
-            .buttonStyle(PlainButtonStyle())
-        }
-    }
-
-    // MARK: - HealthKit Testing Section
-
-    private var healthKitTestingSection: some View {
-        VStack(spacing: 16) {
-            TestStatusCard(
-                icon: "heart.text.square.fill",
-                title: "HealthKit Authorization",
-                status: healthKitStatus,
-                color: statusColor(healthKitStatus)
-            )
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("HealthKit Capabilities")
-                    .font(.headline)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: HKHealthStore.isHealthDataAvailable() ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundColor(HKHealthStore.isHealthDataAvailable() ? .green : .red)
-                        Text("Health Data Available")
-                    }
-
-                    HStack {
-                        Image(systemName: healthKitManager.isAuthorized ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundColor(healthKitManager.isAuthorized ? .green : .red)
-                        Text("Workout Authorization")
-                    }
-                }
-                .font(.subheadline)
-                .padding()
-                .background(Color(.secondarySystemGroupedBackground))
-                .cornerRadius(10)
-            }
-        }
-    }
-
-    // MARK: - Performance Section
-
-    private var performanceSection: some View {
-        VStack(spacing: 16) {
-            Text("Performance Metrics")
-                .font(.headline)
-
-            VStack(spacing: 12) {
-                HStack {
-                    Image(systemName: "memorychip")
-                    Text("Memory Usage:")
-                    Spacer()
-                    Text(memoryUsage)
-                        .fontWeight(.bold)
-                }
-
-                HStack {
-                    Image(systemName: "cpu")
-                    Text("CPU Usage:")
-                    Spacer()
-                    Text(cpuUsage)
-                        .fontWeight(.bold)
-                }
-
-                HStack {
-                    Image(systemName: "location.fill")
-                    Text("GPS Updates:")
-                    Spacer()
-                    Text("\(gpsUpdateCount)")
-                        .fontWeight(.bold)
-                }
-            }
-            .padding()
-            .background(Color(.secondarySystemGroupedBackground))
-            .cornerRadius(10)
-
-            Text("Performance metrics updated every 5 seconds")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-    }
-
-    // MARK: - Debug Section
-
-    private var debugSection: some View {
-        VStack(spacing: 16) {
-            Text("Debug Information")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 8) {
-                DebugInfoRow(label: "Location Manager", value: "\(type(of: locationManager))")
-                DebugInfoRow(label: "HealthKit Manager", value: "\(type(of: healthKitManager))")
-                DebugInfoRow(label: "Workout Session", value: "\(type(of: WorkoutSession.shared))")
-                DebugInfoRow(label: "GPS Signal", value: "\(locationManager.gpsSignalQuality)")
-                DebugInfoRow(label: "Tracking Active", value: "\(locationManager.isTracking)")
-            }
-            .padding()
-            .background(Color(.secondarySystemGroupedBackground))
-            .cornerRadius(10)
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Step-Only Debug Workout")
-                    .font(.headline)
-
-                Text("Creates a HealthKit workout with only the step count you enter. No distance samples or GPS route are written, and the workout starts at the moment you press Generate.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                TextField("Enter steps", text: $debugStepCountText)
-                    .keyboardType(.numberPad)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .focused($isDebugStepCountFieldFocused)
-
-                Text("No app-side step cap is applied. Enter any whole-number step count you want to test.")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-
-                Button(action: generateStepOnlyDebugWorkout) {
-                    HStack {
-                        if isSavingDebugWorkout {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                        } else {
-                            Image(systemName: "figure.walk")
-                        }
-                        Text(isSavingDebugWorkout ? "Generating..." : "Generate Step-Only Debug Workout")
-                        Spacer()
-                    }
-                    .padding()
-                    .background(
-                        (isSavingDebugWorkout || isDeletingDebugWorkout || parsedDebugStepCount == nil)
-                            ? Color.gray.opacity(0.12)
-                            : Color.green.opacity(0.12)
-                    )
-                    .foregroundColor(
-                        (isSavingDebugWorkout || isDeletingDebugWorkout || parsedDebugStepCount == nil)
-                            ? .secondary
-                            : .green
-                    )
-                    .cornerRadius(10)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .disabled(isSavingDebugWorkout || isDeletingDebugWorkout || parsedDebugStepCount == nil)
-
-                Button(action: deleteStepOnlyDebugWorkouts) {
-                    HStack {
-                        if isDeletingDebugWorkout {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                        } else {
-                            Image(systemName: "trash")
-                        }
-                        Text(isDeletingDebugWorkout ? "Deleting..." : "Delete Step-Only Debug Data")
-                        Spacer()
-                    }
-                    .padding()
-                    .background(
-                        (isSavingDebugWorkout || isDeletingDebugWorkout)
-                            ? Color.gray.opacity(0.12)
-                            : Color.red.opacity(0.12)
-                    )
-                    .foregroundColor(
-                        (isSavingDebugWorkout || isDeletingDebugWorkout)
-                            ? .secondary
-                            : .red
-                    )
-                    .cornerRadius(10)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .disabled(isSavingDebugWorkout || isDeletingDebugWorkout)
-
-                if let debugWorkoutStatus {
-                    Text(debugWorkoutStatus)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding()
-            .background(Color(.secondarySystemGroupedBackground))
-            .cornerRadius(10)
-
-            Button(action: {
-                if let folderURL = WorkoutCacheStore.shared.ensureVisibleFolder() {
-                    addLog("📁 Cache folder ready: \(folderURL.lastPathComponent)")
-                } else {
-                    addLog("❌ Failed to create cache folder")
-                }
-            }) {
-                HStack {
-                    Image(systemName: "folder.badge.plus")
-                    Text("Create Files Cache Folder")
-                    Spacer()
-                }
-                .padding()
-                .background(Color.blue.opacity(0.1))
-                .foregroundColor(.blue)
-                .cornerRadius(10)
-            }
-            .buttonStyle(PlainButtonStyle())
-
-            Button(action: {
-                testFilesContainer()
-            }) {
-                HStack {
-                    Image(systemName: "folder")
-                    Text("Check Files App Folder")
-                    Spacer()
-                }
-                .padding()
-                .background(Color.blue.opacity(0.1))
-                .foregroundColor(.blue)
-                .cornerRadius(10)
-            }
-            .buttonStyle(PlainButtonStyle())
-
-            Button(action: {
-                testResults.removeAll()
-                addLog("🧹 Debug log cleared")
-            }) {
-                HStack {
-                    Image(systemName: "trash")
-                    Text("Clear Debug Log")
-                    Spacer()
-                }
-                .padding()
-                .background(Color.red.opacity(0.1))
-                .foregroundColor(.red)
-                .cornerRadius(10)
-            }
-            .buttonStyle(PlainButtonStyle())
-        }
+        .onDisappear { stopGPSMonitoring() }
     }
 
     // MARK: - Helper Functions

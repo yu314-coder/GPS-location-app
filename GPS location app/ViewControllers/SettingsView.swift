@@ -54,17 +54,24 @@ struct SettingsView: View {
 
     private var permissionsSection: some View {
         Section {
-            permissionRow(icon: "location.fill", tint: .blue,
-                          title: "Location Services", status: locationPermissionStatus)
-            permissionRow(icon: "heart.fill", tint: .red,
-                          title: "HealthKit", status: healthKitPermissionStatus)
+            SettingsRow(symbol: "location.fill", tint: .blue, title: "Location Services") {
+                StatusPill(text: locationPermissionStatus, tint: permissionColor(locationPermissionStatus))
+            }
+            SettingsRow(symbol: "heart.fill", tint: .red, title: "Apple Health") {
+                StatusPill(text: healthKitPermissionStatus, tint: permissionColor(healthKitPermissionStatus))
+            }
             Button {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
             } label: {
-                Label("Open iOS Settings", systemImage: "gear")
+                SettingsRow(symbol: "gear", tint: .gray, title: "Open iOS Settings") {
+                    Image(systemName: "arrow.up.forward.app")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
+            .buttonStyle(.plain)
         } header: {
             Text("Permissions")
         } footer: {
@@ -74,33 +81,43 @@ struct SettingsView: View {
 
     private var unitsSection: some View {
         Section("Units") {
-            Picker("Distance", selection: $distanceUnit) {
+            Picker(selection: $distanceUnit) {
                 Text("Kilometres").tag("km")
                 Text("Miles").tag("mi")
+            } label: {
+                SettingsRow(symbol: "ruler", tint: .indigo, title: "Distance")
             }
-            Picker("Speed", selection: $speedUnit) {
+            Picker(selection: $speedUnit) {
                 Text("km/h").tag("km/h")
                 Text("mph").tag("mph")
                 Text("knots").tag("knots")
+            } label: {
+                SettingsRow(symbol: "speedometer", tint: .orange, title: "Speed")
             }
-            Picker("Altitude", selection: $altitudeUnit) {
+            Picker(selection: $altitudeUnit) {
                 Text("Metres").tag("meters")
                 Text("Feet").tag("feet")
+            } label: {
+                SettingsRow(symbol: "mountain.2.fill", tint: .green, title: "Altitude")
             }
         }
     }
 
     private var mapSection: some View {
         Section {
-            Picker("Map style", selection: $mapStyle) {
+            Picker(selection: $mapStyle) {
                 Text("Standard").tag("standard")
                 Text("Satellite").tag("satellite")
                 Text("Hybrid").tag("hybrid")
+            } label: {
+                SettingsRow(symbol: "map.fill", tint: .teal, title: "Map style")
             }
-            Picker("Filtering", selection: $kalmanSensitivity) {
+            Picker(selection: $kalmanSensitivity) {
                 Text("Low").tag("low")
                 Text("Medium").tag("medium")
                 Text("High").tag("high")
+            } label: {
+                SettingsRow(symbol: "line.3.horizontal.decrease", tint: .cyan, title: "Filtering")
             }
         } header: {
             Text("Map & tracking")
@@ -111,16 +128,25 @@ struct SettingsView: View {
 
     private var workoutSection: some View {
         Section {
-            Toggle("Save to Apple Health", isOn: $autoSaveToHealthKit)
-            Picker("Save as", selection: $healthKitExportType) {
+            Toggle(isOn: $autoSaveToHealthKit) {
+                SettingsRow(symbol: "heart.text.square.fill", tint: .pink, title: "Save to Apple Health")
+            }
+            Picker(selection: $healthKitExportType) {
                 Text("Match activity").tag("auto")
                 Text("Cycling").tag("cycling")
                 Text("Running").tag("running")
                 Text("Walking").tag("walking")
                 Text("Hiking").tag("hiking")
+            } label: {
+                SettingsRow(symbol: "figure.walk", tint: .mint, title: "Save as")
             }
-            Toggle("Record heart rate", isOn: $trackHeartRate)
-            Toggle("Unfiltered GPS", isOn: $useRawGPS)
+            Toggle(isOn: $trackHeartRate) {
+                SettingsRow(symbol: "waveform.path.ecg", tint: .red, title: "Record heart rate")
+            }
+            Toggle(isOn: $useRawGPS) {
+                SettingsRow(symbol: "antenna.radiowaves.left.and.right", tint: .yellow,
+                            title: "Unfiltered GPS")
+            }
         } header: {
             Text("Workouts")
         } footer: {
@@ -137,7 +163,10 @@ struct SettingsView: View {
                 .autocorrectionDisabled()
             if let url = URL(string: "https://client.stadiamaps.com") {
                 Link(destination: url) {
-                    Label("Get a free key", systemImage: "arrow.up.right.square")
+                    SettingsRow(symbol: "key.fill", tint: .brown, title: "Get a free key") {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                 }
             }
         } header: {
@@ -178,13 +207,18 @@ struct SettingsView: View {
                 NavigationLink {
                     DeveloperView()
                 } label: {
-                    Label("Developer", systemImage: "hammer")
+                    SettingsRow(symbol: "hammer.fill", tint: .purple, title: "Developer",
+                                subtitle: "Logs, model, diagnostics")
                 }
             }
 
             if let url = URL(string: "https://github.com") {
                 Link(destination: url) {
-                    Label("GitHub repository", systemImage: "chevron.left.forwardslash.chevron.right")
+                    SettingsRow(symbol: "chevron.left.forwardslash.chevron.right", tint: .black,
+                                title: "GitHub repository") {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                 }
             }
         } header: {
