@@ -61,6 +61,13 @@ struct SettingsRow<Trailing: View>: View {
             Spacer(minLength: 8)
             trailing()
         }
+        // WITHOUT THIS, HALF THE ROW IS NOT A BUTTON.
+        //
+        // A row is icon, text, a Spacer and a value. SwiftUI hit-tests the rendered content, and
+        // a Spacer renders nothing — so tapping anywhere between the label and the right edge,
+        // which is most of the row, hit nothing at all. Buttons appeared broken because the
+        // obvious place to press was the dead part.
+        .contentShape(Rectangle())
     }
 }
 

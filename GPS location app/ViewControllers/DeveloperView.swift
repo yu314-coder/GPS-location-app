@@ -97,20 +97,32 @@ struct DeveloperView: View {
                             shareItems = [log.url]
                             showingShare = true
                         } label: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(log.url.lastPathComponent)
-                                    .font(.footnote)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                HStack(spacing: 8) {
-                                    Text(byteFormatter.string(fromByteCount: Int64(log.size)))
-                                    Text(log.modified, style: .date)
-                                    Text(log.modified, style: .time)
+                            HStack(spacing: 12) {
+                                SettingsIcon(symbol: log.url.lastPathComponent.contains("raw50hz")
+                                             ? "waveform" : "list.bullet.rectangle",
+                                             tint: log.url.lastPathComponent.hasPrefix("watch_")
+                                             ? .purple : .blue)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(log.url.lastPathComponent)
+                                        .font(.footnote)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    HStack(spacing: 8) {
+                                        Text(byteFormatter.string(fromByteCount: Int64(log.size)))
+                                        Text(log.modified, style: .date)
+                                        Text(log.modified, style: .time)
+                                    }
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
                                 }
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                                Spacer(minLength: 8)
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                     Button {
                         shareItems = logs.map(\.url)

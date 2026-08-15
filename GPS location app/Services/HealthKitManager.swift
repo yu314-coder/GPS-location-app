@@ -58,6 +58,26 @@ class HealthKitManager: ObservableObject {
 
     /// Check if HealthKit is already authorized without requesting permission
     /// IMPORTANT: Only call this ONCE at app startup to avoid overwhelming HealthKit
+    /// Authorisation as a label, computed on the spot rather than via the published flag.
+    ///
+    /// `checkAuthorizationStatus()` updates `isAuthorized` on the main queue ASYNCHRONOUSLY, and
+    /// the settings screen read the flag on the line after calling it — so it always rendered
+    /// the PREVIOUS value, which on first appearance is false. The screen said "Not Authorized"
+    /// while Health was fully authorised. This is synchronous, so there is nothing to race.
+    ///
+    /// Note that HealthKit only ever reports SHARING (write) permission. Read permission is
+    /// deliberately unknowable — Apple hides it so an app cannot infer what a person declined to
+    /// share — so this reports what can be answered, and says so.
+    var writeAuthorizationLabel: String {
+        guard HKHealthStore.isHealthDataAvailable() else { return "Unavailable" }
+        switch healthStore.authorizationStatus(for: HKObjectType.workoutType()) {
+        case .sharingAuthorized: return "Authorized"
+        case .sharingDenied: return "Denied"
+        case .notDetermined: return "Not Determined"
+        @unknown default: return "Unknown"
+        }
+    }
+
     func checkAuthorizationStatus() {
         guard HKHealthStore.isHealthDataAvailable() else {
             DispatchQueue.main.async {

@@ -58,7 +58,9 @@ struct SettingsView: View {
                 StatusPill(text: locationPermissionStatus, tint: permissionColor(locationPermissionStatus))
             }
             SettingsRow(symbol: "heart.fill", tint: .red, title: "Apple Health") {
-                StatusPill(text: healthKitPermissionStatus, tint: permissionColor(healthKitPermissionStatus))
+                // Computed here, not copied from an async callback — see writeAuthorizationLabel.
+                let label = healthKitManager.writeAuthorizationLabel
+                StatusPill(text: label, tint: permissionColor(label))
             }
             Button {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -212,7 +214,7 @@ struct SettingsView: View {
                 }
             }
 
-            if let url = URL(string: "https://github.com") {
+            if let url = URL(string: "https://github.com/yu314-coder") {
                 Link(destination: url) {
                     SettingsRow(symbol: "chevron.left.forwardslash.chevron.right", tint: .black,
                                 title: "GitHub repository") {
@@ -320,7 +322,7 @@ struct SettingsView: View {
         // Update HealthKit Permission Status
         // Check current authorization status without requesting permission
         healthKitManager.checkAuthorizationStatus()
-        healthKitPermissionStatus = healthKitManager.isAuthorized ? "Authorized" : "Not Authorized"
+        healthKitPermissionStatus = healthKitManager.writeAuthorizationLabel
     }
 
 
