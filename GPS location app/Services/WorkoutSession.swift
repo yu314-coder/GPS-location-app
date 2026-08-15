@@ -3205,11 +3205,13 @@ class WorkoutSession: ObservableObject {
             }
             distance = estimatedFallbackSpeed * dt
             let modelAnswered = learnedSpeed.estimate(airborne: isAirborneForEstimation) != nil
+            let warmup = modelAnswered && learnedSpeed.lastEstimateUsedWarmup
             if modelAnswered {
                 lastLearnedAnswer = learned
                 lastLearnedAnswerTime = Date()
             }
-            sourceTag = stoppedOnGround ? "LEARN(stopped)" : (modelAnswered ? "LEARN" : "LEARN(held)")
+            sourceTag = stoppedOnGround ? "LEARN(stopped)"
+                : (modelAnswered ? (warmup ? "LEARN(warmup)" : "LEARN") : "LEARN(held)")
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
@@ -3275,10 +3277,22 @@ class WorkoutSession: ObservableObject {
             // held near 1,800–2,400 m by pressurisation whatever the aircraft's real height.
             if flightPhase.isAirborne {
                 sourceTag = "HOLD(\(flightPhase.phase.rawValue))"
+            } else if held <= 0.5, !learnedSpeed.isUsable {
+                // NOT A STOP - NOTHING TO SAY AT ALL.
+                //
+                // Engaging the mode while stationary holds zero, and with an empty model there
+                // is no second opinion. A 16 km drive logged 358 ticks of "HOLD(stopped)" while
+                // GPS read up to 69 km/h: the label claimed the stop detector had confirmed
+                // something, when in truth the reading was zero because nothing had ever been
+                // measured. Those need opposite fixes and must never share a name.
+                //
+                // The old label for this asked the user to set a speed. Velocity Mode has to
+                // work with no input during a workout, so it says what it knows instead.
+                sourceTag = "HOLD(no evidence)"
             } else if stoppedOnGround {
                 sourceTag = "HOLD(stopped)"
             } else {
-                sourceTag = held > 0.5 ? "HOLD" : "HOLD(0 — set a speed)"
+                sourceTag = "HOLD"
             }
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)

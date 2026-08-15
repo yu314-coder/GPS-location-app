@@ -2477,7 +2477,8 @@ class WorkoutSession: NSObject, ObservableObject {
                     lastLearnedAnswerTime = Date()
                 }
                 accelSource = stoppedOnGround ? "LEARN(stopped)"
-                    : (learnedSpeed.estimate(airborne: false) == nil ? "LEARN(held)" : "LEARN")
+                    : (learnedSpeed.estimate(airborne: false) == nil ? "LEARN(held)"
+                       : (learnedSpeed.lastEstimateUsedWarmup ? "LEARN(warmup)" : "LEARN"))
             } else if let held = lastMeasuredVehicleSpeedWatch {
                 // A HELD SPEED MUST STILL OBEY THE ACCELEROMETER (identical to the iPhone).
                 // Freezing it meant braking to a stop kept reporting the pre-stop speed and

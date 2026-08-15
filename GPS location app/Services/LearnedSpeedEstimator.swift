@@ -145,6 +145,9 @@ final class LearnedSpeedEstimator {
         /// altitude means fast. No single nearest-neighbour lookup can hold both, so the lookup
         /// is partitioned and only ever searches the regime it is currently in.
         var airborne: Bool = false
+        /// When this was recorded. Only set while quarantined, and only used to decide when a
+        /// held-back observation has aged far enough to be safe to answer from.
+        var t: Date? = nil
     }
     private var observations: [Observation] = []
     /// Bounded so a long history cannot grow without limit or slow the lookup. When full, the
@@ -181,6 +184,32 @@ final class LearnedSpeedEstimator {
     /// applied". Those need opposite fixes and look identical from the outside.
     var calibration: (slope: Double, intercept: Double) { (calibrationSlope, calibrationIntercept) }
     var quarantinedCount: Int { quarantined.count }
+    /// Set by the last estimate() call: true when the answer came from within-session evidence
+    /// rather than the store built on previous trips. The distinction has to reach the log,
+    /// because only the second kind predicts what happens when GPS has been gone for hours.
+    private(set) var lastEstimateUsedWarmup = false
+
+    /// How stale a quarantined observation must be before the estimate may see it.
+    ///
+    /// Quarantine exists to stop the model answering from the fix it was just handed - the
+    /// window is 4 s, so an observation from the same window IS the GPS speed. Aging past that
+    /// removes the leak: at 120 s the two windows share no samples, and an answer built from
+    /// evidence two minutes old is a prediction, not an echo.
+    ///
+    /// This only ever applies when the committed store cannot answer at all. A warm model
+    /// ignores the quarantine entirely and the ground test stays honest.
+    private let WARMUP_AGE: TimeInterval = 120
+
+    private func warmupPool(airborne: Bool) -> [Observation] {
+        let cutoff = Date().addingTimeInterval(-WARMUP_AGE)
+        return quarantined.filter { $0.airborne == airborne && ($0.t ?? .distantFuture) <= cutoff }
+    }
+
+    private func poolIsUsable(_ pool: [Observation]) -> Bool {
+        guard pool.count >= MIN_OBSERVATIONS else { return false }
+        let speeds = pool.map(\.speed)
+        return (speeds.max()! - speeds.min()!) >= MIN_SPEED_SPREAD
+    }
 
     /// Observations recorded while Velocity Mode was forced. Held apart from the searchable
     /// store until the workout ends — see learn(gpsSpeed:quarantined:).
@@ -203,7 +232,8 @@ final class LearnedSpeedEstimator {
     func learn(gpsSpeed: Double, quarantined isQuarantined: Bool = false, airborne: Bool = false) {
         guard gpsSpeed >= 0, let f = currentFeatures() else { return }
         updateNormalisation(f)
-        let observation = Observation(f: f, speed: gpsSpeed, airborne: airborne)
+        let observation = Observation(f: f, speed: gpsSpeed, airborne: airborne,
+                                      t: isQuarantined ? Date() : nil)
         if isQuarantined {
             if quarantined.count < capacity { quarantined.append(observation) }
             return
@@ -234,7 +264,7 @@ final class LearnedSpeedEstimator {
     func commitQuarantinedObservations() {
         guard !quarantined.isEmpty else { return }
         let count = quarantined.count
-        for o in quarantined { insert(o) }
+        for var o in quarantined { o.t = nil; insert(o) }
         quarantined.removeAll()
         observationsAtLastCalibration = 0
         recalibrate()
@@ -267,10 +297,32 @@ final class LearnedSpeedEstimator {
     /// Speed in m/s from the closest signatures seen before, or nil when there is not enough
     /// evidence. Distance-weighted so a near-exact match dominates a merely similar one.
     func estimate(airborne: Bool = false) -> Double? {
-        guard isUsable(airborne: airborne), let f = currentFeatures(), featureMean.count == f.count else { return nil }
+        lastEstimateUsedWarmup = false
+        guard let f = currentFeatures(), featureMean.count == f.count else { return nil }
+
+        // COLD START MUST NOT MEAN NO ROUTE.
+        //
+        // A 16 km drive recorded ZERO metres: every tick fell through to HOLD, because the
+        // store had just been reset and everything this session taught was quarantined until
+        // the workout ended. The quarantine reasoning was right and its consequence was not -
+        // an empty model made the whole workout unrecordable, which is a worse failure than
+        // the leak it was guarding against.
+        //
+        // So the store answers whenever it can, exactly as before. Only when it cannot does
+        // the aged quarantine stand in, and the log says which happened.
+        let pool: [Observation]
+        if isUsable(airborne: airborne) {
+            pool = observations.filter { $0.airborne == airborne }
+        } else {
+            let warm = warmupPool(airborne: airborne)
+            guard poolIsUsable(warm) else { return nil }
+            pool = warm
+            lastEstimateUsedWarmup = true
+        }
+
         var best = [(d: Double, s: Double)]()
         best.reserveCapacity(K + 1)
-        for o in observations where o.airborne == airborne {
+        for o in pool {
             var d = 0.0
             for i in 0..<f.count {
                 let sd = max(featureVar[i].squareRoot(), 1e-6)
