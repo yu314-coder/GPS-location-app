@@ -32,6 +32,16 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let extrapolating: Bool
         // Raw context
         let handlingRotation: Double
+        /// NO USABLE HEADING.
+        ///
+        /// Set when the walking axis has been refused continuously while stepping AND the device
+        /// is rotating freely in the hand. On a 3-minute walk that produced a route of the right
+        /// LENGTH (165 m, correct) in entirely the wrong SHAPE — ending 73 m from the start when
+        /// the true route was an out-and-back returning to it - both conditions held for the
+        /// whole session and nothing recorded that. The route was drawn with the same confidence
+        /// as any other. This column is what distinguishes "the heading was wrong" from "the app
+        /// never had one".
+        let headingUnreliable: Bool
         /// Resolved walking axis and the smoothed skew vote that decides which of its two ends
         /// is forward. Recorded because that single binary choice is what turns a whole route
         /// 180°, and it was previously invisible in every log.
@@ -134,21 +144,21 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         var roll: Double = 0
         var pitch: Double = 0
         var yaw: Double = 0
-        var headingAccuracy: Double = -1
+        var motionHeading: Double = -1
     }
     /// Latest unprocessed motion, stamped onto the next raw sample.
     private var pendingDeviceMotion: (ax: Double, ay: Double, az: Double,
                                       gx: Double, gy: Double, gz: Double,
                                       rx: Double, ry: Double, rz: Double,
                                       roll: Double, pitch: Double, yaw: Double,
-                                      headingAccuracy: Double)?
+                                      motionHeading: Double)?
 
     func noteDeviceMotion(accelX: Double, accelY: Double, accelZ: Double,
                           gravityX: Double, gravityY: Double, gravityZ: Double,
                           rotationX: Double, rotationY: Double, rotationZ: Double,
-                          roll: Double, pitch: Double, yaw: Double, headingAccuracy: Double) {
+                          roll: Double, pitch: Double, yaw: Double, motionHeading: Double) {
         pendingDeviceMotion = (accelX, accelY, accelZ, gravityX, gravityY, gravityZ,
-                               rotationX, rotationY, rotationZ, roll, pitch, yaw, headingAccuracy)
+                               rotationX, rotationY, rotationZ, roll, pitch, yaw, motionHeading)
     }
     private var raw: [RawSample] = []
     /// STREAMED TO DISK, NOT HELD IN MEMORY.
@@ -191,7 +201,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             sample.gravityX = m.gx; sample.gravityY = m.gy; sample.gravityZ = m.gz
             sample.rotationX = m.rx; sample.rotationY = m.ry; sample.rotationZ = m.rz
             sample.roll = m.roll; sample.pitch = m.pitch; sample.yaw = m.yaw
-            sample.headingAccuracy = m.headingAccuracy
+            sample.motionHeading = m.motionHeading
         }
         raw.append(sample)
         if raw.count >= rawFlushThreshold { flushRawToDisk() }
@@ -204,7 +214,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += ",dev_accel_x,dev_accel_y,dev_accel_z"
         out += ",gravity_x,gravity_y,gravity_z"
         out += ",rot_x,rot_y,rot_z"
-        out += ",att_roll,att_pitch,att_yaw,heading_accuracy\n"
+        out += ",att_roll,att_pitch,att_yaw,motion_heading_deg\n"
         return out
     }
 
@@ -239,7 +249,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             chunk += String(format: ",%.6f,%.6f,%.6f", s.deviceAccelX, s.deviceAccelY, s.deviceAccelZ)
             chunk += String(format: ",%.6f,%.6f,%.6f", s.gravityX, s.gravityY, s.gravityZ)
             chunk += String(format: ",%.6f,%.6f,%.6f", s.rotationX, s.rotationY, s.rotationZ)
-            chunk += String(format: ",%.6f,%.6f,%.6f,%.2f\n", s.roll, s.pitch, s.yaw, s.headingAccuracy)
+            chunk += String(format: ",%.6f,%.6f,%.6f,%.2f\n", s.roll, s.pitch, s.yaw, s.motionHeading)
         }
         if let data = chunk.data(using: .utf8) {
             rawFileHandle?.write(data)
@@ -388,7 +398,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "heading_deg,compass_deg,offset_deg,"
         out += "vib_feature_u,fit_p0,fit_p1,fit_p2,cal_min_u,cal_max_u,"
         out += "cal_min_speed_ms,cal_max_speed_ms,cal_samples,extrapolating,"
-        out += "handling_rot_rads,walk_axis_deg,walk_skew_ema,walk_axis_raw_deg,walk_axis_gated,"
+        out += "handling_rot_rads,heading_unreliable,walk_axis_deg,walk_skew_ema,walk_axis_raw_deg,walk_axis_gated,"
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m\n"
@@ -406,7 +416,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.minCalU) + "," + Self.fmt(r.maxCalU) + ","
             out += Self.fmt(r.minCalSpeed) + "," + Self.fmt(r.maxCalSpeed) + ","
             out += Self.fmt(r.calSamples) + ",\(r.extrapolating ? 1 : 0),"
-            out += Self.fmt(r.handlingRotation) + ","
+            out += Self.fmt(r.handlingRotation) + ",\(r.headingUnreliable ? 1 : 0),"
             out += Self.fmt(r.walkAxis) + "," + Self.fmt(r.walkSkew) + ","
             out += Self.fmt(r.walkAxisRaw) + "," + Self.fmt(r.walkAxisGated) + ","
             out += Self.fmt(r.learnObs) + "," + Self.fmt(r.learnMaxKmh) + "," + Self.fmt(r.learnSlope) + ","

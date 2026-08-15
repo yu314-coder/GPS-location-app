@@ -375,6 +375,17 @@ class WorkoutSession: ObservableObject {
     private let AXIS_STABILITY_WINDOW: TimeInterval = 12.0
     private let AXIS_STABILITY_TOLERANCE: Double = 30.0
     private var axisOffsetHistory: [(t: Date, value: Double)] = []
+    /// When the walking axis was last accepted. Used only to notice that it has not been
+    /// accepted for a long time, which is a state the logs previously could not express.
+    private var lastAxisAcceptedTime: Date?
+    private var axisStarvationSince: Date?
+    /// Sustained free rotation of the device, smoothed. A phone swinging in a hand rotates at
+    /// ~1.5 rad/s continuously while walking; one held or pocketed does not.
+    private var handlingRotationEMA: Double = 0
+    /// True when there is no source left that can say which way the body is going: the axis has
+    /// been refused throughout, and the device is turning freely enough that neither the compass
+    /// nor the axis window can track the body through it.
+    private var headingIsUnreliable = false
 
     /// Wrap to (−180, 180]. The accumulator needs this; nothing else was doing it.
     private func normalizedSignedAngle(_ degrees: Double) -> Double {
@@ -1259,7 +1270,7 @@ class WorkoutSession: ObservableObject {
                 rotationX: motion.rotationRate.x, rotationY: motion.rotationRate.y,
                 rotationZ: motion.rotationRate.z,
                 roll: motion.attitude.roll, pitch: motion.attitude.pitch, yaw: motion.attitude.yaw,
-                headingAccuracy: motion.heading)
+                motionHeading: motion.heading)
         }
         vibrationSpeed.reset()
         learnedSpeed.resetWindow()
@@ -2849,6 +2860,17 @@ class WorkoutSession: ObservableObject {
             // recorded.
             lastRawWalkAxis = axisThisTick
             axisWasGated = !(axisAgreesWithCompass)
+            if axisAgreesWithCompass {
+                lastAxisAcceptedTime = now
+                axisStarvationSince = nil
+            } else if axisStarvationSince == nil {
+                axisStarvationSince = now
+            }
+            handlingRotationEMA += 0.1 * (handlingRotationLevel - handlingRotationEMA)
+            // 45 s without an accepted axis is well past any ordinary gap; 0.8 rad/s sustained
+            // is a device being turned in the hand rather than carried steadily.
+            let axisStarved = now.timeIntervalSince(axisStarvationSince ?? now) > 45
+            headingIsUnreliable = axisStarved && handlingRotationEMA > 0.8 && pedometerIsCounting
             lastResolvedWalkAxis = nil
             if !turningNow, !compassIsDisturbed, pedometerIsCounting, axisAgreesWithCompass,
                let axis = axisThisTick {
@@ -3471,6 +3493,7 @@ class WorkoutSession: ObservableObject {
             calSamples: vd.samples,
             extrapolating: vd.isExtrapolating,
             handlingRotation: handlingRotationLevel,
+            headingUnreliable: headingIsUnreliable,
             walkAxis: lastResolvedWalkAxis,
             walkSkew: walkingSkewEMAValid ? walkingSkewEMA : nil,
             walkAxisRaw: lastRawWalkAxis,
