@@ -26,6 +26,19 @@ class LocationManager: NSObject, ObservableObject {
     @Published var currentYaw: Double? // degrees
     @Published var currentRotationRate: Double? // rad/s magnitude
     @Published var currentCompassHeading: Double? // degrees
+    /// CORE MOTION'S OWN HEADING, WHICH KEEPS WORKING IN THE BACKGROUND.
+    ///
+    /// CLLocationManager suspends heading updates when the app is not in the foreground, so on
+    /// any real drive - phone pocketed, screen off - didUpdateHeading is never called and
+    /// currentCompassHeading stays nil for the whole workout. Measured on a 24-minute drive:
+    /// CLHeading present on 0 of 1450 ticks, so the dead-reckoned heading had no absolute datum
+    /// at all and free-ran on the gyro to a median error of 116 deg.
+    ///
+    /// CMDeviceMotion.heading comes from the same magnetometer through the same attitude filter
+    /// and is delivered whenever device motion is - which is continuously, in the background.
+    /// On that same drive it was present for 100% of samples and, after removing a constant
+    /// carry offset, tracked the GPS course to a median of 7 deg with 85% inside 45 deg.
+    @Published var currentMotionHeading: Double? // degrees, true north
     @Published var currentMotionHorizontalAcceleration: Double? // in m/s², gravity removed
     @Published var currentMotionForwardAcceleration: Double? // in m/s² along current travel direction
     @Published var currentMotionLateralAcceleration: Double? // in m/s² sideways to current travel direction
@@ -766,6 +779,14 @@ class LocationManager: NSObject, ObservableObject {
             self.currentMotionForwardAcceleration = projectedAcceleration.forward
             self.currentMotionLateralAcceleration = projectedAcceleration.lateral
             self.currentMotionDirectionDegrees = movementDirection
+            // heading is -1 when the attitude filter has no magnetic lock yet. Convert the
+            // magnetic reference to true north the same way the rest of the frame is converted.
+            if motion.heading >= 0 {
+                var h = motion.heading
+                if self.motionReferenceFrameIsAbsolute { h += self.magneticDeclinationDegrees }
+                if h < 0 { h += 360 } else if h >= 360 { h -= 360 }
+                self.currentMotionHeading = h
+            }
             // Feed the inertial dead-reckoning integrator at the sensor rate. dt MUST come
             // from the sample timestamps, not from deviceMotionUpdateInterval: that property
             // is the REQUESTED rate, delivery jitters around it, and setHighRateMotion flips
@@ -822,6 +843,7 @@ class LocationManager: NSObject, ObservableObject {
             self?.currentYaw = nil
             self?.currentRotationRate = nil
             self?.currentCompassHeading = nil
+            self?.currentMotionHeading = nil
             self?.currentMotionHorizontalAcceleration = nil
             self?.currentMotionForwardAcceleration = nil
             self?.currentMotionLateralAcceleration = nil

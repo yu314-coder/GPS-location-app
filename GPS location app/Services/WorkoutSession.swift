@@ -269,6 +269,16 @@ class WorkoutSession: ObservableObject {
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
     /// Previous GPS fix used for the misalignment bearing, so travel direction can be measured
     /// from position change when the course field is unusable (i.e. at walking pace).
+    /// The absolute heading datum, from whichever source can supply one.
+    ///
+    /// CLHeading first - it is the calibrated one, and it reports its own accuracy so a
+    /// disturbed reading can be refused. But it is only delivered in the foreground, so on a
+    /// pocketed drive it never arrives at all and the alternative is not a worse datum, it is
+    /// NO datum and an unbounded gyro drift. Core Motion's heading is the same magnetometer
+    /// seen through the attitude filter, and it keeps being delivered in the background.
+    private var absoluteHeadingDatum: Double? {
+        locationManager.currentCompassHeading ?? locationManager.currentMotionHeading
+    }
     private var lastMisalignmentFix: FlightLocation?
     private var lastCompassReadingForCheck: Double?
     /// How far the compass may disagree with the gyro over one tick before it is treated as
@@ -2366,7 +2376,7 @@ class WorkoutSession: ObservableObject {
 
     private func learnCompassMisalignment(from location: FlightLocation) {
         guard location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20,
-              let compass = locationManager.currentCompassHeading else { return }
+              let compass = absoluteHeadingDatum else { return }
 
         // TRAVEL DIRECTION, from whichever source can actually supply it.
         //
@@ -2791,7 +2801,7 @@ class WorkoutSession: ObservableObject {
             // be allowed to drag the heading. The gyro alone carries the datum for those
             // seconds, which is exactly what it is good at.
             // (declared above the block so the always-on datum can see it)
-            if let compass = locationManager.currentCompassHeading {
+            if let compass = absoluteHeadingDatum {
                 if let previous = lastCompassReadingForCheck, let gyroTurn = gyroTurnThisTick {
                     var dCompass = compass - previous
                     if dCompass > 180 { dCompass -= 360 } else if dCompass < -180 { dCompass += 360 }
@@ -2861,7 +2871,7 @@ class WorkoutSession: ObservableObject {
             // forward/back vote, wanders. So require the difference to have been consistent for
             // a sustained run before it is allowed to teach anything.
             var axisAgreesWithCompass = false
-            if let axisNow = axisThisTick, let compassNow = locationManager.currentCompassHeading {
+            if let axisNow = axisThisTick, let compassNow = absoluteHeadingDatum {
                 let difference = normalizedSignedAngle(axisNow - compassNow)
                 axisOffsetHistory.append((now, difference))
                 axisOffsetHistory.removeAll { now.timeIntervalSince($0.t) > AXIS_STABILITY_WINDOW * 1.5 }
@@ -2914,7 +2924,7 @@ class WorkoutSession: ObservableObject {
                 // device-orientation error this mode had to avoid. The PCA walking axis is a
                 // true measurement of body travel, so their difference IS the misalignment,
                 // and it is what makes the compass usable as an absolute datum.
-                if let compass = locationManager.currentCompassHeading {
+                if let compass = absoluteHeadingDatum {
                     var offset = target - compass
                     if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
                     if let existing = compassMisalignment {
@@ -2979,7 +2989,7 @@ class WorkoutSession: ObservableObject {
             // own transient — but the gyro cross-check now tests that directly, and far better,
             // by comparing the compass against the rotation actually measured. Keeping both
             // meant a pocketed phone was denied its only absolute reference while walking.
-            if !compassIsDisturbed, let compass = locationManager.currentCompassHeading {
+            if !compassIsDisturbed, let compass = absoluteHeadingDatum {
                 let (misalignment, gain) = effectiveCompassMisalignment
                 // Target = where the phone points PLUS how the body is offset from it.
                 let target = normalizedHeading(compass + misalignment)
@@ -3006,7 +3016,7 @@ class WorkoutSession: ObservableObject {
         // a systematic −20 to −45° bias, understating every turn — the pull toward a compass
         // that was wrong, at twice the weight it was meant to have.
         if !compassIsDisturbed, !compassCorrectionAppliedThisTick,
-           let compass = locationManager.currentCompassHeading {
+           let compass = absoluteHeadingDatum {
             let (misalignment, gain) = effectiveCompassMisalignment
             let target = normalizedHeading(compass + misalignment)
             var err = target - motionHeadingDegrees
@@ -3033,7 +3043,7 @@ class WorkoutSession: ObservableObject {
                 // vehicle — especially an aircraft — the magnetometer reads the metal shell
                 // and local EMI, not the heading, so course-over-ground is far more reliable.
                 anchor.flatMap { validCourse($0.course) }
-                    ?? locationManager.currentCompassHeading
+                    ?? absoluteHeadingDatum
                     ?? locationManager.currentMotionDirectionDegrees
                     ?? 0.0
               )
@@ -3445,7 +3455,7 @@ class WorkoutSession: ObservableObject {
         if motionPermissionDenied {
             sourceTag = "DR(MOTION PERMISSION OFF)"
         }
-        let compassText = locationManager.currentCompassHeading.map { String(format: "%.0f", $0) } ?? "--"
+        let compassText = absoluteHeadingDatum.map { String(format: "%.0f", $0) } ?? "--"
         // Show the live activity classification. Its state decides whether ZUPT may zero the
         // speed, so when a reading looks wrong this says immediately whether Apple thinks you
         // are stationary, driving, or walking.
@@ -3507,7 +3517,7 @@ class WorkoutSession: ObservableObject {
             reportedSpeed: estimatedFallbackSpeed,
             distanceAdded: distance,
             heading: headingDegrees,
-            compass: locationManager.currentCompassHeading,
+            compass: absoluteHeadingDatum,
             offset: compassMisalignment,
             feature: vd.feature,
             p0: vd.p0, p1: vd.p1, p2: vd.p2,
@@ -3601,7 +3611,7 @@ class WorkoutSession: ObservableObject {
         // the true heading is known (see correctUntrustedHeadingPrefix).
         let measuredCourse = anchor.flatMap { validCourse($0.course) }
         let course = measuredCourse
-            ?? locationManager.currentCompassHeading
+            ?? absoluteHeadingDatum
             ?? locationManager.currentMotionDirectionDegrees
             ?? 0.0
         headingSeedWasMeasured = (measuredCourse != nil)
@@ -4040,7 +4050,7 @@ class WorkoutSession: ObservableObject {
             forwardAcceleration: locationManager.currentMotionForwardAcceleration,
             lateralAcceleration: locationManager.currentMotionLateralAcceleration,
             deviceHeading: locationManager.currentDeviceYawHeading,
-            compassHeading: locationManager.currentCompassHeading,
+            compassHeading: absoluteHeadingDatum,
             movementDirection: movementDirection ?? locationManager.currentMotionDirectionDegrees,
             pitch: locationManager.currentPitch,
             roll: locationManager.currentRoll,
