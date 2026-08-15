@@ -2463,7 +2463,7 @@ class WorkoutSession: NSObject, ObservableObject {
                now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
                 motionFallbackSpeed = relayed
                 accelSource = "iPhone-DR"
-            } else if let learned = learnedSpeed.estimate() ?? recentLearnedAnswer {
+            } else if let learned = learnedSpeed.estimate(airborne: false) ?? recentLearnedAnswer {
                 // ITS OWN LEARNED SPEED. Ranked below the iPhone's estimate — the phone sees
                 // steadier motion than a wrist and runs the same model against more evidence —
                 // but above a frozen hold, which cannot follow a vehicle that changes speed.
@@ -2472,12 +2472,12 @@ class WorkoutSession: NSObject, ObservableObject {
                     && corrected < VEHICLE_STOP_CONFIRM_SPEED
                     && pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW
                 motionFallbackSpeed = stoppedOnGround ? 0 : corrected
-                if learnedSpeed.estimate() != nil {
+                if learnedSpeed.estimate(airborne: false) != nil {
                     lastLearnedAnswer = learned
                     lastLearnedAnswerTime = Date()
                 }
                 accelSource = stoppedOnGround ? "LEARN(stopped)"
-                    : (learnedSpeed.estimate() == nil ? "LEARN(held)" : "LEARN")
+                    : (learnedSpeed.estimate(airborne: false) == nil ? "LEARN(held)" : "LEARN")
             } else if let held = lastMeasuredVehicleSpeedWatch {
                 // A HELD SPEED MUST STILL OBEY THE ACCELEROMETER (identical to the iPhone).
                 // Freezing it meant braking to a stop kept reporting the pre-stop speed and

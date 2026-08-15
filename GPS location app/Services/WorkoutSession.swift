@@ -3160,8 +3160,8 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if vehicleContextIsCurrent, !deviceIsBeingHandled, !isAirborneForEstimation,
-                  let learned = learnedSpeed.estimate() ?? recentLearnedAnswer {
+        } else if vehicleContextIsCurrent, !deviceIsBeingHandled,
+                  let learned = learnedSpeed.estimate(airborne: isAirborneForEstimation) ?? recentLearnedAnswer {
             // NOT AIRBORNE. The learned model is a GROUND-VEHICLE model — every observation in
             // it was labelled by GPS on a road — and in the air it does not decline, it answers
             // confidently and wrongly. Replayed through the real estimator with a synthetic
@@ -3204,12 +3204,12 @@ class WorkoutSession: ObservableObject {
                 estimatedFallbackSpeed += (learned - estimatedFallbackSpeed) * blend
             }
             distance = estimatedFallbackSpeed * dt
-            if learnedSpeed.estimate() != nil {
+            let modelAnswered = learnedSpeed.estimate(airborne: isAirborneForEstimation) != nil
+            if modelAnswered {
                 lastLearnedAnswer = learned
                 lastLearnedAnswerTime = Date()
             }
-            sourceTag = stoppedOnGround ? "LEARN(stopped)"
-                : (learnedSpeed.estimate() == nil ? "LEARN(held)" : "LEARN")
+            sourceTag = stoppedOnGround ? "LEARN(stopped)" : (modelAnswered ? "LEARN" : "LEARN(held)")
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
@@ -4179,7 +4179,8 @@ class WorkoutSession: ObservableObject {
             if location.speed >= 0, location.horizontalAccuracy >= 0,
                location.horizontalAccuracy < 35.0,
                vehicleContextIsCurrent, !deviceIsBeingHandled {
-                learnedSpeed.learn(gpsSpeed: location.speed, quarantined: true)
+                learnedSpeed.learn(gpsSpeed: location.speed, quarantined: true,
+                                   airborne: isAirborneForEstimation)
             }
 
             // DELIBERATELY NOT UPDATING lastMeasuredVehicleSpeed HERE.
@@ -4380,7 +4381,7 @@ class WorkoutSession: ObservableObject {
             // A fresh measurement supersedes everything integrated since the last one.
             heldSpeedCorrection = 0
             if vehicleContextIsCurrent, !deviceIsBeingHandled {
-                learnedSpeed.learn(gpsSpeed: location.speed)
+                learnedSpeed.learn(gpsSpeed: location.speed, airborne: isAirborneForEstimation)
             }
         }
         // Same vehicle-evidence gate as the Force-Velocity calibration call above — see the

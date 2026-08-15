@@ -132,6 +132,19 @@ final class LearnedSpeedEstimator {
     private struct Observation: Codable {
         let f: [Double]
         let speed: Double
+        /// AIR AND GROUND ARE SEPARATE MEMORIES.
+        ///
+        /// One store for both is wrong in BOTH directions, and each direction has now been
+        /// measured. A ground-only model answering in the air reported 19 km/h at a 900 km/h
+        /// cruise, because cruise is quieter than taxiing and the slowest thing it knew was the
+        /// closest match. Then the flight's own observations went into the same store, and on the
+        /// next car journey it reported a mean of 337 km/h against a true 30 - peaking at 580 -
+        /// because a smooth road is also quiet and now matched a cruise signature.
+        ///
+        /// The mistake is treating "quiet" as one thing. Quiet in a car means slow; quiet at
+        /// altitude means fast. No single nearest-neighbour lookup can hold both, so the lookup
+        /// is partitioned and only ever searches the regime it is currently in.
+        var airborne: Bool = false
     }
     private var observations: [Observation] = []
     /// Bounded so a long history cannot grow without limit or slow the lookup. When full, the
@@ -153,12 +166,16 @@ final class LearnedSpeedEstimator {
     private let MIN_SPEED_SPREAD = 4.0
 
     var observationCount: Int { observations.count }
-    var isUsable: Bool {
-        guard observations.count >= MIN_OBSERVATIONS else { return false }
-        let speeds = observations.map(\.speed)
+    /// Judged within one regime: a store full of flight data does not make the ground model
+    /// usable, and vice versa.
+    func isUsable(airborne: Bool) -> Bool {
+        let speeds = observations.filter { $0.airborne == airborne }.map(\.speed)
+        guard speeds.count >= MIN_OBSERVATIONS else { return false }
         return (speeds.max()! - speeds.min()!) >= MIN_SPEED_SPREAD
     }
+    var isUsable: Bool { isUsable(airborne: false) || isUsable(airborne: true) }
     var maxLearnedSpeed: Double { observations.map(\.speed).max() ?? 0 }
+    var airborneObservationCount: Int { observations.filter(\.airborne).count }
     /// The compression correction currently in force, so a log can distinguish "the model has
     /// never seen this speed" from "it has, and the correction for its flattening is not being
     /// applied". Those need opposite fixes and look identical from the outside.
@@ -183,10 +200,10 @@ final class LearnedSpeedEstimator {
     /// the model needs, and forced sessions are when most driving happens here. So keep them,
     /// but out of reach — they join the searchable store when the workout ends, teaching the
     /// NEXT trip while contributing nothing to this one's estimate.
-    func learn(gpsSpeed: Double, quarantined isQuarantined: Bool = false) {
+    func learn(gpsSpeed: Double, quarantined isQuarantined: Bool = false, airborne: Bool = false) {
         guard gpsSpeed >= 0, let f = currentFeatures() else { return }
         updateNormalisation(f)
-        let observation = Observation(f: f, speed: gpsSpeed)
+        let observation = Observation(f: f, speed: gpsSpeed, airborne: airborne)
         if isQuarantined {
             if quarantined.count < capacity { quarantined.append(observation) }
             return
@@ -249,11 +266,11 @@ final class LearnedSpeedEstimator {
 
     /// Speed in m/s from the closest signatures seen before, or nil when there is not enough
     /// evidence. Distance-weighted so a near-exact match dominates a merely similar one.
-    func estimate() -> Double? {
-        guard isUsable, let f = currentFeatures(), featureMean.count == f.count else { return nil }
+    func estimate(airborne: Bool = false) -> Double? {
+        guard isUsable(airborne: airborne), let f = currentFeatures(), featureMean.count == f.count else { return nil }
         var best = [(d: Double, s: Double)]()
         best.reserveCapacity(K + 1)
-        for o in observations {
+        for o in observations where o.airborne == airborne {
             var d = 0.0
             for i in 0..<f.count {
                 let sd = max(featureVar[i].squareRoot(), 1e-6)
@@ -292,7 +309,10 @@ final class LearnedSpeedEstimator {
         var num = 0.0, den = 0.0
         for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
         guard den > 0 else { return nil }
-        return max(0, calibrated(num / den))
+        // The compression curve is fitted on GROUND observations, where there are thousands of
+        // them. Applying it to the air partition would be extrapolating a road correction into a
+        // regime it has never seen, so the air answers raw until it has enough of its own.
+        return max(0, airborne ? num / den : calibrated(num / den))
     }
 
     // MARK: - Self-calibration against its own measured bias
@@ -380,10 +400,10 @@ final class LearnedSpeedEstimator {
             // measured; and a stopped vehicle is now recognised directly rather than estimated,
             // so the correction has no reason to describe it. Measured on the drive above:
             // fitting on everything gives x1.15 and MAE 5.3, fitting on movement x1.26 and 5.0.
-            guard held.speed >= 1.5 else { index += stride; continue }
+            guard held.speed >= 1.5, !held.airborne else { index += stride; continue }
             var best = [(d: Double, s: Double)]()
             best.reserveCapacity(K)
-            for (j, o) in observations.enumerated() where j != index {
+            for (j, o) in observations.enumerated() where j != index && !o.airborne {
                 var d = 0.0
                 for i in 0..<held.f.count {
                     let sd = max(featureVar[i].squareRoot(), 1e-6)
@@ -459,7 +479,10 @@ final class LearnedSpeedEstimator {
     private static let storeURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("learned_speed_v1.json")
+        // v2: the v1 store holds flight and road observations mixed together with nothing to
+        // distinguish them, which is what produced 580 km/h on a car. It cannot be repaired
+        // after the fact, so it is abandoned rather than migrated.
+        return base.appendingPathComponent("learned_speed_v2.json")
     }()
 
     func load() {
