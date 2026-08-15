@@ -7,12 +7,18 @@
 
 import SwiftUI
 
+/// FIVE TABS, NOT SIX.
+///
+/// A sixth tab does not fit: iOS collapses anything past five into a "More" list, so Settings —
+/// which people actually use — was buried one level down behind a generic label, while a
+/// diagnostics screen held a place on the bar. The test screen has moved behind the version
+/// number with the rest of the developer tools, where it belongs, and Settings is now directly
+/// reachable.
 private enum AppTab: Int, CaseIterable, Identifiable {
     case home
     case flights
     case map
     case analysis
-    case test
     case settings
 
     var id: Int { rawValue }
@@ -23,7 +29,6 @@ private enum AppTab: Int, CaseIterable, Identifiable {
         case .flights: return "Workouts"
         case .map: return "Map"
         case .analysis: return "Analysis"
-        case .test: return "Test"
         case .settings: return "Settings"
         }
     }
@@ -34,7 +39,6 @@ private enum AppTab: Int, CaseIterable, Identifiable {
         case .flights: return "figure.run"
         case .map: return "map.fill"
         case .analysis: return "chart.xyaxis.line"
-        case .test: return "wrench.and.screwdriver"
         case .settings: return "gear"
         }
     }
@@ -123,13 +127,6 @@ struct ContentView: View {
                 }
                 .tag(AppTab.analysis)
 
-            // Test Tab
-            PermissionTestView()
-                .tabItem {
-                    Label(AppTab.test.title, systemImage: AppTab.test.icon)
-                }
-                .tag(AppTab.test)
-
             // Settings Tab
             SettingsView()
                 .tabItem {
@@ -179,8 +176,6 @@ struct ContentView: View {
             WorkoutMapView()
         case .analysis:
             AnalysisView()
-        case .test:
-            PermissionTestView()
         case .settings:
             SettingsView()
         }

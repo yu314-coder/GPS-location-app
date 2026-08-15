@@ -1,6 +1,14 @@
 import SwiftUI
 import CoreLocation
+import HealthKit
 
+/// REBUILT AS A NATIVE GROUPED FORM.
+///
+/// This was hand-drawn: stacks of VStacks, each row wrapped in its own rounded rectangle with
+/// hand-set padding. It looked approximately like a settings screen without being one, so it
+/// missed everything the real control gives you for free — correct row heights and separators,
+/// section footers that explain a setting instead of floating captions, Dynamic Type, and the
+/// press states people expect. A Form is both less code and more familiar.
 struct SettingsView: View {
     /// Developer screen unlock, persisted so it does not have to be rediscovered.
     @AppStorage("developerUnlocked") private var developerUnlocked = false
@@ -22,379 +30,193 @@ struct SettingsView: View {
 
     @StateObject private var locationManager = LocationManager()
     @ObservedObject private var healthKitManager = HealthKitManager.shared
+
     @State private var locationPermissionStatus = "Not Determined"
     @State private var healthKitPermissionStatus = "Not Determined"
-
-    // Timer to refresh permission status when view is active
-    let refreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
         navigationWrapper {
-            ScrollView {
-                VStack(spacing: 20) {
-                    // Permissions Section with Cards
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Permissions")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal)
+            Form {
+                permissionsSection
+                unitsSection
+                mapSection
+                workoutSection
+                roadAlignmentSection
+                aboutSection
+            }
+            .onAppear(perform: updatePermissionStatus)
+        }
+    }
 
-                        VStack(spacing: 12) {
-                            PermissionCard(
-                                icon: "location.fill",
-                                title: "Location Services",
-                                status: locationPermissionStatus,
-                                color: permissionColor(locationPermissionStatus),
-                                iconColor: .blue
-                            )
+    // MARK: - Sections
 
-                            PermissionCard(
-                                icon: "heart.fill",
-                                title: "HealthKit",
-                                status: healthKitPermissionStatus,
-                                color: permissionColor(healthKitPermissionStatus),
-                                iconColor: .red
-                            )
-                        }
-                        .padding(.horizontal)
-
-                        #if !os(watchOS)
-                        Button(action: {
-                            if let url = URL(string: UIApplication.openSettingsURLString) {
-                                UIApplication.shared.open(url)
-                            }
-                        }) {
-                            HStack {
-                                Image(systemName: "gear")
-                                Text("Open iOS Settings")
-                                Spacer()
-                                Image(systemName: "arrow.up.right")
-                                    .font(.caption)
-                            }
-                            .padding()
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .cornerRadius(12)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .padding(.horizontal)
-                        #endif
-                    }
-
-                    // Display Units Section
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Display Units")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal)
-
-                        VStack(spacing: 0) {
-                            SettingRow(icon: "map", title: "Distance", color: .green) {
-                                Picker("Distance", selection: $distanceUnit) {
-                                    Text("Kilometers").tag("km")
-                                    Text("Miles").tag("mi")
-                                }
-                                .pickerStyle(.menu)
-                            }
-
-                            Divider().padding(.leading, 56)
-
-                            SettingRow(icon: "speedometer", title: "Speed", color: .orange) {
-                                Picker("Speed", selection: $speedUnit) {
-                                    Text("km/h").tag("km/h")
-                                    Text("mph").tag("mph")
-                                    Text("knots").tag("knots")
-                                }
-                                .pickerStyle(.menu)
-                            }
-
-                            Divider().padding(.leading, 56)
-
-                            SettingRow(icon: "mountain.2", title: "Altitude", color: .purple) {
-                                Picker("Altitude", selection: $altitudeUnit) {
-                                    Text("Meters").tag("meters")
-                                    Text("Feet").tag("feet")
-                                }
-                                .pickerStyle(.menu)
-                            }
-                        }
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .cornerRadius(12)
-                        .padding(.horizontal)
-                    }
-
-                    // Map & Tracking Settings
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Map & Tracking")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal)
-
-                        VStack(spacing: 0) {
-                            SettingRow(icon: "map.fill", title: "Map Style", color: .blue) {
-                                Picker("Map Style", selection: $mapStyle) {
-                                    Text("Standard").tag("standard")
-                                    Text("Satellite").tag("satellite")
-                                    Text("Hybrid").tag("hybrid")
-                                }
-                                .pickerStyle(.menu)
-                            }
-
-                            Divider().padding(.leading, 56)
-
-                            SettingRow(icon: "waveform.path.ecg", title: "Kalman Filter", color: .cyan) {
-                                Picker("Sensitivity", selection: $kalmanSensitivity) {
-                                    Text("Low").tag("low")
-                                    Text("Medium").tag("medium")
-                                    Text("High").tag("high")
-                                }
-                                .pickerStyle(.menu)
-                            }
-                        }
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .cornerRadius(12)
-                        .padding(.horizontal)
-                    }
-
-                    // Workout Configuration
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Workout Settings")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal)
-
-                        VStack(spacing: 0) {
-                            SettingRow(icon: "heart.circle.fill", title: "Auto-save to HealthKit", color: .red) {
-                                Toggle("", isOn: $autoSaveToHealthKit)
-                                    .labelsHidden()
-                            }
-
-                            Divider().padding(.leading, 56)
-
-                            SettingRow(icon: "figure.run", title: "Fitness Export Type", color: .blue) {
-                                Picker("Fitness Export Type", selection: $healthKitExportType) {
-                                    Text("Auto").tag("auto")
-                                    Text("Cycling").tag("cycling")
-                                    Text("Running").tag("running")
-                                    Text("Walking").tag("walking")
-                                    Text("Hiking").tag("hiking")
-                                }
-                                .pickerStyle(.menu)
-                            }
-
-                            Divider().padding(.leading, 56)
-
-                            SettingRow(icon: "waveform.path.ecg.rectangle", title: "Track Heart Rate", color: .pink) {
-                                Toggle("", isOn: $trackHeartRate)
-                                    .labelsHidden()
-                                    .disabled(!healthKitManager.isAuthorized)
-                            }
-
-                            Divider().padding(.leading, 56)
-
-                            SettingRow(icon: "exclamationmark.triangle.fill", title: "Use Raw GPS", color: .orange) {
-                                Toggle("", isOn: $useRawGPS)
-                                    .labelsHidden()
-                            }
-                        }
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .cornerRadius(12)
-                        .padding(.horizontal)
-
-                        if useRawGPS {
-                            HStack(spacing: 8) {
-                                Image(systemName: "info.circle.fill")
-                                    .foregroundColor(.orange)
-                                Text("GPS filtering disabled - may include inaccurate data")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal, 20)
-                        }
-                    }
-
-                    // Tips Card
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Image(systemName: "lightbulb.fill")
-                                .foregroundColor(.yellow)
-                                .font(.title2)
-                            Text("Workout Tracking Tips")
-                                .font(.headline)
-                        }
-
-                        VStack(alignment: .leading, spacing: 12) {
-                            TipRow(icon: "location.fill", text: "Start outdoors or near a clear sky for better GPS reception")
-                            TipRow(icon: "antenna.radiowaves.left.and.right", text: "Keep GPS enabled even in Airplane Mode")
-                            TipRow(icon: "battery.100", text: "Ensure your device is fully charged before long workouts")
-                            TipRow(icon: "wifi", text: "Wi-Fi and cellular can improve GPS accuracy")
-                        }
-                    }
-                    .padding()
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .cornerRadius(12)
-                    .padding(.horizontal)
-
-                    // Road Alignment (Map Matching) Section
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Road Alignment")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal)
-
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
-                                    .foregroundColor(.blue)
-                                Text("Stadia Maps API Key")
-                                    .fontWeight(.medium)
-                            }
-
-                            SecureField("Paste your API key", text: $mapMatchingAPIKey)
-                                .textInputAutocapitalization(.never)
-                                .disableAutocorrection(true)
-                                .padding(10)
-                                .background(Color(.tertiarySystemGroupedBackground))
-                                .cornerRadius(8)
-
-                            Text("Enables true road map-matching (Valhalla HMM) on the Map tab. Get a free key at client.stadiamaps.com. Without a key, the app falls back to Apple Maps snapping.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-
-                            if let url = URL(string: "https://client.stadiamaps.com") {
-                                Link(destination: url) {
-                                    HStack(spacing: 4) {
-                                        Text("Get a free API key")
-                                        Image(systemName: "arrow.up.right")
-                                            .font(.caption)
-                                    }
-                                    .font(.subheadline)
-                                    .foregroundColor(.blue)
-                                }
-                            }
-                        }
-                        .padding()
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .cornerRadius(12)
-                        .padding(.horizontal)
-                    }
-
-                    // About Section
-                    VStack(spacing: 12) {
-                        // THE REAL VERSION, NOT A LITERAL.
-                        //
-                        // This read "1.0.0" while the app was on build 134. Every diagnosis in
-                        // this project starts with which build produced a recording — one log
-                        // was misread for a whole exchange because the build was unknown — so a
-                        // version string that cannot go stale is worth more than it looks.
-                        //
-                        // Five taps opens the developer screen, the way Android does it: out of
-                        // the way for normal use, reachable without a Mac when a recording needs
-                        // rescuing.
-                        Button {
-                            registerVersionTap()
-                        } label: {
-                            HStack {
-                                Text("Version")
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text(Bundle.appVersionDisplay)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.primary)
-                                if developerUnlocked {
-                                    Image(systemName: "hammer.fill")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .padding()
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .cornerRadius(12)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-
-                        if let hint = versionTapHint {
-                            Text(hint)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 4)
-                                .transition(.opacity)
-                        }
-
-                        if developerUnlocked {
-                            NavigationLink(destination: DeveloperView()) {
-                                HStack {
-                                    Image(systemName: "hammer")
-                                    Text("Developer")
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding()
-                                .background(Color(.secondarySystemGroupedBackground))
-                                .cornerRadius(12)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-
-                        Link(destination: URL(string: "https://github.com")!) {
-                            HStack {
-                                Image(systemName: "link")
-                                Text("GitHub Repository")
-                                Spacer()
-                                Image(systemName: "arrow.up.right")
-                                    .font(.caption)
-                            }
-                            .padding()
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .cornerRadius(12)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-
-                        // Attribution (required for OSM road-alignment data)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Map & Data Credits")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.secondary)
-                            Text("Road alignment uses map data © OpenStreetMap contributors, available under the Open Database License (ODbL), retrieved via the Overpass API. Maps © Apple.")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            if let url = URL(string: "https://www.openstreetmap.org/copyright") {
-                                Link("OpenStreetMap copyright", destination: url)
-                                    .font(.caption2)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .cornerRadius(12)
-                    }
-                    .padding(.horizontal)
-
-                    // Bottom padding
-                    Color.clear.frame(height: 20)
+    private var permissionsSection: some View {
+        Section {
+            permissionRow(icon: "location.fill", tint: .blue,
+                          title: "Location Services", status: locationPermissionStatus)
+            permissionRow(icon: "heart.fill", tint: .red,
+                          title: "HealthKit", status: healthKitPermissionStatus)
+            Button {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
                 }
-                .padding(.top)
+            } label: {
+                Label("Open iOS Settings", systemImage: "gear")
             }
-            .background(Color(.systemGroupedBackground))
-            .onAppear {
-                updatePermissionStatus()
+        } header: {
+            Text("Permissions")
+        } footer: {
+            Text("Location must be set to Always for a workout to keep recording once the screen locks.")
+        }
+    }
+
+    private var unitsSection: some View {
+        Section("Units") {
+            Picker("Distance", selection: $distanceUnit) {
+                Text("Kilometres").tag("km")
+                Text("Miles").tag("mi")
             }
-            .onReceive(refreshTimer) { _ in
-                updatePermissionStatus()
+            Picker("Speed", selection: $speedUnit) {
+                Text("km/h").tag("km/h")
+                Text("mph").tag("mph")
+                Text("knots").tag("knots")
+            }
+            Picker("Altitude", selection: $altitudeUnit) {
+                Text("Metres").tag("meters")
+                Text("Feet").tag("feet")
             }
         }
     }
 
-    @ViewBuilder
+    private var mapSection: some View {
+        Section {
+            Picker("Map style", selection: $mapStyle) {
+                Text("Standard").tag("standard")
+                Text("Satellite").tag("satellite")
+                Text("Hybrid").tag("hybrid")
+            }
+            Picker("Filtering", selection: $kalmanSensitivity) {
+                Text("Low").tag("low")
+                Text("Medium").tag("medium")
+                Text("High").tag("high")
+            }
+        } header: {
+            Text("Map & tracking")
+        } footer: {
+            Text("Filtering smooths the recorded track. Higher settings reject more noise but can round off genuine sharp turns.")
+        }
+    }
 
-    /// Android's gesture, and for the same reason: the screen behind it is needed occasionally
-    /// and would be clutter the rest of the time. Counts only consecutive taps — pausing more
-    /// than two seconds starts again, so it cannot be reached by idly prodding the screen.
+    private var workoutSection: some View {
+        Section {
+            Toggle("Save to Apple Health", isOn: $autoSaveToHealthKit)
+            Picker("Save as", selection: $healthKitExportType) {
+                Text("Match activity").tag("auto")
+                Text("Cycling").tag("cycling")
+                Text("Running").tag("running")
+                Text("Walking").tag("walking")
+                Text("Hiking").tag("hiking")
+            }
+            Toggle("Record heart rate", isOn: $trackHeartRate)
+            Toggle("Unfiltered GPS", isOn: $useRawGPS)
+        } header: {
+            Text("Workouts")
+        } footer: {
+            Text(useRawGPS
+                 ? "Unfiltered: every fix is recorded exactly as reported, including inaccurate ones."
+                 : "Fixes that contradict their own accuracy are discarded before they reach the track.")
+        }
+    }
+
+    private var roadAlignmentSection: some View {
+        Section {
+            SecureField("Stadia Maps API key", text: $mapMatchingAPIKey)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if let url = URL(string: "https://client.stadiamaps.com") {
+                Link(destination: url) {
+                    Label("Get a free key", systemImage: "arrow.up.right.square")
+                }
+            }
+        } header: {
+            Text("Road alignment")
+        } footer: {
+            Text("Snaps a recorded track to real road geometry on the Map tab. Without a key the app falls back to Apple Maps snapping, which is rougher.")
+        }
+    }
+
+    private var aboutSection: some View {
+        Section {
+            // THE REAL VERSION, NOT A LITERAL.
+            //
+            // This read "1.0.0" while the app was on build 134. Every diagnosis in this project
+            // starts with knowing which build produced a recording — one log was misread for a
+            // whole exchange because the build was unknown — so a version string that cannot go
+            // stale is worth more than it looks.
+            //
+            // Five taps opens the developer screen, the way Android does it: out of the way for
+            // normal use, reachable without a Mac when a recording needs rescuing.
+            Button(action: registerVersionTap) {
+                HStack {
+                    Text("Version")
+                    Spacer()
+                    Text(Bundle.appVersionDisplay)
+                        .foregroundColor(.secondary)
+                    if developerUnlocked {
+                        Image(systemName: "hammer.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if developerUnlocked {
+                NavigationLink {
+                    DeveloperView()
+                } label: {
+                    Label("Developer", systemImage: "hammer")
+                }
+            }
+
+            if let url = URL(string: "https://github.com") {
+                Link(destination: url) {
+                    Label("GitHub repository", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+            }
+        } header: {
+            Text("About")
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let hint = versionTapHint {
+                    Text(hint)
+                        .foregroundColor(.accentColor)
+                }
+                Text("Road alignment uses map data © OpenStreetMap contributors under the ODbL, retrieved via the Overpass API. Maps © Apple.")
+                if let url = URL(string: "https://www.openstreetmap.org/copyright") {
+                    Link("OpenStreetMap copyright", destination: url)
+                }
+            }
+        }
+    }
+
+    private func permissionRow(icon: String, tint: Color, title: String, status: String) -> some View {
+        HStack {
+            Label {
+                Text(title)
+            } icon: {
+                Image(systemName: icon).foregroundColor(tint)
+            }
+            Spacer()
+            Text(status)
+                .font(.footnote)
+                .foregroundColor(permissionColor(status))
+        }
+    }
+
     private func registerVersionTap() {
         let now = Date()
         if now.timeIntervalSince(lastVersionTap) > 2.0 { versionTapCount = 0 }

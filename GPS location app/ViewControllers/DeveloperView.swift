@@ -25,6 +25,25 @@ struct DeveloperView: View {
 
     var body: some View {
         List {
+            // A header rather than another row of text: what is on this screen is mostly
+            // numbers, and the two that matter most — which build, and how much evidence the
+            // speed model holds — should be readable without scrolling.
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(Bundle.appVersionDisplay)
+                        .font(.system(.largeTitle, design: .rounded))
+                        .fontWeight(.semibold)
+                    HStack(spacing: 18) {
+                        summaryStat("logs", "\(logs.count)")
+                        summaryStat("observations", "\(WorkoutSession.shared.learnedSpeed.observationCount)")
+                        summaryStat("taught to",
+                                    "\(Int(WorkoutSession.shared.learnedSpeed.maxLearnedSpeed * 3.6)) km/h")
+                    }
+                }
+                .padding(.vertical, 6)
+                .listRowBackground(Color.clear)
+            }
+
             Section {
                 infoRow("Version", Bundle.appVersionDisplay)
                 infoRow("Bundle", Bundle.main.bundleIdentifier ?? "—")
@@ -50,6 +69,18 @@ struct DeveloperView: View {
                 Text("Learned speed model")
             } footer: {
                 Text("Signatures paired with GPS-measured speeds, used when GPS is unavailable. Forgetting means it must be taught again from scratch.")
+            }
+
+            Section {
+                NavigationLink {
+                    PermissionTestView()
+                } label: {
+                    Label("Permissions & sensor tests", systemImage: "wrench.and.screwdriver")
+                }
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("Permission state, GPS and HealthKit checks, and performance counters. This used to occupy a tab of its own.")
             }
 
             Section {
@@ -115,6 +146,17 @@ struct DeveloperView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("The model will have to relearn from GPS across future trips.")
+        }
+    }
+
+    private func summaryStat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(.subheadline, design: .monospaced))
+                .fontWeight(.medium)
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.secondary)
         }
     }
 
