@@ -179,6 +179,7 @@ struct WorkoutMapView: View {
     @State private var customStartDate = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
     @State private var customEndDate = Date()
     @State private var tracks: [WorkoutMapTrack] = []
+    @State private var showMapTools = false
     @State private var selectedTrackID: UUID?
     @State private var fitRegion: MKCoordinateRegion?
     @State private var fitGeneration = 0
@@ -298,7 +299,7 @@ struct WorkoutMapView: View {
                     ProgressView("Loading tracks...")
                         .padding()
                         .background(.regularMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous))
                 }
             }
             .navigationTitle("Map")
@@ -346,20 +347,38 @@ struct WorkoutMapView: View {
         }
     }
 
+    /// The panel that floats over the map.
+    ///
+    /// It used to show six controls at once — period, Load, Download All, Align Roads, Original,
+    /// and a status line — which on an iPhone covered roughly the top third of the map. The map
+    /// is the content of this tab, so only the period picker stays out; the rest is one tap away
+    /// and any operation already running keeps its progress bar visible either way.
     private var controlPanel: some View {
         VStack(spacing: 10) {
-            Picker("Time Period", selection: $selectedPeriod) {
-                ForEach(WorkoutMapPeriod.allCases) { period in
-                    Text(period.rawValue).tag(period)
+            HStack(spacing: 10) {
+                Picker("Time Period", selection: $selectedPeriod) {
+                    ForEach(WorkoutMapPeriod.allCases) { period in
+                        Text(period.rawValue).tag(period)
+                    }
                 }
+                .pickerStyle(.segmented)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { showMapTools.toggle() }
+                } label: {
+                    Image(systemName: showMapTools ? "chevron.up.circle.fill" : "ellipsis.circle")
+                        .font(.title3)
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
             }
-            .pickerStyle(.segmented)
 
             if selectedPeriod == .custom {
                 HStack(spacing: 10) {
                     DatePicker("From", selection: $customStartDate, displayedComponents: .date)
                         .labelsHidden()
                     Image(systemName: "arrow.right")
+                        .font(.caption)
                         .foregroundColor(.secondary)
                     DatePicker("To", selection: $customEndDate, displayedComponents: .date)
                         .labelsHidden()
@@ -367,74 +386,57 @@ struct WorkoutMapView: View {
                 .frame(maxWidth: .infinity)
             }
 
-            HStack(spacing: 10) {
-                Button(action: loadTracks) {
-                    Label("Load", systemImage: "arrow.clockwise")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                }
-                .buttonStyle(.bordered)
-                .disabled(isLoading || isRoadAligning || isDownloadingWorkouts)
+            if showMapTools {
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        SecondaryActionButton(title: "Load", icon: "arrow.clockwise", tint: .accentColor,
+                                              isEnabled: !isLoading && !isRoadAligning && !isDownloadingWorkouts) {
+                            loadTracks()
+                        }
 
-                if isDownloadingWorkouts {
-                    Button(action: cancelDownload) {
-                        Label("Stop \(downloadProgress)/\(downloadTotal)", systemImage: "stop.circle.fill")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
+                        if isDownloadingWorkouts {
+                            SecondaryActionButton(title: "Stop \(downloadProgress)/\(downloadTotal)",
+                                                  icon: "stop.circle.fill", tint: .red) {
+                                cancelDownload()
+                            }
+                        } else {
+                            SecondaryActionButton(title: "Download All", icon: "square.and.arrow.down",
+                                                  tint: .green, isEnabled: !isRoadAligning) {
+                                downloadAllWorkoutsFromHealthKit()
+                            }
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                } else {
-                    Button(action: downloadAllWorkoutsFromHealthKit) {
-                        Label("Download All", systemImage: "square.and.arrow.down")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
+
+                    HStack(spacing: 8) {
+                        SecondaryActionButton(
+                            title: isRoadAligning ? "Aligning \(roadAlignProgress)/\(roadAlignTotal)" : "Align Roads",
+                            icon: isRoadAligning ? "hourglass" : "point.topleft.down.curvedto.point.bottomright.up",
+                            tint: .orange,
+                            isEnabled: !tracks.isEmpty && !isRoadAligning
+                        ) {
+                            alignVisibleTracksToRoads()
+                        }
+
+                        if !roadAlignedCoordinates.isEmpty {
+                            SecondaryActionButton(title: "Original", icon: "arrow.uturn.backward",
+                                                  tint: .secondary, isEnabled: !isRoadAligning) {
+                                resetRoadAlignment()
+                            }
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isRoadAligning)
+
+                    if let roadAlignMessage {
+                        Text(roadAlignMessage)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            HStack(spacing: 10) {
-                Button(action: alignVisibleTracksToRoads) {
-                    Label(
-                        isRoadAligning ? "Aligning \(roadAlignProgress)/\(roadAlignTotal)" : "Align Roads",
-                        systemImage: isRoadAligning ? "hourglass" : "point.topleft.down.curvedto.point.bottomright.up"
-                    )
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(tracks.isEmpty || isRoadAligning)
-
-                if !roadAlignedCoordinates.isEmpty {
-                    Button(action: resetRoadAlignment) {
-                        Label("Original", systemImage: "arrow.uturn.backward")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isRoadAligning)
-                }
-            }
-
-            if let roadAlignMessage {
-                Text(roadAlignMessage)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
+            // Progress survives the collapse: a download that takes minutes must stay visible
+            // even when the panel that started it is closed.
             if isDownloadingWorkouts && downloadTotal > 0 {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -453,7 +455,7 @@ struct WorkoutMapView: View {
                 }
             }
 
-            if let downloadMessage {
+            if let downloadMessage, isDownloadingWorkouts || showMapTools {
                 Text(downloadMessage)
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -462,7 +464,8 @@ struct WorkoutMapView: View {
         }
         .padding(12)
         .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous))
+        .shadow(color: AppTheme.shadowColor, radius: AppTheme.shadowRadius, x: 0, y: AppTheme.shadowY)
         .alert("Workout Download", isPresented: $showDownloadAlert) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -541,7 +544,7 @@ struct WorkoutMapView: View {
         }
         .padding(12)
         .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous))
     }
 
     private func selectedTrackMapLabel(_ track: WorkoutMapTrack) -> some View {

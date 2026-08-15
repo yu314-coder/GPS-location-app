@@ -145,8 +145,11 @@ struct YearlyDistanceChartView: View {
             }
         }
         .padding(isIPad ? 20 : 16)
-        .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(isIPad ? 20 : 16)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+        .shadow(color: AppTheme.shadowColor, radius: AppTheme.shadowRadius, x: 0, y: AppTheme.shadowY)
     }
 }
 
@@ -567,8 +570,11 @@ struct AllTimeDistanceChartView: View {
             }
         }
         .padding(isIPad ? 20 : 16)
-        .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(isIPad ? 20 : 16)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+        .shadow(color: AppTheme.shadowColor, radius: AppTheme.shadowRadius, x: 0, y: AppTheme.shadowY)
     }
 
     private func nearestMonth(to date: Date) -> Date? {

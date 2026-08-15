@@ -50,7 +50,17 @@ private enum AppTab: Int, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var selectedTab: AppTab = .home
+    @State private var selectedTab: AppTab = {
+        #if DEBUG
+        // Screenshot hook: `simctl launch --setenv START_TAB=map` opens straight to a tab, so
+        // each one can be captured without a tap. Debug builds only.
+        if let raw = ProcessInfo.processInfo.environment["START_TAB"],
+           let tab = AppTab.allCases.first(where: { $0.title.lowercased() == raw.lowercased() }) {
+            return tab
+        }
+        #endif
+        return .home
+    }()
     @State private var showLiveSession = false
 
     private var isIPadLayout: Bool {
@@ -194,272 +204,280 @@ struct ContentView: View {
     }
 }
 
+/// The first screen, rebuilt around the user's own data.
+///
+/// It used to be a product page: a pulsing icon, the tagline "Track your workouts with precision
+/// GPS technology", and four cards describing features — GPS Filtering, HealthKit, Real-time,
+/// Analytics. All four were static text. Nothing on the tab changed between a first launch and a
+/// thousand kilometres in, which made the app's primary screen the only one that could tell you
+/// nothing about yourself.
+///
+/// Now it opens with what you have done this month, what you did last, and whether the app is
+/// actually able to record — the three things worth knowing before pressing Start.
 struct HomeView: View {
     @Binding var showLiveSession: Bool
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    @StateObject private var analytics = WorkoutAnalyticsManager.shared
+    @ObservedObject private var flightStore = FlightDataStore.shared
+    @ObservedObject private var locationManager = LocationManager.shared
+    @ObservedObject private var healthKitManager = HealthKitManager.shared
+
+    @State private var detailFlight: Flight?
     @State private var isAnimating = false
 
-    private var isIPadLayout: Bool {
-        horizontalSizeClass == .regular
+    private var isIPad: Bool { horizontalSizeClass == .regular }
+
+    /// Newest first, and only finished workouts — an in-progress one belongs on the live screen.
+    private var recentFlights: [Flight] {
+        flightStore.savedFlights
+            .filter { !$0.isActive }
+            .sorted { $0.startDate > $1.startDate }
+            .prefix(isIPad ? 6 : 4)
+            .map { $0 }
     }
 
     var body: some View {
         Group {
-            if isIPadLayout {
-                homeContent
+            if isIPad {
+                content
             } else {
                 NavigationStack {
-                    homeContent
+                    content
                         .navigationTitle("Home")
-                        .navigationBarTitleDisplayMode(.inline)
+                        .navigationBarTitleDisplayMode(.large)
+                        .navigationDestination(item: $detailFlight) { WorkoutDetailView(flight: $0) }
                 }
             }
         }
         .onAppear {
+            analytics.fetchData()
             isAnimating = true
         }
     }
 
-    private var homeContent: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color.blue.opacity(0.10),
-                    Color.purple.opacity(0.05),
-                    Color.clear
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+    private var content: some View {
+        ScrollView {
+            VStack(spacing: AppTheme.sectionSpacing) {
+                hero
 
-            ScrollView {
-                VStack(spacing: isIPadLayout ? 32 : 40) {
-                    if isIPadLayout {
-                        iPadHeroLayout
-                    } else {
-                        phoneHeroLayout
-                        startTrackingButton
-                    }
-
-                    featureGrid
+                PrimaryActionButton(title: "Start Workout", icon: "play.fill") {
+                    showLiveSession = true
                 }
-                .frame(maxWidth: isIPadLayout ? 980 : .infinity)
-                .padding(.horizontal, isIPadLayout ? 32 : 0)
-                .padding(.vertical, isIPadLayout ? 40 : 20)
-                .frame(maxWidth: .infinity)
-            }
-        }
-    }
 
-    private var phoneHeroLayout: some View {
-        VStack(spacing: 24) {
-            heroIcon
-            heroText
-        }
-    }
+                monthSummary
 
-    private var iPadHeroLayout: some View {
-        HStack(alignment: .center, spacing: 36) {
-            heroIcon
-                .frame(width: 220)
-
-            VStack(alignment: .leading, spacing: 22) {
-                heroText
-                    .multilineTextAlignment(.leading)
-
-                startTrackingButton
-                    .frame(maxWidth: 420)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(28)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 18))
-        .shadow(color: Color.black.opacity(0.06), radius: 18, x: 0, y: 8)
-    }
-
-    private var heroIcon: some View {
-        ZStack {
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [Color.blue, Color.purple],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+                if !recentFlights.isEmpty {
+                    recentSection
+                } else {
+                    EmptyStateCard(
+                        icon: "figure.run",
+                        title: "No workouts yet",
+                        message: "Start one and it will appear here with its route, distance and pace."
                     )
-                )
-                .frame(width: isIPadLayout ? 150 : 120, height: isIPadLayout ? 150 : 120)
-                .blur(radius: 20)
-                .opacity(0.6)
-                .scaleEffect(isAnimating ? 1.1 : 0.9)
-                .animation(
-                    Animation.easeInOut(duration: 2.0)
-                        .repeatForever(autoreverses: true),
-                    value: isAnimating
-                )
+                }
 
-            Image(systemName: "figure.run.circle.fill")
-                .font(.system(size: isIPadLayout ? 120 : 100))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [.blue, .purple],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .shadow(color: .blue.opacity(0.3), radius: 10, x: 0, y: 5)
-        }
-    }
-
-    private var heroText: some View {
-        VStack(alignment: isIPadLayout ? .leading : .center, spacing: 12) {
-            Text("GPS Workout Tracker")
-                .font(.system(size: isIPadLayout ? 42 : 34, weight: .bold, design: .rounded))
-                .multilineTextAlignment(isIPadLayout ? .leading : .center)
-
-            Text("Track your workouts with precision GPS technology")
-                .font(isIPadLayout ? .title3 : .subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(isIPadLayout ? .leading : .center)
-                .padding(.horizontal, isIPadLayout ? 0 : 16)
-        }
-    }
-
-    private var startTrackingButton: some View {
-        Button(action: {
-            showLiveSession = true
-        }) {
-            HStack(spacing: 12) {
-                Image(systemName: "play.circle.fill")
-                    .font(.title2)
-                Text("Start Workout Tracking")
-                    .font(.headline)
-                    .fontWeight(.semibold)
+                readiness
             }
+            .frame(maxWidth: isIPad ? 900 : .infinity)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 18)
-            .background(
-                LinearGradient(
-                    colors: [Color.blue, Color.blue.opacity(0.8)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .foregroundColor(.white)
-            .cornerRadius(16)
-            .shadow(color: .blue.opacity(0.4), radius: 15, x: 0, y: 8)
         }
-        .padding(.horizontal, isIPadLayout ? 0 : 16)
+        .background(Color(.systemGroupedBackground))
     }
 
-    private var featureGrid: some View {
-        LazyVGrid(
-            columns: Array(
-                repeating: GridItem(.flexible(), spacing: 16),
-                count: isIPadLayout ? 4 : 2
-            ),
-            spacing: 16
-        ) {
-            ModernInfoCard(
-                icon: "location.fill",
-                title: "GPS Filtering",
-                description: "Kalman filtered coordinates",
-                color: .green
-            )
+    // MARK: Hero
 
-            ModernInfoCard(
-                icon: "heart.text.square.fill",
-                title: "HealthKit",
-                description: "Auto-sync to Fitness",
-                color: .red
-            )
+    /// The breathing gradient mark. It is the app's face and the one thing on the old Home worth
+    /// keeping, so it survives the rebuild — smaller, because it now shares the screen with the
+    /// month's numbers instead of being the whole screen.
+    private var hero: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [.blue, .purple],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: isIPad ? 110 : 88, height: isIPad ? 110 : 88)
+                    .blur(radius: 18)
+                    .opacity(0.55)
+                    .scaleEffect(isAnimating ? 1.1 : 0.9)
+                    .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true),
+                               value: isAnimating)
 
-            ModernInfoCard(
-                icon: "waveform.path.ecg",
-                title: "Real-time",
-                description: "Live metrics tracking",
-                color: .orange
-            )
+                Image(systemName: "figure.run.circle.fill")
+                    .font(.system(size: isIPad ? 88 : 72))
+                    .foregroundStyle(LinearGradient(colors: [.blue, .purple],
+                                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .shadow(color: .blue.opacity(0.30), radius: 8, x: 0, y: 4)
+            }
 
-            ModernInfoCard(
-                icon: "chart.xyaxis.line",
-                title: "Analytics",
-                description: "Detailed statistics",
-                color: .purple
-            )
+            Text("GPS Workout Tracker")
+                .font(.system(size: isIPad ? 26 : 22, weight: .bold, design: .rounded))
         }
-        .padding(.horizontal, isIPadLayout ? 0 : 16)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+    }
+
+    // MARK: This month
+
+    private var monthSummary: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(title: analytics.monthName, subtitle: "So far this month") {
+                    TrendBadge(change: analytics.monthOverMonthChange,
+                               hasBaseline: analytics.lastYearSameMonthTotalKm > 0)
+                }
+
+                // Two tiles on iPhone, three across on iPad. The year total is the one that gets
+                // dropped when narrow: it is also the headline of the Analysis tab, so losing it
+                // here costs nothing.
+                let columns = Array(repeating: GridItem(.flexible(), spacing: 10),
+                                    count: isIPad ? 3 : 2)
+                LazyVGrid(columns: columns, spacing: 10) {
+                    MetricTile(icon: "point.topleft.down.curvedto.point.bottomright.up",
+                               value: String(format: "%.1f km", analytics.monthTotalKm),
+                               label: "Distance", tint: AppTheme.distance, compact: true)
+                    MetricTile(icon: "figure.run",
+                               value: "\(recentFlights.count == 0 ? analytics.allTimeWorkoutCount : flightStore.savedFlights.count)",
+                               label: "Workouts", tint: AppTheme.count, compact: true)
+                    if isIPad {
+                        MetricTile(icon: "calendar",
+                                   value: String(format: "%.0f km", analytics.yearTotalKm),
+                                   label: "\(analytics.selectedYear)",
+                                   tint: AppTheme.duration, compact: true)
+                    }
+                }
+
+                if analytics.isLoading {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading from Health…")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Recent
+
+    private var recentSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader("Recent")
+            AppCard(padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach(Array(recentFlights.enumerated()), id: \.element.id) { index, flight in
+                        Button { detailFlight = flight } label: {
+                            RecentWorkoutRow(flight: flight)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < recentFlights.count - 1 {
+                            Divider().padding(.leading, 56)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Readiness
+
+    /// Whether the app can actually record right now. Both permissions are silent failures: with
+    /// location denied a workout runs and records nothing, and that is only discoverable after
+    /// the fact. Worth one line on the first screen.
+    private var readiness: some View {
+        let locationOK = locationManager.authorizationStatus == .authorizedAlways
+            || locationManager.authorizationStatus == .authorizedWhenInUse
+        let healthLabel = healthKitManager.writeAuthorizationLabel
+
+        return AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Ready to record")
+                HStack(spacing: 10) {
+                    ReadinessPill(icon: "location.fill", title: "Location",
+                                  ok: locationOK,
+                                  detail: locationManager.authorizationStatus == .authorizedAlways
+                                      ? "Always" : (locationOK ? "In use" : "Off"))
+                    ReadinessPill(icon: "heart.fill", title: "Health",
+                                  ok: healthLabel == "Authorized",
+                                  detail: healthLabel)
+                }
+            }
+        }
     }
 }
 
-// Modern Info Card with gradient and glassmorphism
-struct ModernInfoCard: View {
-    let icon: String
-    let title: String
-    let description: String
-    let color: Color
+/// One finished workout: what it was, how far, how long, and when.
+private struct RecentWorkoutRow: View {
+    let flight: Flight
+
+    private var distanceText: String {
+        String(format: "%.2f km", flight.totalDistance / 1000)
+    }
+
+    private var durationText: String {
+        let total = Int(flight.duration)
+        let h = total / 3600, m = (total % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(color.opacity(0.15))
-                    .frame(width: 50, height: 50)
+        HStack(spacing: 12) {
+            Image(systemName: "figure.run")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(AppTheme.distance)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(AppTheme.distance.opacity(0.12)))
 
-                Image(systemName: icon)
-                    .font(.title2)
-                    .foregroundColor(color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(distanceText)
+                    .font(.subheadline).fontWeight(.semibold).monospacedDigit()
+                Text(flight.startDate.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
+            Spacer(minLength: 8)
 
-                Text(description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-            }
+            Text(durationText)
+                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            Image(systemName: "chevron.right")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
+        .padding(.horizontal, AppTheme.cardPadding)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct ReadinessPill: View {
+    let icon: String
+    let title: String
+    let ok: Bool
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(ok ? Color.green : Color.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.caption).fontWeight(.medium)
+                Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.secondarySystemGroupedBackground))
-                .shadow(color: color.opacity(0.1), radius: 8, x: 0, y: 4)
+            RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous)
+                .fill((ok ? Color.green : Color.orange).opacity(0.10))
         )
     }
 }
 
-struct InfoCard: View {
-    let icon: String
-    let title: String
-    let description: String
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundColor(.blue)
-
-            Text(title)
-                .font(.caption)
-                .fontWeight(.semibold)
-
-            Text(description)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(12)
-    }
-}
 
 // MARK: - Permissions Onboarding View
 

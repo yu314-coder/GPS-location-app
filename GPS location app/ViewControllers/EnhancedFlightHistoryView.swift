@@ -14,6 +14,7 @@ enum SortOption: String, CaseIterable {
 struct EnhancedFlightHistoryView: View {
     @StateObject private var flightDataStore = FlightDataStore.shared
     @State private var workouts: [WorkoutSummary] = []
+    @State private var showLibraryTools = false
     @State private var selectedFlight: Flight?
     @State private var isLoading = false
     @State private var isLoadingWorkoutDetails = false
@@ -292,202 +293,114 @@ struct EnhancedFlightHistoryView: View {
 
     @ViewBuilder
     private func workoutListView(proxy: ScrollViewProxy) -> some View {
-        VStack(spacing: 20) {
-            // Show button to load workouts if not loaded yet
-            if !manualLoadEnabled && workouts.isEmpty {
-                Button(action: { loadHealthKitWorkouts(reset: true) }) {
-                    HStack {
-                        Image(systemName: "heart.text.square")
-                        Text("Load Recent HealthKit Workouts")
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                    }
-                    .padding()
-                    .background(Color.blue.opacity(0.1))
-                    .foregroundColor(.blue)
-                    .cornerRadius(12)
-                }
-                .padding(.horizontal)
-            }
-
-            // Download all workouts with routes from HealthKit
-            if isDownloadingAll {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 12) {
-                        Image(systemName: "square.and.arrow.down")
-                            .foregroundColor(.green)
-                        Text(downloadAllTotal > 0 ? "Downloading \(downloadAllProgress)/\(downloadAllTotal)" : (downloadAllMessage ?? "Preparing..."))
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                        Spacer()
-                        if downloadAllTotal > 0 {
-                            Text("\(Int((Double(downloadAllProgress) / Double(max(downloadAllTotal, 1))) * 100))%")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .monospacedDigit()
-                        }
-                        Button(action: cancelDownloadAll) {
-                            Image(systemName: "stop.circle.fill")
-                                .font(.title3)
-                                .foregroundColor(.red)
-                        }
-                    }
-
-                    if downloadAllTotal > 0 {
-                        ProgressView(value: Double(downloadAllProgress), total: Double(downloadAllTotal))
-                            .progressViewStyle(.linear)
-                            .tint(.green)
-                    } else {
-                        ProgressView()
-                            .progressViewStyle(.linear)
-                    }
-                }
-                .padding()
-                .background(Color.green.opacity(0.08))
-                .cornerRadius(12)
-                .padding(.horizontal)
-            } else {
-                Button(action: downloadAllFromHealthKit) {
-                    HStack {
-                        Image(systemName: "square.and.arrow.down")
-                        Text("Download All Routes from HealthKit")
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                    }
-                    .padding()
-                    .background(Color.green.opacity(0.1))
-                    .foregroundColor(.green)
-                    .cornerRadius(12)
-                }
-                .padding(.horizontal)
-            }
-
-            // Enhanced Statistics Section
+        VStack(spacing: 16) {
+            // Your numbers first. Seven full-width buttons used to come before any workout did —
+            // Load, Download All, Sort, Jump, Go, Resync All, Resync Day — so the tab opened on
+            // its own maintenance controls rather than on the history it is named after. Those
+            // are all still here, one tap away under Tools.
             EnhancedStatsSection(
                 flights: flightDataStore.savedFlights,
                 healthKitWorkouts: statsWorkouts
             )
             .equatable()
 
-            // Activity Type Filter
             ActivityTypeFilter(selectedType: $selectedActivityType)
 
-            // Sort Options
-            HStack {
-                Text("Sort by:")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-
-                Button(action: { showingSortMenu = true }) {
-                    HStack(spacing: 4) {
-                        Text(sortOption.rawValue)
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                        Image(systemName: "chevron.down")
-                            .font(.caption2)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.blue.opacity(0.1))
-                    .foregroundColor(.blue)
-                    .cornerRadius(8)
-                }
-                .confirmationDialog("Sort Workouts", isPresented: $showingSortMenu, titleVisibility: .visible) {
+            // Sort and Tools: the two controls worth having permanently on screen.
+            HStack(spacing: 10) {
+                Menu {
                     ForEach(SortOption.allCases, id: \.self) { option in
-                        Button(option.rawValue) {
+                        Button {
                             sortOption = option
-                        }
-                    }
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal)
-
-            // Jump to Date + Quick Jump
-            HStack(spacing: 12) {
-                DatePicker(
-                    "Jump to date",
-                    selection: $jumpDate,
-                    displayedComponents: .date
-                )
-                .labelsHidden()
-                .datePickerStyle(.compact)
-
-                Button("Go") {
-                    if let targetID = nearestActivityID(to: jumpDate) {
-                        if targetID.hasPrefix("w_") {
-                            let idString = String(targetID.dropFirst(2))
-                            if let uuid = UUID(uuidString: idString) {
-                                ensureWorkoutVisible(workoutID: uuid)
-                            }
-                        }
-                        withAnimation(.easeInOut) {
-                            proxy.scrollTo(targetID, anchor: .top)
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-
-                Menu("Jump") {
-                    ForEach(monthIndex, id: \.id) { entry in
-                        Button(entry.label) {
-                            if entry.id.hasPrefix("w_") {
-                                let idString = String(entry.id.dropFirst(2))
-                                if let uuid = UUID(uuidString: idString) {
-                                    ensureWorkoutVisible(workoutID: uuid)
-                                }
-                            }
-                            withAnimation(.easeInOut) {
-                                proxy.scrollTo(entry.id, anchor: .top)
+                        } label: {
+                            if sortOption == option {
+                                Label(option.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(option.rawValue)
                             }
                         }
                     }
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            .padding(.horizontal)
-
-            // Resync all to HealthKit
-            HStack(spacing: 12) {
-                Button(action: { showResyncAllConfirm = true }) {
-                    HStack(spacing: 8) {
-                        if isResyncingAll {
-                            ProgressView()
-                        }
-                        Text(isResyncingAll ? "Resyncing \(resyncAllProgress)/\(max(resyncAllTotal, 1))" : "Resync All to HealthKit")
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.up.arrow.down")
+                        Text(sortOption.rawValue).lineLimit(1)
                     }
+                    .font(.subheadline).fontWeight(.medium)
                     .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.orange.opacity(0.12))
-                    .foregroundColor(.orange)
-                    .cornerRadius(12)
+                    .padding(.vertical, 10)
+                    .foregroundStyle(Color.accentColor)
+                    .background(
+                        RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.12))
+                    )
                 }
-                .disabled(isResyncingAll || flightDataStore.savedFlights.isEmpty)
 
-                if isResyncingAll {
-                    Text("✅ \(resyncAllSucceeded)  ❌ \(resyncAllFailed)  ⚠️ \(resyncAllSkipped)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                SecondaryActionButton(
+                    title: showLibraryTools ? "Hide Tools" : "Tools",
+                    icon: showLibraryTools ? "chevron.up" : "wrench.and.screwdriver",
+                    tint: .secondary
+                ) {
+                    withAnimation(.easeInOut(duration: 0.2)) { showLibraryTools.toggle() }
                 }
             }
             .padding(.horizontal)
 
-            HStack(spacing: 12) {
-                Button(action: { showResyncDayConfirm = true }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "calendar")
-                        Text("Resync Day (\(jumpDate, format: .dateTime.year().month().day()))")
+            // Progress stays outside the collapse. A long download must remain visible even when
+            // the panel that started it is closed, or it looks like nothing is happening.
+            if isDownloadingAll {
+                AppCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "square.and.arrow.down")
+                                .foregroundStyle(Color.green)
+                            Text(downloadAllTotal > 0
+                                 ? "Downloading \(downloadAllProgress)/\(downloadAllTotal)"
+                                 : (downloadAllMessage ?? "Preparing…"))
+                                .font(.subheadline).fontWeight(.medium)
+                            Spacer()
+                            if downloadAllTotal > 0 {
+                                Text("\(Int((Double(downloadAllProgress) / Double(max(downloadAllTotal, 1))) * 100))%")
+                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            }
+                            Button(action: cancelDownloadAll) {
+                                Image(systemName: "stop.circle.fill")
+                                    .font(.title3).foregroundStyle(Color.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if downloadAllTotal > 0 {
+                            ProgressView(value: Double(downloadAllProgress), total: Double(downloadAllTotal))
+                                .tint(.green)
+                        } else {
+                            ProgressView().progressViewStyle(.linear)
+                        }
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.green.opacity(0.12))
-                    .foregroundColor(.green)
-                    .cornerRadius(12)
                 }
-                .disabled(isResyncingAll || flightDataStore.savedFlights.isEmpty)
+                .padding(.horizontal)
             }
-            .padding(.horizontal)
+
+            if isResyncingAll {
+                AppCard {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Resyncing \(resyncAllProgress)/\(max(resyncAllTotal, 1))")
+                            .font(.subheadline).fontWeight(.medium)
+                        Spacer()
+                        Text("✅ \(resyncAllSucceeded)  ❌ \(resyncAllFailed)  ⚠️ \(resyncAllSkipped)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal)
+            }
+
+            if showLibraryTools {
+                libraryTools
+                    .padding(.horizontal)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            jumpToDateRow(proxy: proxy)
+                .padding(.horizontal)
 
             // Grouped Workouts
             GroupedWorkoutsSection(
@@ -555,6 +468,94 @@ struct EnhancedFlightHistoryView: View {
             }
         }
         .padding(.vertical)
+    }
+
+
+    // MARK: - Library tools
+
+    /// Everything that manages the library rather than reads it: pulling workouts down from
+    /// Health, and pushing corrections back up. Grouped and collapsed because these are things
+    /// you do occasionally, not every time you open the tab.
+    private var libraryTools: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Tools", subtitle: "Import and resync")
+
+                if !manualLoadEnabled && workouts.isEmpty {
+                    SecondaryActionButton(title: "Load Recent HealthKit Workouts",
+                                          icon: "heart.text.square", tint: .blue) {
+                        loadHealthKitWorkouts(reset: true)
+                    }
+                }
+
+                SecondaryActionButton(title: "Download All Routes",
+                                      icon: "square.and.arrow.down", tint: .green,
+                                      isEnabled: !isDownloadingAll) {
+                    downloadAllFromHealthKit()
+                }
+
+                SecondaryActionButton(title: "Resync All to HealthKit",
+                                      icon: "arrow.triangle.2.circlepath", tint: .orange,
+                                      isEnabled: !isResyncingAll && !flightDataStore.savedFlights.isEmpty) {
+                    showResyncAllConfirm = true
+                }
+
+                SecondaryActionButton(title: "Resync \(jumpDate.formatted(date: .abbreviated, time: .omitted))",
+                                      icon: "calendar", tint: .green,
+                                      isEnabled: !isResyncingAll && !flightDataStore.savedFlights.isEmpty) {
+                    showResyncDayConfirm = true
+                }
+            }
+        }
+    }
+
+    /// Date jump. Kept on screen because scrolling to a month is navigation, not maintenance.
+    private func jumpToDateRow(proxy: ScrollViewProxy) -> some View {
+        AppCard(padding: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "calendar")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                DatePicker("Jump to date", selection: $jumpDate, displayedComponents: .date)
+                    .labelsHidden()
+                    .datePickerStyle(.compact)
+
+                Button("Go") {
+                    if let targetID = nearestActivityID(to: jumpDate) {
+                        if targetID.hasPrefix("w_") {
+                            let idString = String(targetID.dropFirst(2))
+                            if let uuid = UUID(uuidString: idString) {
+                                ensureWorkoutVisible(workoutID: uuid)
+                            }
+                        }
+                        withAnimation(.easeInOut) { proxy.scrollTo(targetID, anchor: .top) }
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+
+                Spacer(minLength: 0)
+
+                Menu {
+                    ForEach(monthIndex, id: \.id) { entry in
+                        Button(entry.label) {
+                            if entry.id.hasPrefix("w_") {
+                                let idString = String(entry.id.dropFirst(2))
+                                if let uuid = UUID(uuidString: idString) {
+                                    ensureWorkoutVisible(workoutID: uuid)
+                                }
+                            }
+                            withAnimation(.easeInOut) { proxy.scrollTo(entry.id, anchor: .top) }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Month")
+                        Image(systemName: "chevron.down").font(.caption2)
+                    }
+                    .font(.subheadline.weight(.medium))
+                }
+            }
+        }
     }
 
     // MARK: - Filtered & Sorted Data
@@ -2027,14 +2028,11 @@ struct EnhancedStatsSection: View, Equatable {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Your Activity")
-                .font(.title2)
-                .fontWeight(.bold)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
+        AppCard {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader("Your Activity")
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 EnhancedStatCard(
                     icon: "figure.run",
                     title: "Total Workouts",
@@ -2064,8 +2062,8 @@ struct EnhancedStatsSection: View, Equatable {
                     unit: "kcal",
                     color: .red
                 )
+                }
             }
-            .padding(.horizontal)
         }
     }
 
@@ -2110,9 +2108,12 @@ struct EnhancedStatCard: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
-        .padding()
-        .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(12)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.controlRadius, style: .continuous)
+                .fill(color.opacity(0.10))
+        )
     }
 }
 
