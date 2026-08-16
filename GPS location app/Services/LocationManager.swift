@@ -135,8 +135,22 @@ class LocationManager: NSObject, ObservableObject {
 
         // Activity type for better battery management
         locationManager.activityType = .fitness
-        locationManager.allowsBackgroundLocationUpdates = (authorizationStatus == .authorizedAlways)
-        locationManager.showsBackgroundLocationIndicator = (authorizationStatus == .authorizedAlways)
+        // WHEN IN USE IS ENOUGH TO STAY ALIVE, AND WITHOUT THIS THE APP IS SUSPENDED MID-DRIVE.
+        //
+        // Gating this on Always meant a When In Use grant left background updates off, so once
+        // the screen went off iOS suspended the process. Measured on a 21-minute drive: a single
+        // 371-second hole in the middle of it, during which the 50 Hz sensor stream fell to
+        // 0.1 Hz - 49 samples where 18,550 were due - and the app recorded 0 m while the car
+        // was doing 23.5 km/h. That one gap is 2.4 km, which is the entire distance shortfall
+        // for the workout and 29% of its duration.
+        //
+        // Background location is permitted with When In Use as long as the app declares the
+        // location background mode and shows the indicator, which it now does. With Always this
+        // changes nothing.
+        let canRunInBackground = authorizationStatus == .authorizedAlways
+            || authorizationStatus == .authorizedWhenInUse
+        locationManager.allowsBackgroundLocationUpdates = canRunInBackground
+        locationManager.showsBackgroundLocationIndicator = canRunInBackground
 
         print("✅ Location manager configured for fitness tracking")
     }
@@ -196,8 +210,22 @@ class LocationManager: NSObject, ObservableObject {
         // track in the wrong place entirely.
         kalmanFilter.reset()
 
-        locationManager.allowsBackgroundLocationUpdates = (authorizationStatus == .authorizedAlways)
-        locationManager.showsBackgroundLocationIndicator = (authorizationStatus == .authorizedAlways)
+        // WHEN IN USE IS ENOUGH TO STAY ALIVE, AND WITHOUT THIS THE APP IS SUSPENDED MID-DRIVE.
+        //
+        // Gating this on Always meant a When In Use grant left background updates off, so once
+        // the screen went off iOS suspended the process. Measured on a 21-minute drive: a single
+        // 371-second hole in the middle of it, during which the 50 Hz sensor stream fell to
+        // 0.1 Hz - 49 samples where 18,550 were due - and the app recorded 0 m while the car
+        // was doing 23.5 km/h. That one gap is 2.4 km, which is the entire distance shortfall
+        // for the workout and 29% of its duration.
+        //
+        // Background location is permitted with When In Use as long as the app declares the
+        // location background mode and shows the indicator, which it now does. With Always this
+        // changes nothing.
+        let canRunInBackground = authorizationStatus == .authorizedAlways
+            || authorizationStatus == .authorizedWhenInUse
+        locationManager.allowsBackgroundLocationUpdates = canRunInBackground
+        locationManager.showsBackgroundLocationIndicator = canRunInBackground
 
         print("   Calling CLLocationManager.startUpdatingLocation()...")
         locationManager.startUpdatingLocation()

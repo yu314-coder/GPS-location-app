@@ -279,6 +279,7 @@ class WorkoutSession: ObservableObject {
     private var absoluteHeadingDatum: Double? {
         locationManager.currentCompassHeading ?? locationManager.currentMotionHeading
     }
+    private var lastDiagnosticTickTime: Date?
     private var lastMisalignmentFix: FlightLocation?
     private var lastCompassReadingForCheck: Double?
     /// How far the compass may disagree with the gyro over one tick before it is treated as
@@ -3510,6 +3511,7 @@ class WorkoutSession: ObservableObject {
         // decisive evidence has to come from the device.
         let vd = vibrationSpeed.diagnostics
         let lastFix = flight.locations.last(where: { !$0.isEstimated && $0.isValid })
+        defer { lastDiagnosticTickTime = Date() }
         sessionDiagnostics.record(.init(
             t: now,
             source: sourceTag,
@@ -3525,6 +3527,7 @@ class WorkoutSession: ObservableObject {
             minCalSpeed: vd.minCalibratedSpeed, maxCalSpeed: vd.maxCalibratedSpeed,
             calSamples: vd.samples,
             extrapolating: vd.isExtrapolating,
+            tickInterval: lastDiagnosticTickTime.map { Date().timeIntervalSince($0) } ?? 0,
             handlingRotation: handlingRotationLevel,
             headingUnreliable: headingIsUnreliable,
             walkAxis: lastResolvedWalkAxis,

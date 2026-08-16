@@ -31,6 +31,11 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let calSamples: Double
         let extrapolating: Bool
         // Raw context
+        /// Seconds since the previous tick. Normally ~1. A 21-minute drive contained one gap of
+        /// 371 s where iOS had suspended the app, costing 2.4 km and 29% of the workout, and
+        /// nothing in the log said so - it had to be recovered by differencing timestamps. A
+        /// column makes the next one obvious.
+        let tickInterval: Double
         let handlingRotation: Double
         /// NO USABLE HEADING.
         ///
@@ -398,7 +403,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "heading_deg,compass_deg,offset_deg,"
         out += "vib_feature_u,fit_p0,fit_p1,fit_p2,cal_min_u,cal_max_u,"
         out += "cal_min_speed_ms,cal_max_speed_ms,cal_samples,extrapolating,"
-        out += "handling_rot_rads,heading_unreliable,walk_axis_deg,walk_skew_ema,walk_axis_raw_deg,walk_axis_gated,"
+        out += "tick_dt_s,handling_rot_rads,heading_unreliable,walk_axis_deg,walk_skew_ema,walk_axis_raw_deg,walk_axis_gated,"
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m\n"
@@ -416,7 +421,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.minCalU) + "," + Self.fmt(r.maxCalU) + ","
             out += Self.fmt(r.minCalSpeed) + "," + Self.fmt(r.maxCalSpeed) + ","
             out += Self.fmt(r.calSamples) + ",\(r.extrapolating ? 1 : 0),"
-            out += Self.fmt(r.handlingRotation) + ",\(r.headingUnreliable ? 1 : 0),"
+            out += Self.fmt(r.tickInterval) + "," + Self.fmt(r.handlingRotation) + ",\(r.headingUnreliable ? 1 : 0),"
             out += Self.fmt(r.walkAxis) + "," + Self.fmt(r.walkSkew) + ","
             out += Self.fmt(r.walkAxisRaw) + "," + Self.fmt(r.walkAxisGated) + ","
             out += Self.fmt(r.learnObs) + "," + Self.fmt(r.learnMaxKmh) + "," + Self.fmt(r.learnSlope) + ","
