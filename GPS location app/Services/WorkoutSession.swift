@@ -3216,8 +3216,10 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if vehicleContextIsCurrent, !deviceIsBeingHandled,
-                  let learned = learnedSpeed.estimate(airborne: isAirborneForEstimation) ?? recentLearnedAnswer {
+        } else if vehicleContextIsCurrent,
+                  let learned = (deviceIsBeingHandled ? nil
+                                 : learnedSpeed.estimate(airborne: isAirborneForEstimation))
+                                ?? recentLearnedAnswer {
             // NOT AIRBORNE. The learned model is a GROUND-VEHICLE model — every observation in
             // it was labelled by GPS on a road — and in the air it does not decline, it answers
             // confidently and wrongly. Replayed through the real estimator with a synthetic
@@ -3260,14 +3262,27 @@ class WorkoutSession: ObservableObject {
                 estimatedFallbackSpeed += (learned - estimatedFallbackSpeed) * blend
             }
             distance = estimatedFallbackSpeed * dt
-            let modelAnswered = learnedSpeed.estimate(airborne: isAirborneForEstimation) != nil
+            // A HAND ON THE PHONE IS NOT A STOP.
+            //
+            // Handling drowns the vibration signature, so the model must not be READ through it
+            // - that gate is right. But falling through to the terminal branch answered ZERO,
+            // and on a drive out of a car park the car was doing 13 km/h when the phone was
+            // picked up and the app recorded 0.0. Six ticks of that in one workout, every one
+            // with the car moving faster than 11 km/h.
+            //
+            // The honest answer while the signature is unreadable is the last one that was
+            // measured, which is what recentLearnedAnswer holds and what the flight case
+            // already relies on. A car does not stop because someone reached for their phone.
+            let modelAnswered = !deviceIsBeingHandled
+                && learnedSpeed.estimate(airborne: isAirborneForEstimation) != nil
             let warmup = modelAnswered && learnedSpeed.lastEstimateUsedWarmup
             if modelAnswered {
                 lastLearnedAnswer = learned
                 lastLearnedAnswerTime = Date()
             }
             sourceTag = stoppedOnGround ? "LEARN(stopped)"
-                : (modelAnswered ? (warmup ? "LEARN(warmup)" : "LEARN") : "LEARN(held)")
+                : (modelAnswered ? (warmup ? "LEARN(warmup)" : "LEARN")
+                   : (deviceIsBeingHandled ? "LEARN(held, in hand)" : "LEARN(held)"))
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
