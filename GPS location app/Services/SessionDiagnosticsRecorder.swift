@@ -393,6 +393,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
 
     // MARK: - Export
 
+    /// Quote a text field if it contains anything that would break the row.
+    private static func csvField(_ v: String) -> String {
+        guard v.contains(",") || v.contains("\"") || v.contains("\n") else { return v }
+        return "\"" + v.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+
     private static func fmt(_ v: Double?, _ places: Int = 5) -> String {
         guard let v, v.isFinite else { return "" }
         return String(format: "%.\(places)f", v)
@@ -412,7 +418,14 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         for r in rows {
             out += iso.string(from: r.t) + ","
-            out += "\(r.source),\(r.activity),"
+            // A COMMA IN A TAG SILENTLY DESTROYS THE FILE.
+            //
+            // "LEARN(held, in hand)" shipped in build 146 and added a 42nd field to a 41-column
+            // row, shifting every value after it. 22 rows of one drive parsed with speed in the
+            // accuracy column and an activity string where a number belonged, and nothing about
+            // the file announced it - it just read as absurd data. Tags are written by hand and
+            // will collect punctuation again, so escape rather than rely on remembering.
+            out += Self.csvField(r.source) + "," + Self.csvField(r.activity) + ","
             out += Self.fmt(r.reportedSpeed) + "," + Self.fmt(r.reportedSpeed * 3.6) + ","
             out += Self.fmt(r.distanceAdded) + ","
             out += Self.fmt(r.heading) + "," + Self.fmt(r.compass) + "," + Self.fmt(r.offset) + ","

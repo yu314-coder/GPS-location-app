@@ -3282,7 +3282,7 @@ class WorkoutSession: ObservableObject {
             }
             sourceTag = stoppedOnGround ? "LEARN(stopped)"
                 : (modelAnswered ? (warmup ? "LEARN(warmup)" : "LEARN")
-                   : (deviceIsBeingHandled ? "LEARN(held, in hand)" : "LEARN(held)"))
+                   : (deviceIsBeingHandled ? "LEARN(held in hand)" : "LEARN(held)"))
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
