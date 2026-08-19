@@ -1286,6 +1286,8 @@ class WorkoutSession: ObservableObject {
         vibrationSpeed.reset()
         learnedSpeed.resetWindow()
         learnedSpeed.load()
+        // Attribute everything this workout teaches to this workout, so regimes stay separable.
+        learnedSpeed.beginSession()
         sessionDiagnostics.reset()
         flightPhase.reset()
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
@@ -3543,6 +3545,7 @@ class WorkoutSession: ObservableObject {
             calSamples: vd.samples,
             extrapolating: vd.isExtrapolating,
             tickInterval: lastDiagnosticTickTime.map { Date().timeIntervalSince($0) } ?? 0,
+            regimeDistance: learnedSpeed.distanceToNearestKnownRegime,
             handlingRotation: handlingRotationLevel,
             headingUnreliable: headingIsUnreliable,
             walkAxis: lastResolvedWalkAxis,

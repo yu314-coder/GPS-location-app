@@ -148,6 +148,20 @@ final class LearnedSpeedEstimator {
         /// When this was recorded. Only set while quarantined, and only used to decide when a
         /// held-back observation has aged far enough to be safe to answer from.
         var t: Date? = nil
+        /// WHICH WORKOUT TAUGHT THIS, so regimes can be told apart later.
+        ///
+        /// A store that has seen several vehicles and several carries holds several internally
+        /// consistent regimes, and a single 4-second window cannot say which one a query belongs
+        /// to. Measured: mounted-car sessions sit 0.54-1.70 apart in mean normalised feature
+        /// space, mounted-to-in-hand 1.81-2.87, and anything-to-motorcycle 4.30-6.97. A WHOLE
+        /// SESSION identifies its regime cleanly where one window cannot.
+        ///
+        /// Restricting the search to fingerprint-matched sessions was measured and did NOT
+        /// predict better (mounted car 4.6 -> 4.1 km/h, in-hand 10.5 -> 10.8, motorcycle 4.0 ->
+        /// 4.0), so nothing about the estimate changes yet. What changes is that the evidence
+        /// needed to build and check that partition is now being kept, instead of having to be
+        /// collected again from scratch once there is a motorcycle ride with usable GPS.
+        var session: Int = 0
     }
     private var observations: [Observation] = []
     /// Bounded so a long history cannot grow without limit or slow the lookup. When full, the
@@ -215,6 +229,55 @@ final class LearnedSpeedEstimator {
     /// store until the workout ends — see learn(gpsSpeed:quarantined:).
     private var quarantined: [Observation] = []
 
+    /// Identifies the workout currently teaching the model, and the mean normalised signature
+    /// of each workout that has taught it. The fingerprint is what separates a regime; see
+    /// Observation.session.
+    private(set) var currentSession: Int = 0
+    private var sessionSignature: [Int: (sum: [Double], n: Double)] = [:]
+
+    /// Begin a new workout. Called when a session starts, so observations recorded from here on
+    /// are attributable to it.
+    func beginSession() {
+        currentSession = (sessionSignature.keys.max() ?? 0) + 1
+    }
+
+    /// Mean normalised feature vector of a stored session - its fingerprint.
+    func fingerprint(of session: Int) -> [Double]? {
+        guard let e = sessionSignature[session], e.n > 0 else { return nil }
+        return e.sum.map { $0 / e.n }
+    }
+
+    /// How far the workout in progress sits from the closest one the model has already learned.
+    /// Small means this is a regime it knows; large means it is answering about something it has
+    /// never seen, which is the case its speeds cannot be trusted in.
+    var distanceToNearestKnownRegime: Double? {
+        guard let here = fingerprint(of: currentSession), !featureMean.isEmpty else { return nil }
+        var best: Double?
+        for (id, _) in sessionSignature where id != currentSession {
+            guard let other = fingerprint(of: id), other.count == here.count else { continue }
+            var d = 0.0
+            for i in 0..<here.count { let z = here[i] - other[i]; d += z * z }
+            let dist = d.squareRoot()
+            if best == nil || dist < best! { best = dist }
+        }
+        return best
+    }
+
+    private func recordSignature(_ f: [Double], session: Int) {
+        guard featureMean.count == f.count else { return }
+        var z = [Double](repeating: 0, count: f.count)
+        for i in 0..<f.count {
+            z[i] = (f[i] - featureMean[i]) / max(featureVar[i].squareRoot(), 1e-6)
+        }
+        if var e = sessionSignature[session], e.sum.count == z.count {
+            for i in 0..<z.count { e.sum[i] += z[i] }
+            e.n += 1
+            sessionSignature[session] = e
+        } else {
+            sessionSignature[session] = (z, 1)
+        }
+    }
+
     /// Record what the accelerometer looked like at a speed GPS actually measured.
     ///
     /// `quarantined` exists because of a leak that made Velocity Mode dishonest. Teaching the
@@ -232,8 +295,10 @@ final class LearnedSpeedEstimator {
     func learn(gpsSpeed: Double, quarantined isQuarantined: Bool = false, airborne: Bool = false) {
         guard gpsSpeed >= 0, let f = currentFeatures() else { return }
         updateNormalisation(f)
+        recordSignature(f, session: currentSession)
         let observation = Observation(f: f, speed: gpsSpeed, airborne: airborne,
-                                      t: isQuarantined ? Date() : nil)
+                                      t: isQuarantined ? Date() : nil,
+                                      session: currentSession)
         if isQuarantined {
             if quarantined.count < capacity { quarantined.append(observation) }
             return
