@@ -4290,13 +4290,28 @@ class WorkoutSession: ObservableObject {
                (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
                 vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
             }
-            // CRITICAL: learn the heading offset here too. This method previously ran only
-            // AFTER this early return, so in Force Velocity — the mode this feature exists for —
-            // it never executed. A vehicle has no steps, so the PCA path could not supply the
-            // offset either, leaving compassMisalignment nil, NO compass correction applied at
-            // all, and the heading free-running on the gyro from its seed. That is why vehicle
-            // routes pointed the wrong way even after the offset logic was added.
-            learnCompassMisalignment(from: location)
+            // THE OFFSET IS FROZEN HERE, NOT LEARNED. THIS MODE MUST NOT READ GPS.
+            //
+            // This call used to run, and it derives the carry offset from GPS COURSE - the
+            // bearing between successive fixes. Applied to the live heading every tick, it was
+            // present on 716 of 720 ticks of one drive and 1161 of 1210 of another. Force
+            // Velocity is supposed to behave as though GPS is gone; a heading corrected by a
+            // live GPS course is not that, and every heading figure measured in this mode was
+            // flattered by it. The speed path has been insulated by quarantine since build 121;
+            // heading was not, and that was an inconsistency, not a decision.
+            //
+            // Freezing rather than deleting is what actually happens in the real case: you
+            // drive to the airport with GPS, the offset is learned, then signal is lost and the
+            // offset is whatever it was. Engage the mode from the first second and there is no
+            // offset at all, which is honest - the correction falls back to a zero prior at
+            // half gain against Core Motion's heading datum.
+            //
+            // Cost, measured by replaying three drives with the offset removed: 5 deg -> 6 deg
+            // median, 4 -> 5, and 6 -> 28. The datum carries it on its own most of the time,
+            // which is only knowable now that build 144 supplies a datum at all - when the
+            // comment this replaces was written there was none, and the heading really did
+            // free-run.
+            // (No call here. The normal, non-forced path below still learns it.)
 
             // THE FIRST POINT, AND ONLY THE FIRST, MAY COME FROM GPS.
             //
