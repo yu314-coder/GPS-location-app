@@ -229,31 +229,57 @@ final class LearnedSpeedEstimator {
     /// store until the workout ends — see learn(gpsSpeed:quarantined:).
     private var quarantined: [Observation] = []
 
-    /// Identifies the workout currently teaching the model, and the mean normalised signature
-    /// of each workout that has taught it. The fingerprint is what separates a regime; see
-    /// Observation.session.
+    /// Identifies the workout currently teaching the model.
+    ///
+    /// DERIVED, NOT STORED. Build 149 kept a parallel table of running signatures, which was
+    /// wrong twice over: it lived only in memory, so it was empty on every launch and the
+    /// regime_distance column came out blank on all 340 ticks of the first drive that used it;
+    /// and it duplicated information the observations already carry. A fingerprint is just the
+    /// mean normalised signature of a session's observations, so it is computed from them and
+    /// persists exactly as long as they do.
     private(set) var currentSession: Int = 0
-    private var sessionSignature: [Int: (sum: [Double], n: Double)] = [:]
 
-    /// Begin a new workout. Called when a session starts, so observations recorded from here on
-    /// are attributable to it.
+    /// Begin a new workout. Numbered above every session already in the store, so a restart
+    /// cannot reuse an id and merge two unrelated regimes into one.
     func beginSession() {
-        currentSession = (sessionSignature.keys.max() ?? 0) + 1
+        let highest = max(observations.map(\.session).max() ?? 0,
+                          quarantined.map(\.session).max() ?? 0)
+        currentSession = highest + 1
     }
 
-    /// Mean normalised feature vector of a stored session - its fingerprint.
+    private func normalised(_ f: [Double]) -> [Double] {
+        guard featureMean.count == f.count else { return f }
+        var z = [Double](repeating: 0, count: f.count)
+        for i in 0..<f.count {
+            z[i] = (f[i] - featureMean[i]) / max(featureVar[i].squareRoot(), 1e-6)
+        }
+        return z
+    }
+
+    /// Mean normalised signature of one session - its fingerprint. Measured across six real
+    /// sessions: same vehicle and carry 0.54-1.70 apart, same vehicle different carry 1.81-2.87,
+    /// different vehicle 4.30-6.97. A whole session separates regimes that a single 4-second
+    /// window cannot.
     func fingerprint(of session: Int) -> [Double]? {
-        guard let e = sessionSignature[session], e.n > 0 else { return nil }
-        return e.sum.map { $0 / e.n }
+        let pool = observations.filter { $0.session == session }
+            + quarantined.filter { $0.session == session }
+        guard pool.count >= 20, !featureMean.isEmpty else { return nil }
+        var sum = [Double](repeating: 0, count: featureMean.count)
+        for o in pool {
+            let z = normalised(o.f)
+            guard z.count == sum.count else { continue }
+            for i in 0..<sum.count { sum[i] += z[i] }
+        }
+        return sum.map { $0 / Double(pool.count) }
     }
 
-    /// How far the workout in progress sits from the closest one the model has already learned.
-    /// Small means this is a regime it knows; large means it is answering about something it has
-    /// never seen, which is the case its speeds cannot be trusted in.
+    /// How far the workout in progress sits from the closest regime the model already knows.
+    /// Small means it has seen this vehicle and carry before; large means the speed it is
+    /// reporting is an answer about something it has never observed.
     var distanceToNearestKnownRegime: Double? {
-        guard let here = fingerprint(of: currentSession), !featureMean.isEmpty else { return nil }
+        guard let here = fingerprint(of: currentSession) else { return nil }
         var best: Double?
-        for (id, _) in sessionSignature where id != currentSession {
+        for id in Set(observations.map(\.session)) where id != currentSession {
             guard let other = fingerprint(of: id), other.count == here.count else { continue }
             var d = 0.0
             for i in 0..<here.count { let z = here[i] - other[i]; d += z * z }
@@ -261,21 +287,6 @@ final class LearnedSpeedEstimator {
             if best == nil || dist < best! { best = dist }
         }
         return best
-    }
-
-    private func recordSignature(_ f: [Double], session: Int) {
-        guard featureMean.count == f.count else { return }
-        var z = [Double](repeating: 0, count: f.count)
-        for i in 0..<f.count {
-            z[i] = (f[i] - featureMean[i]) / max(featureVar[i].squareRoot(), 1e-6)
-        }
-        if var e = sessionSignature[session], e.sum.count == z.count {
-            for i in 0..<z.count { e.sum[i] += z[i] }
-            e.n += 1
-            sessionSignature[session] = e
-        } else {
-            sessionSignature[session] = (z, 1)
-        }
     }
 
     /// Record what the accelerometer looked like at a speed GPS actually measured.
@@ -295,7 +306,6 @@ final class LearnedSpeedEstimator {
     func learn(gpsSpeed: Double, quarantined isQuarantined: Bool = false, airborne: Bool = false) {
         guard gpsSpeed >= 0, let f = currentFeatures() else { return }
         updateNormalisation(f)
-        recordSignature(f, session: currentSession)
         let observation = Observation(f: f, speed: gpsSpeed, airborne: airborne,
                                       t: isQuarantined ? Date() : nil,
                                       session: currentSession)
