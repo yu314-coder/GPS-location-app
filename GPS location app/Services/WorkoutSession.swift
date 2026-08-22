@@ -280,6 +280,10 @@ class WorkoutSession: ObservableObject {
         locationManager.currentCompassHeading ?? locationManager.currentMotionHeading
     }
     private var lastDiagnosticTickTime: Date?
+    /// When Apple's classifier last reported automotive. Distinct from lastVehicleEvidenceTime,
+    /// which the step-based revocation clears - this one is never cleared, because it records
+    /// what was OBSERVED rather than what is currently believed.
+    private var lastAutomotiveClassificationTime: Date?
     private var lastMisalignmentFix: FlightLocation?
     private var lastCompassReadingForCheck: Double?
     /// How far the compass may disagree with the gyro over one tick before it is treated as
@@ -3770,7 +3774,30 @@ class WorkoutSession: ObservableObject {
                                 // Apple's classifier already knew — it was reporting [car] at
                                 // the time — so ask it. Walking genuinely reports walking or
                                 // unknown, never automotive, so nothing real is refused here.
-                                if self.stepCadence >= 1.0, !self.activityIsAutomotive {
+                                // PHANTOM STEPS MUST NOT REVOKE A VEHICLE THE CLASSIFIER JUST NAMED.
+                                //
+                                // Checking activityIsAutomotive only at this instant is too weak
+                                // for a motorcycle, where the classifier flickers: over a
+                                // 20-minute ride it reported [car] on 636 ticks and [walk] on
+                                // 271, and every flicker let engine vibration revoke the vehicle
+                                // and hand the speed to the pedometer. PDR then drove 27% of the
+                                // ride, reporting a mean of 3.3 km/h while GPS had the bike at
+                                // 49.6 - and the learned model, had it been allowed to answer
+                                // those ticks, was 13.2 km/h MAE.
+                                //
+                                // Recency separates the two cases completely. Across two real
+                                // walks the classifier NEVER said automotive - not once in 190
+                                // stepping ticks - while on the motorcycle the median gap since
+                                // it last did was 84 s. Measured: blocking within 120 s suppresses
+                                // 61% of the false hand-overs at zero cost to either walk.
+                                //
+                                // The residual risk is a walk beginning within two minutes of
+                                // parking, which is why this is 120 s and not the full 300 s
+                                // vehicle TTL - 300 would have caught 93%.
+                                let automotiveRecently = self.lastAutomotiveClassificationTime
+                                    .map { now.timeIntervalSince($0) < 120 } ?? false
+                                if self.stepCadence >= 1.0, !self.activityIsAutomotive,
+                                   !automotiveRecently {
                                     self.lastStepIncrementTime = now
                                     // Counted steps at a walking cadence are direct evidence of
                                     // being on foot, and outrank any earlier GPS speed spike.
@@ -3799,7 +3826,10 @@ class WorkoutSession: ObservableObject {
                     self.stationaryActivitySince = nil
                 }
                 self.activityIsAutomotive = activity.automotive
-                if activity.automotive { self.lastVehicleEvidenceTime = Date() }
+                if activity.automotive {
+                    self.lastVehicleEvidenceTime = Date()
+                    self.lastAutomotiveClassificationTime = Date()
+                }
             }
             print("📍 🚗 Activity classifier engaged (stationary/automotive detection)")
         }
