@@ -63,6 +63,13 @@ struct DeveloperView: View {
                     Text(modelSummary)
                         .font(.system(.footnote, design: .monospaced))
                 }
+                NavigationLink {
+                    TeachFromLogView()
+                } label: {
+                    SettingsRow(symbol: "graduationcap.fill", tint: .indigo,
+                                title: "Teach from a saved log",
+                                subtitle: "Replay a recorded 50 Hz trace into the model")
+                }
                 Button(role: .destructive) { showingForgetConfirm = true } label: {
                     SettingsRow(symbol: "trash.fill", tint: .red, title: "Forget learned speeds")
                 }
@@ -207,5 +214,89 @@ extension Bundle {
             $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(validatingUTF8: $0) ?? "?" }
         }
         return machine
+    }
+}
+
+// MARK: - Teach from a saved log
+
+/// Replays a recorded raw trace into the learned model.
+///
+/// The model can only answer for conditions it has observed, and a flight is the one condition
+/// that cannot be practised. But a flight WAS recorded, with GPS valid throughout, and its cabin
+/// vibration predicts its own airspeed to a leave-one-out MAE of 43.3 km/h against a 253.7 km/h
+/// baseline - skill +0.83, the same as the best mounted car drives. Those observations were
+/// simply never kept, because the airborne partition did not exist when the flight happened.
+///
+/// So the evidence does not have to be gathered again by flying: the log already holds it.
+struct TeachFromLogView: View {
+    @State private var logs: [(url: URL, size: Int, modified: Date)] = []
+    @State private var airborne = false
+    @State private var busy: URL?
+    @State private var result: String?
+
+    private var rawLogs: [(url: URL, size: Int, modified: Date)] {
+        logs.filter { $0.url.lastPathComponent.contains("raw50hz") }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: $airborne) {
+                    SettingsRow(symbol: "airplane", tint: .cyan, title: "This log is a flight",
+                                subtitle: "Kept apart from the ground model")
+                }
+            } footer: {
+                Text("Air and ground are separate memories. A cruise is quiet and so is a smooth road, so one store answering for both is wrong in either direction.")
+            }
+
+            Section {
+                if rawLogs.isEmpty {
+                    Text("No 50 Hz traces saved yet.")
+                        .foregroundColor(.secondary).font(.callout)
+                }
+                ForEach(rawLogs, id: \.url) { log in
+                    Button {
+                        teach(log.url)
+                    } label: {
+                        HStack {
+                            SettingsRow(symbol: "waveform.path", tint: .indigo,
+                                        title: log.url.lastPathComponent
+                                            .replacingOccurrences(of: "velocity_raw50hz_", with: "")
+                                            .replacingOccurrences(of: ".csv", with: ""),
+                                        subtitle: ByteCountFormatter.string(fromByteCount: Int64(log.size),
+                                                                            countStyle: .file))
+                            if busy == log.url { ProgressView().controlSize(.small) }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(busy != nil)
+                }
+            } header: {
+                Text("Saved traces")
+            } footer: {
+                if let result {
+                    Text(result).foregroundColor(.secondary)
+                } else {
+                    Text("Replays the trace through the same 4-second window a live workout uses, recording the signature it saw at each speed GPS measured. Nothing is inferred - only what the file already contains is used.")
+                }
+            }
+        }
+        .navigationTitle("Teach from a log")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { logs = SessionDiagnosticsRecorder.allSavedLogs() }
+    }
+
+    private func teach(_ url: URL) {
+        busy = url
+        result = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let n = WorkoutSession.shared.learnedSpeed.importRawLog(at: url, airborne: airborne)
+            DispatchQueue.main.async {
+                busy = nil
+                result = n > 0
+                    ? "Learned \(n) observations from this trace. The model now holds \(WorkoutSession.shared.learnedSpeed.observationCount)."
+                    : "No usable observations - the trace has no GPS speeds to learn from."
+            }
+        }
     }
 }

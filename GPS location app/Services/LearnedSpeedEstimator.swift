@@ -334,6 +334,51 @@ final class LearnedSpeedEstimator {
         }
     }
 
+    /// TEACH THE MODEL FROM A LOG THAT WAS ALREADY RECORDED.
+    ///
+    /// The 14 August flight carried GPS the whole way - valid speed on all 1323 ticks, up to
+    /// 706 km/h - and its cabin vibration predicts its own airspeed to a leave-one-out MAE of
+    /// 43.3 km/h against a 253.7 km/h baseline: skill +0.83, the same as the best mounted car
+    /// drives. The signal was there. What was missing is that those observations were never
+    /// committed to the airborne partition, because the partition did not exist yet and the
+    /// store was reset afterwards.
+    ///
+    /// Nothing about a flight has to be inferred here. The log has the speeds GPS measured, so
+    /// this replays the raw 50 Hz vertical acceleration through the same window and records the
+    /// same (signature -> speed) pairs a live session would have. It reads only what is in the
+    /// file; it decides nothing.
+    ///
+    /// Returns how many observations were taken.
+    @discardableResult
+    func importRawLog(at url: URL, airborne: Bool, everyNSamples: Int = 25) -> Int {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let header = lines.first else { return 0 }
+        let cols = header.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard let vIdx = cols.firstIndex(of: "vertical_accel_ms2"),
+              let sIdx = cols.firstIndex(of: "gps_speed_ms") else { return 0 }
+        lines.removeFirst()
+
+        beginSession()
+        resetWindow()
+        var taken = 0, sinceLast = 0
+        for line in lines {
+            let parts = line.split(separator: ",", omittingEmptySubsequences: false)
+            guard parts.count > max(vIdx, sIdx), let a = Double(parts[vIdx]) else { continue }
+            ingest(vertical: a)
+            sinceLast += 1
+            guard sinceLast >= everyNSamples, let speed = Double(parts[sIdx]), speed >= 0 else { continue }
+            sinceLast = 0
+            let before = observations.count
+            learn(gpsSpeed: speed, airborne: airborne)
+            if observations.count > before || observations.count == capacity { taken += 1 }
+        }
+        recalibrate()
+        save()
+        print("🧠 Learned speed model: imported \(taken) observations from \(url.lastPathComponent) (airborne: \(airborne))")
+        return taken
+    }
+
     /// Fold everything learned during a forced session into the searchable store. Called when
     /// the workout ends, so the evidence is never available to the estimate that produced it.
     func commitQuarantinedObservations() {
