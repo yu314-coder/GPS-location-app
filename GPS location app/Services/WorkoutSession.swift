@@ -277,7 +277,23 @@ class WorkoutSession: ObservableObject {
     /// NO datum and an unbounded gyro drift. Core Motion's heading is the same magnetometer
     /// seen through the attitude filter, and it keeps being delivered in the background.
     private var absoluteHeadingDatum: Double? {
-        locationManager.currentCompassHeading ?? locationManager.currentMotionHeading
+        // A STALE READING IS NOT A READING.
+        //
+        // CLHeading is preferred - it is calibrated and reports its own accuracy - but it is
+        // only delivered in the foreground, and currentCompassHeading is never cleared when the
+        // deliveries stop. So on a pocketed drive it freezes at whatever it last saw and, being
+        // non-nil, shadows the Core Motion fallback that build 144 added for exactly this case.
+        // Measured on an 80-minute drive: one datum value for 99% of the workout while the phone
+        // turned 5264 degrees, and a route that pointed the wrong way throughout.
+        //
+        // Five seconds is far longer than the delivery interval when updates are actually
+        // arriving, and far shorter than the gap once they stop.
+        if let fresh = locationManager.currentCompassHeading,
+           let t = locationManager.currentCompassHeadingTime,
+           Date().timeIntervalSince(t) < 5.0 {
+            return fresh
+        }
+        return locationManager.currentMotionHeading
     }
     private var lastDiagnosticTickTime: Date?
     /// When Apple's classifier last reported automotive. Distinct from lastVehicleEvidenceTime,

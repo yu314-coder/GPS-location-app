@@ -26,6 +26,19 @@ class LocationManager: NSObject, ObservableObject {
     @Published var currentYaw: Double? // degrees
     @Published var currentRotationRate: Double? // rad/s magnitude
     @Published var currentCompassHeading: Double? // degrees
+    /// When currentCompassHeading last actually arrived.
+    ///
+    /// CLLocationManager suspends heading updates in the background, and this property is never
+    /// cleared - so on a pocketed drive it keeps its last value indefinitely. Measured on an
+    /// 80-minute drive: the heading datum held ONE value for 4790 of 4832 seconds, 99% of the
+    /// workout, four distinct values in total, while the phone physically rotated 5264 degrees.
+    /// The heading then oscillated around a fixed wrong direction and the recorded route pointed
+    /// the wrong way for the entire trip.
+    ///
+    /// Build 144 added Core Motion's heading as a fallback for when CLHeading is missing, which
+    /// was the right idea and did not go far enough: a STALE non-nil reading shadows the
+    /// fallback completely. Freshness is what makes the fallback reachable.
+    @Published var currentCompassHeadingTime: Date?
     /// CORE MOTION'S OWN HEADING, WHICH KEEPS WORKING IN THE BACKGROUND.
     ///
     /// CLLocationManager suspends heading updates when the app is not in the foreground, so on
@@ -871,6 +884,7 @@ class LocationManager: NSObject, ObservableObject {
             self?.currentYaw = nil
             self?.currentRotationRate = nil
             self?.currentCompassHeading = nil
+            self?.currentCompassHeadingTime = nil
             self?.currentMotionHeading = nil
             self?.currentMotionHorizontalAcceleration = nil
             self?.currentMotionForwardAcceleration = nil
@@ -1166,6 +1180,7 @@ extension LocationManager: CLLocationManagerDelegate {
         }
 
         currentCompassHeading = heading
+        currentCompassHeadingTime = Date()
         onCompassHeadingUpdate?(heading, Date())
     }
 
