@@ -663,7 +663,34 @@ class WorkoutSession: ObservableObject {
     /// road vehicle could have performed. Used wherever the estimator must not treat the air as
     /// if it were a road — never to invent a speed.
     private var isAirborneForEstimation: Bool {
-        flightPhase.isAirborne || takeoffDetected
+        // THE INERTIAL TAKEOFF DETECTOR IS GONE. IT FIRED ON ROADS AND MISSED THE FLIGHT.
+        //
+        // It integrated along-track acceleration while positive and latched at 45 m/s in one
+        // unbroken episode, on the reasoning that no road does that without a gear change or a
+        // lift breaking the episode up. Replayed against the recordings:
+        //
+        //     today's car drive      52.5 m/s   LATCHED at t=170 s
+        //     car, 22 Aug           209.9       LATCHED
+        //     motorcycle            328.5       LATCHED
+        //     the actual flight      15.4       never latched
+        //
+        // Backwards on every one. The episode almost never breaks in a vibrating vehicle,
+        // because road noise keeps the signal above the 0.5 m/s² floor, so the integral
+        // accumulates the positive half of the noise for minutes. Integrating the SIGNED value
+        // instead does not save it - 56 to 190 m/s on the cars against 20 on the flight.
+        //
+        // The flight reads low for the reason that has now defeated three separate attempts
+        // here: Core Motion's attitude filter absorbs sustained linear acceleration as a change
+        // in the gravity direction, so a takeoff roll - the most sustained acceleration this
+        // phone will ever see - is precisely what it erases.
+        //
+        // Cost of the false latch, measured on today's drive: it fired at t=170, the estimator
+        // began querying an empty airborne partition, and from t=367 every tick came from the
+        // warm-up pool. Speed bias -16 km/h, distance -27.5%.
+        //
+        // Cabin pressure remains, and it is the sensor that actually worked: it says WHETHER
+        // the aircraft is flying, never how fast.
+        flightPhase.isAirborne
     }
     /// THE MODEL DECLINING MUST NOT MEAN THE CAR STOPPED.
     ///
