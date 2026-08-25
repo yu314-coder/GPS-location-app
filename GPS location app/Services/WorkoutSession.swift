@@ -300,6 +300,35 @@ class WorkoutSession: ObservableObject {
     /// which the step-based revocation clears - this one is never cleared, because it records
     /// what was OBSERVED rather than what is currently believed.
     private var lastAutomotiveClassificationTime: Date?
+
+    /// When this workout began, and how long Velocity Mode may keep learning the carry offset
+    /// from GPS before it is frozen for good.
+    ///
+    /// The offset is the angle between where the phone points and where the body travels. It
+    /// cannot be derived without GPS - the acceleration axis was tried and returns essentially
+    /// noise (concentration R = 0.15 against a known answer), because Core Motion's attitude
+    /// filter absorbs the sustained acceleration it would have to be measured from.
+    ///
+    /// So it must be learned while GPS is present, and build 148 was right that it must not be
+    /// learned CONTINUOUSLY in a mode that exists to behave as though GPS is gone. A bounded
+    /// window at the start is both: it matches what physically happens on the flight this mode
+    /// is for - GPS on the way to the aircraft, offset learned, signal lost, offset frozen - and
+    /// it cannot quietly become a live GPS correction, because it stops.
+    ///
+    /// Measured on a 15 km drive: the route came out the right shape and within 4.1% on length,
+    /// rotated 26 degrees, missing the finish by 4174 m. Re-integrated with the offset applied,
+    /// the miss is 416 m and the bearing lands 1.2 degrees from truth.
+    ///
+    /// 180 s rather than 60: a drive that starts slowly produced no usable course samples at all
+    /// before 180 s, while a drive that starts promptly was already within 3 degrees by 60.
+    private var workoutStartTime: Date?
+    private let OFFSET_WARMUP_WINDOW: TimeInterval = 180
+    /// True while the window is open, so a log can never mistake a warmed offset for one the
+    /// mode derived without GPS.
+    private var offsetWarmupActive: Bool {
+        guard forceMotionFallback, let start = workoutStartTime else { return false }
+        return Date().timeIntervalSince(start) < OFFSET_WARMUP_WINDOW
+    }
     private var lastMisalignmentFix: FlightLocation?
     private var lastCompassReadingForCheck: Double?
     /// How far the compass may disagree with the gyro over one tick before it is treated as
@@ -1335,6 +1364,7 @@ class WorkoutSession: ObservableObject {
         learnedSpeed.load()
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
+        workoutStartTime = Date()
         sessionDiagnostics.reset()
         flightPhase.reset()
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
@@ -3593,6 +3623,7 @@ class WorkoutSession: ObservableObject {
             extrapolating: vd.isExtrapolating,
             tickInterval: lastDiagnosticTickTime.map { Date().timeIntervalSince($0) } ?? 0,
             regimeDistance: learnedSpeed.distanceToNearestKnownRegime,
+            offsetWarmup: offsetWarmupActive,
             handlingRotation: handlingRotationLevel,
             headingUnreliable: headingIsUnreliable,
             walkAxis: lastResolvedWalkAxis,
@@ -4387,7 +4418,10 @@ class WorkoutSession: ObservableObject {
             // which is only knowable now that build 144 supplies a datum at all - when the
             // comment this replaces was written there was none, and the heading really did
             // free-run.
-            // (No call here. The normal, non-forced path below still learns it.)
+            // Bounded: the window closes and the offset is frozen for the rest of the workout.
+            if offsetWarmupActive {
+                learnCompassMisalignment(from: location)
+            }
 
             // THE FIRST POINT, AND ONLY THE FIRST, MAY COME FROM GPS.
             //
