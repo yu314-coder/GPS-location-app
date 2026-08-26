@@ -322,6 +322,53 @@ class WorkoutSession: ObservableObject {
     /// 180 s rather than 60: a drive that starts slowly produced no usable course samples at all
     /// before 180 s, while a drive that starts promptly was already within 3 degrees by 60.
     private var workoutStartTime: Date?
+
+    /// Rolling 30 s history of barometric altitude and device yaw, for recognising a car-park
+    /// ramp. Both are non-GPS, which this mode requires.
+    private var rampAltitudeHistory: [(t: Date, m: Double)] = []
+    private var rampYawHistory: [(t: Date, deg: Double)] = []
+    private var onRampNow = false
+    private let RAMP_WINDOW: TimeInterval = 30
+    private let RAMP_CLIMB_RATE = 0.08      // m/s sustained
+    private let RAMP_NET_TURN = 150.0       // degrees, SIGNED, over the window
+
+    /// A PARKING RAMP IS NOT A ROAD, AND THE MODEL CANNOT TELL.
+    ///
+    /// Measured against GPS on the two drives where it dominates: on the flat the estimate is
+    /// accurate (46.2 against 44.1 km/h, 40.3 against 44.4), and on the ramp it reads two to
+    /// seven times too fast (30.1 against 4.1, 48.2 against 10.0, 45.1 against 17.8). A car
+    /// crawling up a concrete spiral shakes as hard as one doing 40 on a road, and vibration is
+    /// the only thing this model has.
+    ///
+    /// Neither signal alone is enough. The barometer flags every hill - 8 km of one 15 km drive,
+    /// where the estimate is fine. Turning alone flags every junction. Together they describe
+    /// something a road does not do: climbing steadily while turning continuously the SAME WAY,
+    /// which is what a helical ramp is and what a road bend is not.
+    ///
+    /// The action is to stop accumulating distance, not to guess a speed. A ramp is 100-200 m
+    /// of a journey; reporting nothing there is wrong by that much, while reporting what the
+    /// model believes was wrong by 400-500 m on a 1 km drive.
+    private func updateRampDetection(now: Date) {
+        if let alt = locationManager.currentRelativeAltitude {
+            rampAltitudeHistory.append((now, alt))
+        }
+        rampYawHistory.append((now, motionHeadingDegrees))
+        rampAltitudeHistory.removeAll { now.timeIntervalSince($0.t) > RAMP_WINDOW }
+        rampYawHistory.removeAll { now.timeIntervalSince($0.t) > RAMP_WINDOW }
+        guard rampAltitudeHistory.count >= 4, rampYawHistory.count >= 8,
+              let firstAlt = rampAltitudeHistory.first, let lastAlt = rampAltitudeHistory.last,
+              now.timeIntervalSince(firstAlt.t) >= RAMP_WINDOW * 0.6 else {
+            onRampNow = false
+            return
+        }
+        let span = max(now.timeIntervalSince(firstAlt.t), 1)
+        let climbRate = abs(lastAlt.m - firstAlt.m) / span
+        var netTurn = 0.0
+        for i in 1..<rampYawHistory.count {
+            netTurn += normalizedSignedAngle(rampYawHistory[i].deg - rampYawHistory[i - 1].deg)
+        }
+        onRampNow = climbRate > RAMP_CLIMB_RATE && abs(netTurn) > RAMP_NET_TURN
+    }
     private let OFFSET_WARMUP_WINDOW: TimeInterval = 180
     /// True while the window is open, so a log can never mistake a warmed offset for one the
     /// mode derived without GPS.
@@ -3133,6 +3180,7 @@ class WorkoutSession: ObservableObject {
         // Route by what the sensors ACTUALLY detect, never by the activity label: the user
         // selects "Walking" while sitting in an aircraft, where the pedometer counts zero
         // steps — routing on the label alone yields zero distance and NO TRACK.
+        updateRampDetection(now: Date())
         var distance: Double
         var sourceTag = "DR"
         // VEHICLE-LAUNCH DETECTOR. A car or aircraft pulling away produces a large horizontal
@@ -3605,6 +3653,9 @@ class WorkoutSession: ObservableObject {
         // decisive evidence has to come from the device.
         let vd = vibrationSpeed.diagnostics
         let lastFix = flight.locations.last(where: { !$0.isEstimated && $0.isValid })
+        // On a ramp the vibration says 40 km/h and the car is doing 8. Add nothing rather than
+        // that; see updateRampDetection.
+        if onRampNow { distance = 0 }
         defer { lastDiagnosticTickTime = Date() }
         sessionDiagnostics.record(.init(
             t: now,
@@ -3624,6 +3675,7 @@ class WorkoutSession: ObservableObject {
             tickInterval: lastDiagnosticTickTime.map { Date().timeIntervalSince($0) } ?? 0,
             regimeDistance: learnedSpeed.distanceToNearestKnownRegime,
             offsetWarmup: offsetWarmupActive,
+            onRamp: onRampNow,
             handlingRotation: handlingRotationLevel,
             headingUnreliable: headingIsUnreliable,
             walkAxis: lastResolvedWalkAxis,
