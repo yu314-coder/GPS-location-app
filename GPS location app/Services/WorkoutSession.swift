@@ -323,6 +323,15 @@ class WorkoutSession: ObservableObject {
     /// before 180 s, while a drive that starts promptly was already within 3 degrees by 60.
     private var workoutStartTime: Date?
 
+    /// How many REAL GPS fixes have been appended to the drawn route.
+    ///
+    /// Velocity Mode promises the track is dead-reckoned, with only the opening anchor from GPS,
+    /// and until now nothing in the log stated whether that promise held. It had to be inferred
+    /// from a side effect - and on one 17-minute workout the inference showed 63 separate GPS
+    /// fixes in the route, because the mode had switched off 34 seconds in and nothing recorded
+    /// that either. Both facts are now columns.
+    private(set) var gpsFixesInRoute = 0
+
     /// Rolling 30 s history of barometric altitude and device yaw, for recognising a car-park
     /// ramp. Both are non-GPS, which this mode requires.
     private var rampAltitudeHistory: [(t: Date, m: Double)] = []
@@ -3675,6 +3684,8 @@ class WorkoutSession: ObservableObject {
             tickInterval: lastDiagnosticTickTime.map { Date().timeIntervalSince($0) } ?? 0,
             regimeDistance: learnedSpeed.distanceToNearestKnownRegime,
             offsetWarmup: offsetWarmupActive,
+            velocityMode: forceMotionFallback,
+            gpsFixesInRoute: gpsFixesInRoute,
             onRamp: onRampNow,
             handlingRotation: handlingRotationLevel,
             headingUnreliable: headingIsUnreliable,
@@ -4112,7 +4123,7 @@ class WorkoutSession: ObservableObject {
         // GPS at BOTH ends instead of leaving the drifted DR track hanging — the single
         // biggest accuracy win when GPS is available intermittently.
         rubberSheetEstimatedGap(onto: location)
-        flight.locations.append(location)
+        flight.locations.append(location); gpsFixesInRoute += 1
         lastRealLocationTime = Date()
         NotificationCenter.default.post(
             name: .workoutLocationUpdated,
@@ -4246,7 +4257,7 @@ class WorkoutSession: ObservableObject {
         } else if let seed = syntheticFallbackAnchor(at: timestamp) {
             // No point recorded yet (workout began without GPS): lay down an origin so the
             // dead-reckoned route can be drawn instead of silently producing nothing.
-            flight.locations.append(seed)
+            flight.locations.append(seed); gpsFixesInRoute += 1
             previousLocation = seed
             print("📍 🧭 Fallback seeded synthetic anchor (no GPS yet) at \(String(format: "%.5f", seed.latitude)),\(String(format: "%.5f", seed.longitude))")
         } else {
@@ -4507,7 +4518,7 @@ class WorkoutSession: ObservableObject {
                fixAge < MAX_ANCHOR_FIX_AGE {
                 let anchor = location.withMotion(
                     currentMotionSnapshot(movementDirection: validCourse(location.course)))
-                flight.locations.append(anchor)
+                flight.locations.append(anchor); gpsFixesInRoute += 1
                 // Dead-reckoning uncertainty now grows from THIS fix's accuracy.
                 anchorAccuracyForDR = max(location.horizontalAccuracy, 5.0)
                 distanceSinceLastRealFix = 0
@@ -4571,7 +4582,7 @@ class WorkoutSession: ObservableObject {
             locationsToSkipAfterResume -= 1
 
             // Add location but don't calculate distance
-            flight.locations.append(location)
+            flight.locations.append(location); gpsFixesInRoute += 1
             lastRealLocationTime = Date()
             NotificationCenter.default.post(
                 name: .workoutLocationUpdated,
@@ -4590,6 +4601,7 @@ class WorkoutSession: ObservableObject {
 
         // Add to flight (after GPS filtering passed), with the current motion snapshot.
         flight.locations.append(location.withMotion(currentMotionSnapshot(movementDirection: validCourse(location.course))))
+        gpsFixesInRoute += 1
         // A real fix resets the dead-reckoning uncertainty: anything estimated after this is
         // carried from here, not from wherever the last fix happened to be.
         anchorAccuracyForDR = max(location.horizontalAccuracy, 5.0)
