@@ -1,5 +1,6 @@
-\documentclass[10pt,twocolumn]{article}
-\usepackage[margin=0.85in]{geometry}
+\documentclass[11pt]{article}
+\usepackage[margin=1.35in]{geometry}
+\usepackage{parskip}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{booktabs}
@@ -16,22 +17,22 @@ vibration-derived speed and its failure modes}}
 \begin{document}
 \maketitle
 
-\begin{abstract}
-\noindent
-A phone can record where it has been without satellite positioning, by reading speed from how
-the vehicle shakes and direction from its motion sensors. We describe the method as shipped in
-a consumer iOS workout application, and report its accuracy on twenty-three instrumented
-journeys by car, motorcycle and on foot, each recorded with GPS running alongside purely as
-ground truth. On fast, steady driving with the phone coupled to the vehicle the recorded
-distance is within $3.8\%$ over $15$~km and heading within $5^\circ$; in slow stop-start traffic
-the same system reads $20$--$60\%$ long. We show that this gap is not a defect but a property of
-the signal: absolute speed error is a few km/h at any speed, which is $1\%$ of a motorway pace
-and $140\%$ of a walking one. We give equal space to eight approaches that were implemented,
-measured and rejected. Three fell to one cause: the specific-force ambiguity that makes gravity
-and sustained linear acceleration indistinguishable to an accelerometer is well known in attitude
-estimation, but on a platform where the sensor fusion is vendor-supplied and cannot be replaced
-it silently erases the signal that aircraft dead reckoning, acceleration-derived heading and
-inertial takeoff detection all depend on. We report the magnitude of that consequence.
+\begin{abstract}\noindent
+A phone can record where it has been without satellite positioning, by reading speed from how the
+vehicle shakes and direction from its motion sensors. We describe the method as shipped in a
+consumer iOS workout application, and report its accuracy on twenty-three instrumented journeys by
+car, motorcycle and on foot. Each was recorded with GPS running alongside, used only as a
+reference: we call that the \emph{real} speed, and what the sensors produced the \emph{estimated}
+speed. Driving fast and steadily with the phone resting in the vehicle, estimated distance is
+within $3.8\%$ over $15$~km and direction within $5^\circ$; in slow stop-start traffic the same
+system reads $20$--$60\%$ long. We show that this gap is a property of the signal rather than a
+defect: the estimate reads one to two km/h high at any speed, which is $2\%$ of a motorway pace
+and $40\%$ of a crawl. We give equal space to eight approaches that were implemented, measured and
+rejected. Three failed for one reason. An accelerometer cannot tell gravity apart from the vehicle
+pushing it --- long known in attitude estimation --- and on this platform the sensor fusion that
+resolves that ambiguity is the vendor's, cannot be replaced, and quietly removes the very signal
+that aircraft dead reckoning, direction-from-acceleration and takeoff detection all rely on. We
+report how much that costs.
 \end{abstract}
 
 \section{Introduction}
@@ -46,7 +47,7 @@ spectral signature of vertical acceleration can be mapped to speed directly, wit
 integration and therefore without accumulation. CarSpeedNet~\cite{carspeednet} reports
 RMSE $1.8$~m/s and MAE $0.72$~m/s from $13.2$~hours of accelerometer-only driving, at the same
 $4$-second window length we arrive at independently. Its $0.5$-hour test holdout is drawn from
-that same collection, so the figure is in-distribution.
+that same collection, so the reported figure describes journeys much like the ones it learned from.
 
 This paper describes such a system built into a shipping application, and --- more usefully ---
 reports what happens outside the distribution, on a phone that is sometimes mounted, sometimes
@@ -81,7 +82,7 @@ energies, chosen because it can \emph{decline} to answer when nothing resembling
 been observed, which a trained network cannot. The contribution here is not the estimator but
 the evaluation regime.
 
-\paragraph{Reported accuracy is usually in-distribution.} CarSpeedNet's $0.5$-hour holdout comes
+\paragraph{Published accuracy is usually measured on familiar data.} CarSpeedNet's $0.5$-hour holdout comes
 from the same $13.2$-hour collection as its training data. This matters: we measure $+1.0$ to $+1.7$~km/h bias on
 a store built from matched journeys and $+6.8$~km/h on the same device once the store contains
 other carry positions and vehicles --- a degradation invisible to a random split. The
@@ -128,7 +129,7 @@ w[n] &= \tfrac{1}{2} - \tfrac{1}{2}\cos\!\left(\frac{2\pi n}{N-1}\right)\\
 X[k] &= \sum_{n=0}^{N-1}\big(x[n]-\bar{x}\big)\,w[n]\,e^{-2\pi i k n / N}
 \end{align}
 Energy is accumulated into nine logarithmically spaced bands bounded at
-$0.4, 0.8, 1.6, 2.5, 4, 6, 9, 13, 18, 24$~Hz:
+$0.4$, $0.8$, $1.6$, $2.5$, $4$, $6$, $9$, $13$, $18$ and $24$~Hz:
 \begin{equation}
 f_b = \ln\!\Big(\textstyle\sum_{k \in b} |X[k]|^2 + \epsilon\Big), \quad b = 1\ldots 9
 \end{equation}
@@ -189,76 +190,187 @@ Only the first point of a route originates from GPS.
 
 \section{Results}
 
-\subsection{Distance}
+Throughout this section \emph{real} means the speed or distance GPS recorded at the same instant
+as the estimate, and \emph{estimated} means what the app produced from the motion sensors alone.
+Real distance is the integral of GPS speed over time, not the sum of fix-to-fix jumps: on one
+$15$~km journey those two differ by $35\%$ ($14{,}445$~m against $19{,}496$~m), because position
+scatter adds length that was never travelled.
 
-\begin{figure}[t]
+\subsection{Distance over a whole journey}
+
+\begin{figure}[htbp]
 \centering
-\includegraphics[width=\columnwidth]{figures/fig_distance.pdf}
-\caption{Recorded distance against GPS ground truth, seven journeys. The system is accurate when
-fast and steady, and reads long in slow traffic.}
+\includegraphics[width=0.92\textwidth]{figures/fig_distance.pdf}
+\caption{Estimated distance against real distance, eight journeys. The estimate is close when the
+vehicle is fast and steady, and reads long when it is slow.}
 \label{fig:distance}
 \end{figure}
 
-Figure~\ref{fig:distance} gives the headline. A $15$~km open-road drive records to $+3.8\%$; a
-four-minute car-park trip to $+61.6\%$. The ordering is by average speed, not by any property of
-the route.
+\begin{table}[htbp]
+\centering\small
+\caption{Every journey, in full. Average speed is over moving time only.}
+\label{tab:journeys}
+\begin{tabular}{lrrrr}
+\toprule
+Journey & Estimated & Real & Error & Avg.\ speed\\
+\midrule
+Open road, 25 min   & 14\,994\,m & 14\,445\,m & $+3.8\%$  & 43 km/h\\
+Suburban, 12 min    &  3\,793\,m &  3\,678\,m & $+3.1\%$  & 28 km/h\\
+Motorcycle, 20 min  &  6\,181\,m &  5\,118\,m & $+20.8\%$ & 35 km/h\\
+City, 15 min        &  3\,363\,m &  2\,801\,m & $+20.1\%$ & 21 km/h\\
+City, 12 min        &  5\,741\,m &  4\,720\,m & $+21.6\%$ & 29 km/h\\
+Car park, 11 min    &  2\,762\,m &  2\,207\,m & $+25.2\%$ & 20 km/h\\
+Car park, 8 min     &  2\,548\,m &  1\,616\,m & $+57.6\%$ & 20 km/h\\
+Car park, 4 min     &  1\,755\,m &  1\,086\,m & $+61.6\%$ & 19 km/h\\
+\midrule
+Motorcycle in a pocket & 4\,466\,m & 2\,535\,m & $+76.2\%$ & 21 km/h\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:journeys} lists every journey. The best is a $15$~km open road drive at $+3.8\%$;
+the worst road case is a four-minute car-park trip at $+61.6\%$. The last row is the phone carried
+in a pocket rather than resting in the vehicle, which is a different failure and is discussed in
+\S8.
 
 \subsection{Why slow journeys read long}
 
-\begin{figure}[t]
+\begin{figure}[htbp]
 \centering
-\includegraphics[width=\columnwidth]{figures/fig_bias.pdf}
-\caption{Leave-one-out bias against true speed. A matched store is accurate to
-$1$--$2$~km/h across the range; adding other carry positions and vehicles roughly doubles it.}
+\includegraphics[width=0.92\textwidth]{figures/fig_bias.pdf}
+\caption{How much the estimate reads above the real speed, by real speed. Tested by hiding each
+stored example in turn and asking the model to recover it.}
 \label{fig:bias}
 \end{figure}
 
-Figure~\ref{fig:bias} resolves the apparent contradiction. On a store built from matched
-journeys, held-out bias is $+1.0$ to $+1.7$~km/h at \emph{every} speed. A constant absolute
-error is a constant \emph{relative} error only if speed is constant; at $50$~km/h it is $1\%$,
-at $5$~km/h it is over $100\%$. The percentage figures in Figure~\ref{fig:distance} are
-therefore a statement about the journeys, not about the estimator.
+The ordering in Table~\ref{tab:journeys} follows average speed, not any property of the route, and
+Figure~\ref{fig:bias} explains why. Tested against $4{,}178$ stored examples from matched journeys
+--- hiding each one in turn and asking the model to recover it --- the estimate reads
+$1.0$ to $1.7$~km/h high at \emph{every} speed.
 
-This also explains why no correction helps. Subtracting a constant $6$~km/h --- fitted on two
-drives where the bias was $+6.0$ and $+6.8$ --- repaired those two and degraded three others,
-reducing total absolute error by only $7\%$.
+A fixed error in km/h is not a fixed error in percent. Two km/h on a $50$~km/h road is $2\%$; the
+same two km/h on a $5$~km/h crawl is $40\%$. So the estimator that looks excellent on a motorway
+looks poor in traffic, without anything about it having changed.
 
-\subsection{Direction}
+This is also why no correction helps. Subtracting a constant $6$~km/h --- fitted on two journeys
+where the estimate happened to read exactly that much high --- repaired those two and made three
+others worse, reducing total absolute error across all journeys by only $7\%$.
 
-\begin{figure}[t]
+\subsection{Direction: the angle the phone sits at}
+
+The phone rarely points the way the vehicle travels. It sits at some angle in a cradle, a pocket
+or a cup holder, and that angle --- $\beta$ in \S3.4 --- has to be subtracted before the recorded
+heading means anything. It cannot be worked out from the motion sensors alone (\S5.2), so it is
+measured from GPS during the first three minutes of a journey and then held fixed.
+
+\begin{figure}[htbp]
 \centering
-\includegraphics[width=\columnwidth]{figures/fig_heading.pdf}
-\caption{Mean signed heading error. Before $\beta$ was learned, routes were correctly shaped but
-pivoted about their origin.}
+\includegraphics[width=0.92\textwidth]{figures/fig_heading.pdf}
+\caption{The same journeys with the angle unlearned and learned. Left: how far the whole route is
+rotated. Right: how far the finish point lands from where it really was.}
 \label{fig:heading}
 \end{figure}
 
-With $\beta$ unlearned, two journeys showed mean signed errors of $+24.9^\circ$ and
-$-35.8^\circ$ with circular concentration $R = 0.93$ and $0.71$: a near-constant rotation, not
-drift. The recorded shape and length were correct --- one $15$~km route matched its true net
-displacement to within $8$~m of magnitude while pointing $26^\circ$ wrong, finishing $4174$~m
-from the true endpoint. Re-integrating with $\beta$ applied moves the finish to $366$~m,
-$2.4\%$ of path length. After the bounded warm-up shipped, four consecutive journeys measured
-$+0.8^\circ$, $-1.3^\circ$, $+1.0^\circ$ and $+2.1^\circ$.
+Figure~\ref{fig:heading} shows what that is worth. With the angle unlearned the route comes out
+the right shape and the right length and simply points the wrong way: on the $15$~km journey the
+recorded straight-line displacement matched the real one to within $8$~m while being rotated
+$26^\circ$, which put the finish $4{,}174$~m from where it actually was. Re-running the same
+journey with the angle applied moves the finish to $366$~m, $2.4\%$ of the distance travelled.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Average direction error across whole journeys, before and after the angle is measured.
+A positive value means the recorded route is rotated clockwise.}
+\label{tab:heading}
+\begin{tabular}{llr}
+\toprule
+Journey & Phone angle & Direction error\\
+\midrule
+15 km, open road   & not learned & $+24.9^\circ$\\
+1.6 km, city       & not learned & $-35.8^\circ$\\
+\midrule
+8 min, car park    & learned     & $+0.8^\circ$\\
+4 min, car park    & learned     & $-1.3^\circ$\\
+15 min, city       & learned     & $+1.0^\circ$\\
+11 min, car park   & learned     & $+2.1^\circ$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:heading} gives the direction error over whole journeys. Unlearned, it is tens of
+degrees and consistent within a journey --- a rotation, not a wander, with circular concentration
+$R = 0.93$ and $0.71$. Learned, it is within about two degrees on four consecutive journeys.
+
+\subsection{Underground car parks}
+
+\begin{table}[htbp]
+\centering\small
+\caption{The two car-park journeys split by the ramp detector. A ramp is where the estimate fails;
+the road between the ramps is ordinary.}
+\label{tab:ramp}
+\begin{tabular}{llrrr}
+\toprule
+Journey & Where & Estimated & Real & Error\\
+\midrule
+Car park, 4 min & on the ramp &   267\,m &    67\,m & $+299\%$\\
+Car park, 4 min & on the road & 1\,488\,m & 1\,018\,m & $+46\%$\\
+Car park, 8 min & on the ramp &   618\,m &   229\,m & $+170\%$\\
+Car park, 8 min & on the road & 1\,930\,m & 1\,387\,m & $+39\%$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The two worst journeys in Table~\ref{tab:journeys} are both car parks, and
+Table~\ref{tab:ramp} locates the failure. A car crawling up a concrete spiral shakes as hard as
+one doing $40$~km/h on a road, so the estimate on a ramp runs $170\%$ to $299\%$ long while the
+road between the ramps behaves ordinarily.
+
+Detecting a ramp needs two signals together. The barometer alone flags every hill --- $8$~km of
+one $15$~km journey, where the estimate is fine. Rotation alone flags every junction. A helical
+ramp is the only thing that climbs steadily \emph{and} turns continuously the same way, so the app
+withholds distance when the barometer shows more than $0.08$~m/s of sustained climb and the
+gyroscope more than $150^\circ$ of same-direction turning within $30$~s.
 
 \section{Negative results}
 
 We report these in full because each cost real effort and three share one cause.
 
-\subsection{Aircraft speed cannot be integrated}
+\subsection{Aircraft speed cannot be worked out at all}
 
-\begin{figure}[t]
+\begin{figure}[htbp]
 \centering
-\includegraphics[width=\columnwidth]{figures/fig_flight.pdf}
-\caption{Replay of a real $22.8$-minute flight with GPS removed at four points. Losing signal on
-the ground --- the normal case --- freezes taxi speed for the entire flight.}
+\includegraphics[width=0.92\textwidth]{figures/fig_flight.pdf}
+\caption{A real $22.8$-minute flight replayed with GPS removed at four points, giving the distance
+the app would have recorded had signal been lost there.}
 \label{fig:flight}
 \end{figure}
 
-A flight was recorded with GPS valid on all $1323$ ticks to $706$~km/h. Replaying it with GPS
-removed (Figure~\ref{fig:flight}) gives $-82\%$ to $-87\%$ distance when signal is lost on the
-ground. The along-track integral recovers approximately $60$~km/h of a $679$~km/h climb: after
-$400$~s of held speed the correction contributed $-2$~km/h.
+\begin{table}[htbp]
+\centering\small
+\caption{The same flight, in numbers. Signal is normally lost on the ground, which is the worst
+case: the last speed the app saw was taxi speed, and it holds it.}
+\label{tab:flight}
+\begin{tabular}{lrrr}
+\toprule
+GPS lost & Speed held & Estimated & Error\\
+\midrule
+At the gate            &   5.6 km/h & 14.7 km & $-82\%$\\
+Just before takeoff    &  15.9 km/h & 10.2 km & $-87\%$\\
+60 s into the climb    & 320.7 km/h & 49.7 km & $-31\%$\\
+At cruise              & 307.6 km/h & 46.5 km & $-34\%$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A flight was recorded with GPS valid on all $1323$ ticks, reaching $706$~km/h. Replaying it with
+GPS removed (Figure~\ref{fig:flight}, Table~\ref{tab:flight}) shows the problem clearly: signal is
+normally lost on the ground, so the last speed the app has is taxi speed, and it holds it for the
+whole flight.
+
+The correction that should rescue this --- adding up the acceleration along the direction of
+travel --- recovers about $60$~km/h of a $679$~km/h climb. After $400$~seconds of held speed it had
+contributed $-2$~km/h. Direction, by contrast, is unaffected: $3.9^\circ$ median across the same
+flight. The route points the right way and is the wrong length.
 
 \subsection{One cause, three failures}\label{sec:onecause}
 
