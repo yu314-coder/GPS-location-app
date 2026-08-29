@@ -108,6 +108,17 @@ struct ContentView: View {
     }
 
     private var iPhoneRootView: some View {
+        #if DEBUG
+        // Screenshot hook, debug builds only: open a specific screen directly so it can be
+        // captured without driving the UI. See the START_TAB hook above.
+        if ProcessInfo.processInfo.environment["START_SCREEN"] == "method" {
+            return AnyView(NavigationStack { VelocityMethodView() })
+        }
+        #endif
+        return AnyView(tabRootView)
+    }
+
+    private var tabRootView: some View {
         TabView(selection: $selectedTab) {
             // Home Tab
             HomeView(showLiveSession: $showLiveSession)

@@ -3,21 +3,37 @@ import Charts
 
 /// How Velocity Mode works, and how well — written for the person using it.
 ///
-/// Every number on this screen is measured, not estimated. The drives are real, the errors are
-/// against GPS recorded at the same moment, and where the method fails it says so.
+/// Every number here is measured against GPS recorded at the same moment as the estimate. Nothing
+/// is modelled, simulated or extrapolated, and where the method fails it says so with a magnitude.
 struct VelocityMethodView: View {
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: AppTheme.sectionSpacing) {
-                intro
-                stageOne
-                stageTwo
-                stageThree
-                stageFour
-                accuracy
-                limits
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppTheme.sectionSpacing) {
+                    intro.id("intro")
+                    stageOne
+                    stageTwo
+                    stageThree
+                    stageFour
+                    roadResults.id("road")
+                    slowSpeed
+                    headingResults.id("heading")
+                    basement.id("basement")
+                    flight.id("flight")
+                    limits.id("limits")
+                }
+                .padding(16)
             }
-            .padding(16)
+            .onAppear {
+                #if DEBUG
+                // Screenshot hook: jump straight to a section so it can be captured.
+                if let target = ProcessInfo.processInfo.environment["SCROLL_TO"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        proxy.scrollTo(target, anchor: .top)
+                    }
+                }
+                #endif
+            }
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("How Velocity Mode works")
@@ -31,88 +47,72 @@ struct VelocityMethodView: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeader("The problem")
                 Text("""
-                Satellite positioning fails in the places people most want a route: tunnels, \
-                car parks, dense city streets, and aircraft cabins. Velocity Mode records the \
-                journey without it — speed from how the vehicle shakes, direction from the \
-                magnetometer and gyroscope, and position by projecting both forward from a \
-                single starting fix.
+                Satellite positioning fails in the places people most want a route: tunnels, car \
+                parks, dense city streets, aircraft cabins. Velocity Mode records the journey \
+                without it — speed from how the vehicle shakes, direction from the magnetometer \
+                and gyroscope, and position projected forward from a single starting fix.
                 """)
                 .font(.callout)
                 Divider()
                 Text("Only the first point of the route comes from GPS. Every point after it is dead-reckoned.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
 
-    // MARK: - Stage 1
+    // MARK: - Method
 
     private var stageOne: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "1 · Turning vibration into a signature",
+                SectionHeader(title: "1 · Vibration into a signature",
                               subtitle: "50 Hz accelerometer → 11 numbers") { EmptyView() }
                 Text("""
-                Road and engine vibration carry speed, but not in any one property — five \
-                hand-built features were tried and failed. What works is the whole spectrum.
+                Road and engine vibration carry speed, but not in any single property — five \
+                hand-built features were tried and failed. What works is the whole spectrum. Four \
+                seconds of vertical acceleration are windowed and transformed:
                 """)
                 .font(.callout)
-
-                Formula(#"x[n] ← vertical acceleration, N = 256 samples (4 s at 50 Hz)"#)
-                Formula(#"w[n] = ½ − ½·cos( 2πn / (N−1) )        Hann window"#)
-                Formula(#"X[k] = Σₙ (x[n] − x̄)·w[n]·e^(−2πikn/N)"#)
-                Formula(#"f_b = ln( Σ_{k ∈ band b} |X[k]|² )     b = 1 … 9"#)
-
-                Text("The nine bands are bounded at 0.4, 0.8, 1.6, 2.5, 4, 6, 9, 13, 18 and 24 Hz. Two more features complete the signature:")
+                Equation("eq_window")
+                Equation("eq_fft")
+                Text("Energy is summed into nine log-spaced bands at 0.4, 0.8, 1.6, 2.5, 4, 6, 9, 13, 18 and 24 Hz:")
                     .font(.callout)
-                Formula(#"f₁₀ = ln σ(x)        f₁₁ = ln( (1/(N−1)) Σₙ |x[n] − x[n−1]| )"#)
-
+                Equation("eq_band")
+                Text("Two time-domain terms complete the signature:").font(.callout)
+                Equation("eq_tail")
                 Text("""
-                A four-second window was measured against one and eight. Four is best: one second \
-                is too little signal, eight blurs across changes in speed.
+                Four seconds was measured against one and eight. One is too little signal; eight \
+                blurs across changes in speed, raising low-speed bias from +1.0 to +6.0 km/h.
                 """)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
-
-    // MARK: - Stage 2
 
     private var stageTwo: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "2 · Signature to speed",
-                              subtitle: "nearest neighbours over everything GPS has labelled") { EmptyView() }
+                SectionHeader(title: "2 · Signature into speed",
+                              subtitle: "nearest neighbours over GPS-labelled examples") { EmptyView() }
                 Text("""
-                Nothing is assumed about the relationship between shaking and speed. The app \
-                stores (signature → measured speed) pairs whenever GPS supplies a speed, and \
-                answers by finding the closest signatures it has seen before.
+                Nothing is assumed about how shaking relates to speed. The app stores signature \
+                and measured-speed pairs whenever GPS supplies a speed, then answers by locality.
                 """)
                 .font(.callout)
-
-                Formula(#"d²(f, g) = Σᵢ ( (fᵢ − μᵢ)/σᵢ − (gᵢ − μᵢ)/σᵢ )²"#)
-                Formula(#"wⱼ = 1 / (d²ⱼ + ε)"#)
-                Formula(#"v̂ = ( Σⱼ wⱼ·vⱼ ) / ( Σⱼ wⱼ )        j = 12 nearest"#)
-
-                Text("It refuses to answer from a distant match, because that is where its worst readings came from:")
+                Equation("eq_dist")
+                Equation("eq_knn")
+                Text("It is allowed to refuse, which is where its worst readings used to come from:")
                     .font(.callout)
-                Formula(#"min_j d²ⱼ > 4  ⟹  decline, hold the last answer"#)
-
+                Equation("eq_reject")
                 Text("""
-                Air and ground are kept as separate memories. A quiet cruise and a smooth road \
-                look alike, so one store answering for both was wrong in each direction — a \
-                road-trained model read 19 km/h at a 900 km/h cruise, and once flight data \
-                joined it, a city drive read 337 km/h.
+                Error scales directly with match distance: 5.3 km/h mean error when the nearest \
+                stored signature is within d² = 1.03, rising to 16.9 km/h in the range 2.12–4.36. \
+                Refusing a distant match removes the worst answers.
                 """)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
-
-    // MARK: - Stage 3
 
     private var stageThree: some View {
         AppCard {
@@ -120,126 +120,211 @@ struct VelocityMethodView: View {
                 SectionHeader(title: "3 · Direction",
                               subtitle: "gyroscope for turns, magnetometer for the datum") { EmptyView() }
                 Text("""
-                Turn angle comes from the gyroscope, which is accurate over seconds but drifts \
-                over minutes. Absolute direction comes from the magnetometer, which does not \
-                drift but is disturbed by steel. Each covers the other's weakness.
+                Turn angle comes from the gyroscope, accurate over seconds but drifting over \
+                minutes. Absolute direction comes from the magnetometer, which does not drift but \
+                is disturbed by steel. Each covers the other's weakness.
                 """)
                 .font(.callout)
-
-                Formula(#"θₜ = θₜ₋₁ + Δψ_gyro + κ·( ψ_datum + β − θₜ₋₁ )"#)
-                Formula(#"β = carry offset: the angle between where the phone points and where the body travels"#)
-
+                Equation("eq_heading")
                 Text("""
-                β cannot be derived without GPS. Estimating it from acceleration was tried and \
-                returns noise, because Core Motion's attitude filter absorbs sustained \
-                acceleration as a change in the gravity direction. So it is learned from GPS \
-                course during the first 180 seconds of the workout and then frozen — which is \
-                what physically happens on a flight: signal on the way to the aircraft, then none.
+                β is the carry offset: the angle between where the phone points and where the body \
+                travels. It cannot be derived without an outside reference — estimating it from \
+                acceleration returns noise (concentration R = 0.15 against known answers). It is \
+                learned from GPS course over the first 180 seconds and then frozen, which is what \
+                physically happens on a flight: signal on the way to the aircraft, none after.
                 """)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
-
-    // MARK: - Stage 4
 
     private var stageFour: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "4 · Speed and direction to a route",
+                SectionHeader(title: "4 · Speed and direction into a route",
                               subtitle: "projection from one frozen anchor") { EmptyView() }
-                Formula(#"Δs = v̂ · Δt"#)
-                Formula(#"φₜ = φₜ₋₁ + (Δs·cos θₜ) / R"#)
-                Formula(#"λₜ = λₜ₋₁ + (Δs·sin θₜ) / (R·cos φₜ)"#)
-
+                Equation("eq_project")
                 Text("""
                 Distance is withheld on a car-park ramp — climbing steadily while turning \
-                continuously the same way, which a road does not do. A car crawling up a \
-                concrete spiral shakes as hard as one doing 40 km/h on a road, and measured \
-                against GPS the estimate there runs two to seven times too fast.
+                continuously the same way, which a road does not do.
                 """)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
 
-    // MARK: - Accuracy
+    // MARK: - Road results
 
-    private var accuracy: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AppCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    SectionHeader(title: "Measured accuracy",
-                                  subtitle: "every bar is a real journey, checked against GPS") { EmptyView() }
+    private var roadResults: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "Measured on the road",
+                              subtitle: "recorded distance against GPS, same moment") { EmptyView() }
+                Chart {
+                    ForEach(VelocityMethodData.journeys) { j in
+                        BarMark(x: .value("Distance", j.trueM), y: .value("Journey", j.name))
+                            .position(by: .value("Source", "GPS truth"))
+                            .foregroundStyle(by: .value("Source", "GPS truth"))
+                        BarMark(x: .value("Distance", j.recordedM), y: .value("Journey", j.name))
+                            .position(by: .value("Source", "recorded"))
+                            .foregroundStyle(by: .value("Source", "recorded"))
+                            .annotation(position: .trailing, spacing: 3) {
+                                Text(String(format: "%+.0f%%", j.errorPercent))
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(j.errorPercent > 30 ? Color.red
+                                                     : (j.errorPercent > 10 ? Color.orange : Color.green))
+                            }
+                    }
+                }
+                .chartForegroundStyleScale([
+                    "recorded": Color.accentColor,
+                    "GPS truth": Color(.systemGray3)
+                ])
+                .chartXAxisLabel("metres travelled")
+                .chartXScale(domain: 0...17500)
+                .chartLegend(position: .top, alignment: .leading)
+                .frame(height: 330)
 
-                    Text("Distance recorded against distance travelled")
-                        .font(.footnote).fontWeight(.semibold)
-                    Chart(VelocityMethodData.drives) { d in
-                        BarMark(x: .value("Error", d.distanceErrorPercent),
-                                y: .value("Drive", d.label))
-                        .foregroundStyle(d.distanceErrorPercent.magnitude <= 10
-                                         ? Color.green : (d.distanceErrorPercent.magnitude <= 30
-                                                          ? Color.orange : Color.red))
-                        .annotation(position: d.distanceErrorPercent >= 0 ? .trailing : .leading) {
-                            Text("\(d.distanceErrorPercent > 0 ? "+" : "")\(Int(d.distanceErrorPercent))%")
+                Divider()
+                VStack(spacing: 0) {
+                    JourneyRow(name: "Journey", recorded: "app", truth: "GPS",
+                               error: "error", detail: "avg speed", header: true)
+                    ForEach(VelocityMethodData.journeys) { j in
+                        Divider()
+                        JourneyRow(name: j.name,
+                                   recorded: "\(j.recordedM) m",
+                                   truth: "\(j.trueM) m",
+                                   error: String(format: "%+.0f%%", j.errorPercent),
+                                   detail: String(format: "%.0f km/h", j.avgKmh))
+                    }
+                }
+            }
+        }
+    }
+
+    private var slowSpeed: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Why slow journeys read long")
+                Text("""
+                The absolute error is one to two km/h at any speed. That is 2% of a motorway pace \
+                and over 40% of a crawl, so the same estimator looks excellent on an open road and \
+                poor in traffic.
+                """)
+                .font(.callout)
+                Chart(VelocityMethodData.speedBias) { b in
+                    BarMark(x: .value("Speed", b.band), y: .value("Bias", b.biasKmh))
+                        .foregroundStyle(Color.accentColor.gradient)
+                        .annotation(position: .top) {
+                            Text(String(format: "+%.1f", b.biasKmh))
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
-                    }
-                    .chartXAxisLabel("error, %")
-                    .frame(height: 240)
-
-                    Text("""
-                    Fast, steady driving with the phone held firmly by the vehicle is where this \
-                    works: 15 km recorded to within 4%. Slow stop-start traffic is the hard case — \
-                    a car at 5 km/h barely shakes differently from one at 15.
-                    """)
-                    .font(.footnote).foregroundStyle(.secondary)
                 }
+                .chartYAxisLabel("over-read, km/h")
+                .chartXAxisLabel("true speed, km/h")
+                .frame(height: 170)
+                Text("""
+                Leave-one-out over 4,178 stored observations from matched journeys. Adding other \
+                carry positions and vehicles to the same store roughly doubles these figures.
+                """)
+                .font(.caption2).foregroundStyle(.secondary)
             }
+        }
+    }
 
-            AppCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Why slow journeys read high")
-                        .font(.headline)
-                    Text("""
-                    The absolute error is a few km/h at any speed. That is 1% of a motorway \
-                    speed and 140% of a walking pace, so the same model looks excellent on an \
-                    open road and poor in traffic.
-                    """)
-                    .font(.callout)
-                    Chart(VelocityMethodData.speedBias) { b in
-                        BarMark(x: .value("Speed", b.band),
-                                y: .value("Bias", b.biasKmh))
-                        .foregroundStyle(Color.accentColor.gradient)
-                    }
-                    .chartYAxisLabel("over-read, km/h")
-                    .chartXAxisLabel("true speed, km/h")
-                    .frame(height: 180)
-                    Text("Measured by leave-one-out over 4,178 stored observations from matched drives.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-
-            AppCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Direction, before and after the carry offset was handled")
-                        .font(.headline)
-                    Chart(VelocityMethodData.heading) { h in
-                        BarMark(x: .value("Drive", h.label),
-                                y: .value("Error", h.meanSignedDegrees.magnitude))
+    private var headingResults: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Direction, before and after the carry offset")
+                Chart(VelocityMethodData.heading) { h in
+                    BarMark(x: .value("Journey", h.label), y: .value("Error", h.degrees))
                         .foregroundStyle(h.afterFix ? Color.green : Color.red)
-                    }
-                    .chartYAxisLabel("mean direction error, °")
-                    .frame(height: 180)
-                    Text("""
-                    Red: the route came out correctly shaped but pivoted about its start. Green: \
-                    after the offset is learned and frozen. On a 15 km drive this moved the \
-                    finish from 4174 m off to 366 m.
-                    """)
-                    .font(.caption2).foregroundStyle(.secondary)
+                        .annotation(position: .top) {
+                            Text(String(format: "%.1f°", h.degrees))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                 }
+                .chartYAxisLabel("mean direction error, °")
+                .frame(height: 170)
+                Text("""
+                Red: the route came out correctly shaped but pivoted about its start. On one 15 km \
+                journey the recorded net displacement matched the true one to within 8 m of length \
+                while pointing 26° wrong, finishing 4,174 m from the real endpoint. With the offset \
+                applied that becomes 366 m — 2.4% of the distance travelled.
+                """)
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Car parks
+
+    private var basement: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "Underground car parks",
+                              subtitle: "where the method is worst, and why") { EmptyView() }
+                Text("""
+                A car crawling up a concrete spiral shakes as hard as one doing 40 km/h on a road. \
+                Split by the barometer and gyroscope, the same journeys separate cleanly:
+                """)
+                .font(.callout)
+                VStack(spacing: 0) {
+                    JourneyRow(name: "Journey", recorded: "app", truth: "GPS",
+                               error: "error", detail: "phase", header: true)
+                    ForEach(VelocityMethodData.rampSplit) { r in
+                        Divider()
+                        JourneyRow(name: r.name, recorded: "\(r.recordedM) m",
+                                   truth: "\(r.trueM) m",
+                                   error: String(format: "%+.0f%%", r.errorPercent),
+                                   detail: r.phase, emphasise: r.phase == "ramp")
+                    }
+                }
+                Text("""
+                Ramps read 169% to 297% long; the road between them reads 17% to 23%. Distance is \
+                now withheld where the barometer shows a sustained climb above 0.08 m/s and the \
+                gyroscope shows more than 150° of same-direction turning over 30 seconds — a \
+                helical ramp does both, a hill or a junction does only one.
+                """)
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Flight
+
+    private var flight: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "In an aircraft",
+                              subtitle: "the case this mode was built for, and it does not work") { EmptyView() }
+                Text("""
+                A 22.8-minute flight was recorded with GPS valid throughout, up to 706 km/h. \
+                Replaying it with GPS removed at four points gives the distance the app would have \
+                recorded had signal been lost there:
+                """)
+                .font(.callout)
+                Chart(VelocityMethodData.flight) { f in
+                    BarMark(x: .value("Error", f.errorPercent), y: .value("Point", f.point))
+                        .foregroundStyle(Color.red.opacity(0.85))
+                        .annotation(position: .leading) {
+                            Text("\(Int(f.errorPercent))%")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                }
+                .chartXAxisLabel("distance error, %")
+                .frame(height: 150)
+                Text("""
+                Signal is normally lost on the ground, which freezes taxi speed for the whole \
+                flight. The along-track correction recovers roughly 60 km/h of a 679 km/h climb: \
+                after 400 seconds of held speed it had contributed −2 km/h.
+
+                The cause is that an accelerometer cannot separate gravity from sustained \
+                acceleration, and the phone's sensor fusion resolves that ambiguity by treating a \
+                takeoff roll as a change in which way is down. Heading is unaffected — measured at \
+                3.9° median across the flight — so direction works and speed does not.
+                """)
+                .font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
@@ -251,13 +336,15 @@ struct VelocityMethodView: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeader("What it cannot do")
                 Limitation("Hold the phone in your hand and the speed signal disappears.",
-                           "Body contact damps the vibration until the signature stops varying with speed — measured flat from 10 to 65 km/h. Rest the phone in the vehicle.")
+                           "Body contact damps the vibration until the signature stops varying with speed — measured at 7.10, 7.08, 7.07, 7.13 and 7.25 across 10 to 65 km/h. Reported speed becomes a constant. Rest the phone in the vehicle.")
+                Limitation("A stationary engine reads as movement.",
+                           "A motorcycle at a red light reads 5.2 km/h, accumulating 690 m over 339 stationary ticks. No tested signal separates an idling engine from a slow crawl.")
                 Limitation("Aircraft speed cannot be measured without GPS.",
-                           "A takeoff roll is the most sustained acceleration a phone will ever see, and Core Motion's attitude filter erases exactly that. Replayed on a real flight, integration recovered 60 km/h of a 679 km/h climb.")
+                           "See above: −82% to −87% when signal is lost on the ground.")
                 Limitation("A vehicle it has never learned reads wrong at first.",
-                           "The model answers for conditions it has observed. A first motorcycle ride teaches it; the second is far better.")
-                Limitation("It needs a starting fix.",
-                           "Direction is relative until something establishes north, and position is relative until something establishes where.")
+                           "The model answers only for conditions it has observed. A first motorcycle ride teaches it; the second is far better.")
+                Limitation("These numbers are one phone, one person, three vehicles.",
+                           "23 instrumented journeys in one city. They characterise this configuration and may not transfer.")
             }
         }
     }
@@ -265,17 +352,65 @@ struct VelocityMethodView: View {
 
 // MARK: - Pieces
 
-private struct Formula: View {
-    let text: String
-    init(_ text: String) { self.text = text }
+/// A real LaTeX equation, typeset by pdflatex at build time and bundled as a transparent mask so
+/// it takes the foreground colour and works in both themes.
+private struct Equation: View {
+    let name: String
+    @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
+
+    init(_ name: String) { self.name = name }
+
     var body: some View {
-        Text(text)
-            .font(.system(.footnote, design: .serif))
-            .padding(.vertical, 8).padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(.tertiarySystemGroupedBackground)))
-            .textSelection(.enabled)
+        Group {
+            if let ui = UIImage(named: name)?.withRenderingMode(.alwaysTemplate) {
+                Image(uiImage: ui)
+                    .resizable()
+                    .scaledToFit()
+                    // EVERY EQUATION WAS RENDERED AT THE SAME DPI AND POINT SIZE, so its pixel
+                    // height is a true measure of how tall it is typographically — a fraction is
+                    // genuinely taller than a single line. Scaling on that keeps the type size
+                    // consistent between them, which a width-based rule does not: it shrank a
+                    // wide equation until its symbols were half the size of the one above.
+                    // scaledToFit inside a width-limited frame then handles the wide ones.
+                    .frame(maxWidth: .infinity,
+                           maxHeight: ui.size.height / 3.3 * scale,
+                           alignment: .center)
+                    .foregroundStyle(.primary)
+            } else {
+                Text(name).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color(.tertiarySystemGroupedBackground)))
+    }
+}
+
+private struct JourneyRow: View {
+    let name: String
+    let recorded: String
+    let truth: String
+    let error: String
+    let detail: String
+    var header: Bool = false
+    var emphasise: Bool = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(name).frame(maxWidth: .infinity, alignment: .leading)
+            Text(recorded).frame(width: 60, alignment: .trailing)
+            Text(truth).frame(width: 60, alignment: .trailing)
+            Text(error).frame(width: 52, alignment: .trailing)
+                .foregroundStyle(header ? Color.secondary : (emphasise ? .red : .primary))
+            Text(detail).frame(width: 62, alignment: .trailing)
+        }
+        .font(.system(.caption2, design: header ? .default : .monospaced))
+        .fontWeight(header ? .semibold : .regular)
+        .foregroundStyle(header ? Color.secondary : Color.primary)
+        .lineLimit(1).minimumScaleFactor(0.7)
+        .padding(.vertical, 5)
     }
 }
 
@@ -290,56 +425,71 @@ private struct Limitation: View {
                     .font(.caption).foregroundStyle(Color.orange)
                 Text(title).font(.subheadline).fontWeight(.medium)
             }
-            Text(detail).font(.caption).foregroundStyle(.secondary)
-                .padding(.leading, 22)
+            Text(detail).font(.caption).foregroundStyle(.secondary).padding(.leading, 22)
         }
     }
 }
 
 // MARK: - The measurements
 
-/// Real results, recorded in Velocity Mode with GPS running alongside purely as ground truth.
+/// Recorded in Velocity Mode with GPS running alongside purely as ground truth. Truth is the
+/// integral of GPS speed rather than the sum of fix-to-fix displacements, which accumulates
+/// position scatter — on one 15 km journey the two differ by 35%.
 enum VelocityMethodData {
-    struct Drive: Identifiable {
+    struct Journey: Identifiable {
         let id = UUID()
-        let label: String
-        let distanceErrorPercent: Double
+        let name: String
+        let recordedM: Int
+        let trueM: Int
+        let avgKmh: Double
+        var errorPercent: Double { 100.0 * Double(recordedM - trueM) / Double(trueM) }
     }
-    struct SpeedBias: Identifiable {
-        let id = UUID()
-        let band: String
-        let biasKmh: Double
+    struct SpeedBias: Identifiable { let id = UUID(); let band: String; let biasKmh: Double }
+    struct Heading: Identifiable { let id = UUID(); let label: String; let degrees: Double; let afterFix: Bool }
+    struct RampSplit: Identifiable {
+        let id = UUID(); let name: String; let phase: String
+        let recordedM: Int; let trueM: Int
+        var errorPercent: Double { 100.0 * Double(recordedM - trueM) / Double(trueM) }
     }
-    struct Heading: Identifiable {
-        let id = UUID()
-        let label: String
-        let meanSignedDegrees: Double
-        let afterFix: Bool
-    }
+    struct FlightPoint: Identifiable { let id = UUID(); let point: String; let errorPercent: Double }
 
-    static let drives: [Drive] = [
-        .init(label: "15 km, open road", distanceErrorPercent: 3.8),
-        .init(label: "Motorcycle, riding", distanceErrorPercent: 6.0),
-        .init(label: "City, 19 min", distanceErrorPercent: 20.1),
-        .init(label: "City, 12 min", distanceErrorPercent: 21.6),
-        .init(label: "Car park start", distanceErrorPercent: 25.2),
-        .init(label: "Car park, both ends", distanceErrorPercent: 57.6),
-        .init(label: "Car park, short", distanceErrorPercent: 61.6)
+    static let journeys: [Journey] = [
+        .init(name: "Open road, 25 min",  recordedM: 14994, trueM: 14445, avgKmh: 43.2),
+        .init(name: "Suburban, 12 min",   recordedM: 3793,  trueM: 3678,  avgKmh: 28.5),
+        .init(name: "Motorcycle, 20 min", recordedM: 6181,  trueM: 5118,  avgKmh: 35.0),
+        .init(name: "City, 15 min",       recordedM: 3363,  trueM: 2801,  avgKmh: 21.0),
+        .init(name: "City, 12 min",       recordedM: 5741,  trueM: 4720,  avgKmh: 28.7),
+        .init(name: "Car park, 11 min",   recordedM: 2762,  trueM: 2207,  avgKmh: 19.7),
+        .init(name: "Car park, 8 min",    recordedM: 2548,  trueM: 1616,  avgKmh: 20.2),
+        .init(name: "Car park, 4 min",    recordedM: 1755,  trueM: 1086,  avgKmh: 18.7)
     ]
 
     static let speedBias: [SpeedBias] = [
-        .init(band: "2–10", biasKmh: 1.0),
-        .init(band: "10–20", biasKmh: 1.4),
-        .init(band: "20–35", biasKmh: 1.7),
-        .init(band: "35–55", biasKmh: 0.8)
+        .init(band: "2–10", biasKmh: 1.0), .init(band: "10–20", biasKmh: 1.4),
+        .init(band: "20–35", biasKmh: 1.7), .init(band: "35–55", biasKmh: 0.8)
     ]
 
     static let heading: [Heading] = [
-        .init(label: "Before", meanSignedDegrees: 24.9, afterFix: false),
-        .init(label: "Before ", meanSignedDegrees: 35.8, afterFix: false),
-        .init(label: "After", meanSignedDegrees: 0.8, afterFix: true),
-        .init(label: "After ", meanSignedDegrees: 1.3, afterFix: true),
-        .init(label: "After  ", meanSignedDegrees: 1.0, afterFix: true),
-        .init(label: "After   ", meanSignedDegrees: 2.1, afterFix: true)
+        .init(label: "15 km", degrees: 24.9, afterFix: false),
+        .init(label: "1.6 km", degrees: 35.8, afterFix: false),
+        .init(label: "Basement", degrees: 0.8, afterFix: true),
+        .init(label: "Basement", degrees: 1.3, afterFix: true),
+        .init(label: "City", degrees: 1.0, afterFix: true),
+        .init(label: "Car park", degrees: 2.1, afterFix: true)
+    ]
+
+    /// The same two car-park journeys, split by the ramp detector.
+    static let rampSplit: [RampSplit] = [
+        .init(name: "Car park, 4 min", phase: "ramp", recordedM: 267, trueM: 67),
+        .init(name: "Car park, 4 min", phase: "road", recordedM: 1488, trueM: 1018),
+        .init(name: "Car park, 8 min", phase: "ramp", recordedM: 618, trueM: 229),
+        .init(name: "Car park, 8 min", phase: "road", recordedM: 1930, trueM: 1387)
+    ]
+
+    static let flight: [FlightPoint] = [
+        .init(point: "At the gate", errorPercent: -82),
+        .init(point: "Before takeoff", errorPercent: -87),
+        .init(point: "60 s into climb", errorPercent: -31),
+        .init(point: "At cruise", errorPercent: -34)
     ]
 }
