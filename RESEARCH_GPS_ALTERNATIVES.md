@@ -2,6 +2,54 @@
 
 ## When GPS is unavailable (tunnels, underground, MRT/subway, indoor environments)
 
+> **Status — August 2026.** This document is the literature survey that preceded the work,
+> written in May 2026. One of its options was built, shipped and measured over 23 instrumented
+> journeys; see **[paper/velocity_mode.pdf](paper/velocity_mode.pdf)** for what actually
+> happened. The survey is kept as written, with a results section below recording which of its
+> predictions held.
+
+---
+
+## What was built, and what the survey got right
+
+**Built:** §12's vibration-based speed estimation, using the whole log-spectrum rather than any
+single feature, with nearest-neighbour regression over GPS-labelled examples. Shipped as
+*Velocity Mode*. Measured: **+3.8% distance over 15 km** of open road, degrading to **+60%** in
+slow stop-start traffic, with heading to **5–15°**.
+
+**The survey was right about:**
+
+- *"Pure INS/Dead Reckoning — drift makes unusable after seconds."* Confirmed emphatically.
+  Replaying a real 22.8-minute flight with GPS removed gave **−82% to −87%** distance; the
+  along-track integral recovered roughly 60 km/h of a 679 km/h climb.
+- *"Vibration frequency analysis distinguishes vehicle types."* Confirmed and measured: a
+  motorcycle vibrates ~3.5× harder than a car (vertical RMS 1.302 vs 0.374 m/s²), and whole-session
+  spectral fingerprints separate vehicles cleanly (0.54–1.70 within a regime, 4.30–6.97 across).
+- *"Barometric altitude is reliable and permission-free."* Used to identify car-park ramps, where
+  the speed estimate runs 2–7× fast. Detection needs barometer **and** sustained same-direction
+  rotation together; either alone flags ordinary hills or junctions.
+
+**The survey did not anticipate:**
+
+- **Core Motion's attitude filter absorbs sustained linear acceleration as a change in the gravity
+  direction.** This single behaviour defeated three separate approaches — aircraft speed
+  integration, deriving the phone's carry angle from acceleration, and inertial takeoff detection.
+  It is not mentioned in any of the sources surveyed here, and it is the most important thing on
+  this page.
+- **Regime separation does not transfer.** Fingerprints identify vehicles cleanly in aggregate and
+  still make per-query prediction *worse* (+2.2 → +3.4 km/h). For one car journey the nearest
+  stored session was a hand-held one, ahead of the same car driven that morning.
+- **Platform semantics dominate modelling error.** The three largest sources of bad data were a
+  heading datum frozen at one value for 4790 of 4832 seconds (CLHeading is suspended outside the
+  foreground and its cached value never cleared), a 371-second process suspension from a
+  permission gate, and instrumentation that could not express whether the mode was even running.
+- **Carry position matters more than vehicle.** A phone held in the hand loses the speed signal
+  entirely — the signature stops varying with speed, measured flat from 10 to 65 km/h.
+
+**Not pursued:** transit-schedule interpolation (§7), beacons (§3), UWB (§8) and Apple Indoor Maps
+(§6) all need infrastructure or enrollment the app cannot assume. Magnetometer fingerprinting (§9)
+needs per-venue training data.
+
 ---
 
 ## 1. Dead Reckoning / Inertial Navigation (INS)

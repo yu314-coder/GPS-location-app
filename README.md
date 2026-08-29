@@ -5,7 +5,9 @@
 </p>
 
 <p align="center">
-  A precision GPS workout tracker for iPhone and Apple Watch with Kalman-filtered location, HealthKit sync, Live Activities, CarPlay, and full route analytics.
+  A precision workout tracker for iPhone and Apple Watch — Kalman-filtered GPS, HealthKit sync,
+  Live Activities, CarPlay, full route analytics, and <b>Velocity Mode</b>: route recording with
+  the satellites switched off.
 </p>
 
 <p align="center">
@@ -13,11 +15,49 @@
   <img src="https://img.shields.io/badge/platform-watchOS%2011.5+-green" alt="watchOS 11.5+">
   <img src="https://img.shields.io/badge/Swift-5-orange" alt="Swift 5">
   <img src="https://img.shields.io/badge/UI-SwiftUI-purple" alt="SwiftUI">
+  <img src="https://img.shields.io/badge/paper-PDF-red" alt="Paper">
 </p>
 
 ---
 
 ## Features
+
+### Velocity Mode — recording a route without satellites
+
+Satellite positioning fails where routes are most often wanted: tunnels, underground car parks,
+urban canyons, aircraft cabins. Velocity Mode records the journey anyway — **speed from how the
+vehicle shakes**, direction from the motion sensors, and position projected forward from a single
+starting fix. Only the first point of the route comes from GPS.
+
+It does not integrate acceleration. Double integration diverges within seconds because
+accelerometer bias is indistinguishable from real acceleration. Instead a 4-second window of
+vertical acceleration is turned into an 11-dimensional spectral signature, and speed is read off
+by nearest-neighbour lookup against every signature GPS has previously labelled. The model is
+allowed to refuse: if nothing it has stored resembles the present signature, it says so rather
+than guessing.
+
+**Measured accuracy** — 23 instrumented journeys, each recorded with GPS running alongside purely
+as ground truth:
+
+| Journey | Distance error | Heading |
+|---|---|---|
+| Open road, 15 km | **+3.8%** | 5° median |
+| Motorcycle, riding | +6% | — |
+| City driving, 12–19 min | +20% to +25% | 8–15° median |
+| Car park, 4–8 min | +58% to +62% | — |
+
+The spread is a property of the signal, not a defect. Absolute speed error is a few km/h at any
+speed — 1% of a motorway pace and 140% of a walking one — so the same estimator looks excellent
+on an open road and poor in traffic.
+
+**What it cannot do.** A phone held in the hand loses the speed signal entirely (the signature
+stops varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured
+without GPS, because Core Motion's attitude filter absorbs a takeoff roll as a change in the
+gravity direction. A vehicle the model has never learned reads wrong until it has.
+
+📄 **[Read the paper](paper/velocity_mode.pdf)** — method, results, and eight approaches that were
+implemented, measured and rejected. The same material is in the app under
+**Settings → Velocity Mode**, with the equations and charts.
 
 ### Live GPS Tracking
 
@@ -149,7 +189,10 @@ After stopping a session, a full summary is presented:
 - **Map style**: Standard, Satellite, Hybrid
 - **GPS filtering**: Kalman sensitivity, raw GPS toggle
 - **HealthKit**: auto-save toggle, export type, heart rate toggle
+- **How Velocity Mode works**: the algorithm, its equations, and charts of its measured error
 - Permission status cards with quick access to iOS Settings
+- Tap the version number five times for the developer screen: learned-model state, session logs,
+  and diagnostics
 
 ---
 
@@ -192,7 +235,17 @@ GPS location app Watch App/ # watchOS companion
   ViewControllers/
 
 WorkoutWidget/              # Widget + Live Activity extension
+
+paper/                      # LaTeX source and PDF for the Velocity Mode paper
 ```
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [paper/velocity_mode.pdf](paper/velocity_mode.pdf) | The Velocity Mode method, its measured accuracy, and its failure modes |
+| [RESEARCH_GPS_ALTERNATIVES.md](RESEARCH_GPS_ALTERNATIVES.md) | Survey of GPS-free positioning approaches, with notes on which survived contact with measurement |
+| [CARPLAY_README.md](CARPLAY_README.md) | CarPlay entitlement and setup |
 
 ---
 
