@@ -3,7 +3,7 @@
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{booktabs}
-\usepackage{microtype}
+\usepackage[expansion=false]{microtype}
 \usepackage[hidelinks]{hyperref}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
@@ -27,10 +27,11 @@ distance is within $3.8\%$ over $15$~km and heading within $5^\circ$; in slow st
 the same system reads $20$--$60\%$ long. We show that this gap is not a defect but a property of
 the signal: absolute speed error is a few km/h at any speed, which is $1\%$ of a motorway pace
 and $140\%$ of a walking one. We give equal space to eight approaches that were implemented,
-measured and rejected, including three defeated by a single cause --- Apple's Core Motion
-attitude filter absorbs sustained linear acceleration as a change in the gravity direction,
-which erases exactly the signal that aircraft dead reckoning, acceleration-derived heading and
-inertial takeoff detection all depend on.
+measured and rejected. Three fell to one cause: the specific-force ambiguity that makes gravity
+and sustained linear acceleration indistinguishable to an accelerometer is well known in attitude
+estimation, but on a platform where the sensor fusion is vendor-supplied and cannot be replaced
+it silently erases the signal that aircraft dead reckoning, acceleration-derived heading and
+inertial takeoff detection all depend on. We report the magnitude of that consequence.
 \end{abstract}
 
 \section{Introduction}
@@ -43,12 +44,78 @@ indistinguishable from sustained real acceleration and its double integral grows
 An alternative exists for wheeled vehicles. Road and engine vibration scale with speed, so a
 spectral signature of vertical acceleration can be mapped to speed directly, without
 integration and therefore without accumulation. CarSpeedNet~\cite{carspeednet} reports
-RMSE $1.8$~m/s from $13.2$~hours of accelerometer-only driving. That result is in-distribution:
-its test set is drawn from the same collection as its training data.
+RMSE $1.8$~m/s and MAE $0.72$~m/s from $13.2$~hours of accelerometer-only driving, at the same
+$4$-second window length we arrive at independently. Its $0.5$-hour test holdout is drawn from
+that same collection, so the figure is in-distribution.
 
 This paper describes such a system built into a shipping application, and --- more usefully ---
 reports what happens outside the distribution, on a phone that is sometimes mounted, sometimes
 pocketed, sometimes in a hand, in a car, on a motorcycle, and once in an aircraft.
+
+\paragraph{Contributions.}
+\begin{enumerate}\itemsep1pt
+\item An out-of-distribution evaluation of vibration-derived speed across carry positions and
+vehicle types, on one device and one user, with per-regime error.
+\item The measured cost of the specific-force ambiguity on a consumer platform: three distinct
+approaches defeated, with magnitudes.
+\item Eight negative results reported in full, including two that look correct in aggregate and
+fail per-query.
+\item Three sensor-platform defects that silently invalidated weeks of data, offered as evidence
+that platform semantics dominate modelling error in this setting.
+\end{enumerate}
+
+\section{Related work}
+
+\paragraph{Speed from vibration.} The closest work is CarSpeedNet~\cite{carspeednet}, a CNN
+taking three-axis smartphone accelerometer input, reporting RMSE $1.8$~m/s and MAE $0.72$~m/s
+over $13.2$~hours of driving. Related approaches estimate speed from chassis
+vibration with CNNs~\cite{cnnspeed}, infer position directly from vehicle vibration with an
+IMU~\cite{vibposition}, and use learned momentary speed to constrain strapdown inertial
+navigation~\cite{constrainsins}. Outside the inertial domain, vehicle speed has been estimated
+from tyre--road noise, where band energies at $1$--$4$~kHz give $1.4\%$ average
+error~\cite{soundspeed} and the underlying physics --- tread-block passage at
+$f = NV/L$ --- gives a direct speed dependence.
+
+Our estimator is deliberately simpler than these: a $k$-NN regressor over log-spectral band
+energies, chosen because it can \emph{decline} to answer when nothing resembling the query has
+been observed, which a trained network cannot. The contribution here is not the estimator but
+the evaluation regime.
+
+\paragraph{Reported accuracy is usually in-distribution.} CarSpeedNet's $0.5$-hour holdout comes
+from the same $13.2$-hour collection as its training data. This matters: we measure $+1.0$ to $+1.7$~km/h bias on
+a store built from matched journeys and $+6.8$~km/h on the same device once the store contains
+other carry positions and vehicles --- a degradation invisible to a random split. The
+transportation-mode literature has confronted this more directly; the Sussex--Huawei Locomotion
+dataset~\cite{shl} was assembled specifically to enable reproducible cross-user evaluation,
+with benchmark F1 near $0.93$ for eight-class mode recognition~\cite{shlbench}. No equivalent
+public dataset exists for \emph{speed} regression across carry positions.
+
+\paragraph{Inertial dead reckoning.} That double integration of consumer MEMS output is
+unusable is well established: laboratory characterisation of smartphone IMUs reports position
+error exceeding $1$~km within $100$~s from pure inertial
+propagation~\cite{memserrors}, with error growth dominated by uncompensated bias and varying
+substantially between handsets. Learned approaches to inertial odometry~\cite{solin} and the
+broader survey of deep inertial positioning~\cite{dlsurvey} attack this by replacing integration
+with regression, as we do. Standard mitigations --- zero-velocity updates~\cite{zupt} and map
+matching~\cite{mapmatch} --- bound rather than remove the drift.
+
+\paragraph{Heading and carry position.} Pedestrian dead reckoning divides into step detection,
+heading estimation and position propagation~\cite{pdr3d}, and heading is consistently the
+limiting term. Carry position is known to dominate: measured heading standard deviations of
+$6.22^\circ$, $6.82^\circ$ and $14.68^\circ$ for holding, calling and swinging respectively,
+with corresponding final position errors of $2.11$, $2.34$ and $4.5$~m~\cite{pdrheading}. Our
+$\beta$ term is the vehicular analogue of the carry-mode misalignment that literature addresses
+for pedestrians, and our finding that it cannot be recovered without an external reference is
+consistent with theirs.
+
+\paragraph{The specific-force ambiguity.} An accelerometer measures specific force and cannot
+separate gravity from sustained linear acceleration. This is standard, and attitude-estimation
+work explicitly compensates for it, either by estimating disturbance acceleration
+adaptively~\cite{disturbaccel} or by weighting the accelerometer correction by how far its
+magnitude departs from $g$~\cite{quatcf}. What we add is the downstream consequence on a
+platform where the fusion is not ours to modify: the vendor-supplied attitude and
+gravity-removed acceleration are the only interface, and their handling of sustained
+acceleration silently defeats three otherwise reasonable designs (\S5.2).
 
 \section{Method}
 
@@ -193,10 +260,11 @@ removed (Figure~\ref{fig:flight}) gives $-82\%$ to $-87\%$ distance when signal 
 ground. The along-track integral recovers approximately $60$~km/h of a $679$~km/h climb: after
 $400$~s of held speed the correction contributed $-2$~km/h.
 
-\subsection{One cause, three failures}
+\subsection{One cause, three failures}\label{sec:onecause}
 
 \textbf{Core Motion's attitude filter reinterprets sustained linear acceleration as a change in
-the gravity direction.} A takeoff roll is the most sustained acceleration a phone will ever
+the gravity direction.} The ambiguity itself is standard~\cite{disturbaccel,quatcf}; what is
+reported here is its measured cost when the fusion is vendor-supplied and cannot be replaced. A takeoff roll is the most sustained acceleration a phone will ever
 experience, and is therefore precisely what the filter removes. This defeated:
 
 \begin{enumerate}\itemsep2pt
@@ -287,6 +355,38 @@ over $30$~s --- since the barometer alone flags every hill and rotation alone ev
 \item \textbf{Unseen vehicles.} The model answers only for conditions it has observed.
 \end{itemize}
 
+\section{Threats to validity}
+
+\paragraph{One device, one user, three vehicles.} All $23$ journeys were recorded on a single
+iPhone by one person, in one city, using one car, one motorcycle and walking. Every quantity here
+should be read as characterising that configuration. The transportation-mode literature moved to
+multi-user public datasets~\cite{shl} precisely because single-subject results do not transfer,
+and we have no evidence ours do.
+
+\paragraph{GPS as ground truth.} Errors are measured against GPS recorded simultaneously. Where
+GPS is degraded --- underground, and in the urban canyon immediately after --- the reference is
+itself uncertain. We use the integral of GPS speed rather than the sum of fix-to-fix
+displacements, because the latter accumulates position scatter: on one $15$~km drive the two
+differ by $35\%$ ($14{,}445$~m against $19{,}496$~m), and the fix-summed figure is the wrong one.
+Segments with no valid GPS speed are excluded and reported separately, but a systematic bias in
+GPS speed at low speed would propagate into our low-speed figures undetected.
+
+\paragraph{No baseline comparison.} We do not evaluate a published method on this data, so we
+cannot say whether a CNN trained on the same journeys would degrade the same way outside its
+distribution. The comparison we do make --- matched store versus mixed store on identical
+held-out data --- isolates store composition, not architecture.
+
+\paragraph{Thresholds fitted on few journeys.} The ramp detector ($0.08$~m/s climb with
+$150^\circ$ signed rotation over $30$~s) was selected by sweeping against seven journeys and
+choosing the lowest total absolute error. That is a small sample, and one journey regressed from
+$-7.1\%$ to $-31.7\%$ under the chosen setting because its ramp over-read had been cancelling an
+under-read elsewhere. We report it rather than tuning it away.
+
+\paragraph{Data availability.} The logs are per-tick CSV plus $50$~Hz raw traces, and the results
+here are reproducible from them. They are not currently public. Releasing them would make this a
+labelled multi-vehicle, multi-carry vibration corpus, which to our knowledge does not otherwise
+exist; we consider that the most useful next step.
+
 \section{Conclusion}
 
 Vibration-derived speed is a sound basis for GPS-free route recording within its regime: fast,
@@ -303,10 +403,40 @@ that a wrong estimator is not; every failure above persisted for as long as it d
 system reported it with the same confidence as a correct reading. The shipped application now
 exposes its own error bars to the user.
 
-\begin{thebibliography}{9}
+\begin{thebibliography}{99}
 \small
-\bibitem{carspeednet} CarSpeedNet: A deep neural network for vehicle speed estimation from
-smartphone accelerometer. arXiv:2401.07468.
+\bibitem{carspeednet} A.~Cohen and I.~Klein. CarSpeedNet: Learning-Based Speed Estimation from
+Accelerometer-Only Inertial Sensing. arXiv:2401.07468, 2024.
+\bibitem{cnnspeed} Speed Estimation From Vibrations Using a Deep Learning CNN Approach.
+\emph{IEEE Sensors Letters}, 2021. DOI 10.1109/LSENS.2021.3055512.
+\bibitem{vibposition} Learning Position From Vehicle Vibration Using an Inertial Measurement
+Unit. \emph{IEEE Trans. Intelligent Transportation Systems}, 2024. arXiv:2303.03942.
+\bibitem{constrainsins} Deep Learning Based Speed Estimation for Constraining Strapdown Inertial
+Navigation on Smartphones. arXiv:1808.03485, 2018.
+\bibitem{soundspeed} Estimation of Average Speed of Road Vehicles by Sound Intensity Analysis.
+\emph{Sensors}, 21(16), 2021.
+\bibitem{shl} H.~Gjoreski et~al. Enabling Reproducible Research in Sensor-Based Transportation
+Mode Recognition With the Sussex-Huawei Dataset. \emph{IEEE Access}, 7, 2019.
+\bibitem{shlbench} Benchmark Performance for the Sussex-Huawei Locomotion and Transportation
+Recognition Challenge 2018. In \emph{Human Activity Sensing}, Springer, 2019.
+\bibitem{memserrors} Smartphone MEMS Accelerometer and Gyroscope Measurement Errors: Laboratory
+Testing and Analysis of the Effects on Positioning Performance. \emph{Sensors}, 23(17):7609, 2023.
+\bibitem{solin} A.~Solin et~al. Inertial Odometry on Handheld Smartphones.
+arXiv:1703.00154, 2017.
+\bibitem{dlsurvey} Deep Learning for Inertial Positioning: A Survey. arXiv:2303.03757, 2023.
+\bibitem{zupt} A zero-velocity update method based on neural network and Kalman filter for
+vehicle-mounted inertial navigation systems. \emph{Meas. Sci. Technol.}, 34, 2023.
+\bibitem{mapmatch} GNSS/IMU/map-matching feedback integration with adaptive GNSS accuracy
+estimation for vehicle localization in urban canyons. \emph{Measurement}, 2024.
+\bibitem{pdr3d} Smartphone-Based Pedestrian Dead Reckoning for 3D Indoor Positioning.
+\emph{Sensors}, 21(24):8180, 2021.
+\bibitem{pdrheading} Pedestrian dead reckoning with novel heading estimation under magnetic
+interference and multiple smartphone postures. \emph{Measurement}, 183, 2021.
+\bibitem{disturbaccel} Accurate Attitude Estimation Using ARS under Conditions of Vehicle
+Movement Based on Disturbance Acceleration Adaptive Estimation and Correction.
+\emph{Sensors}, 16(10):1716, 2016.
+\bibitem{quatcf} Quaternion-Based Complementary Filter for Attitude Determination of a
+Smartphone. \emph{IEEE Sensors Journal}, 16(15), 2016.
 \end{thebibliography}
 
 \end{document}
