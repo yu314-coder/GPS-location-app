@@ -1,0 +1,312 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage[margin=0.85in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+
+\title{\vspace{-1.5em}\textbf{Recording a route without satellites:\\
+vibration-derived speed and its failure modes}}
+\author{Yu Yao-Hsing\\\small\texttt{euler.yu@gmail.com}}
+\date{\small August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+A phone can record where it has been without satellite positioning, by reading speed from how
+the vehicle shakes and direction from its motion sensors. We describe the method as shipped in
+a consumer iOS workout application, and report its accuracy on twenty-three instrumented
+journeys by car, motorcycle and on foot, each recorded with GPS running alongside purely as
+ground truth. On fast, steady driving with the phone coupled to the vehicle the recorded
+distance is within $3.8\%$ over $15$~km and heading within $5^\circ$; in slow stop-start traffic
+the same system reads $20$--$60\%$ long. We show that this gap is not a defect but a property of
+the signal: absolute speed error is a few km/h at any speed, which is $1\%$ of a motorway pace
+and $140\%$ of a walking one. We give equal space to eight approaches that were implemented,
+measured and rejected, including three defeated by a single cause --- Apple's Core Motion
+attitude filter absorbs sustained linear acceleration as a change in the gravity direction,
+which erases exactly the signal that aircraft dead reckoning, acceleration-derived heading and
+inertial takeoff detection all depend on.
+\end{abstract}
+
+\section{Introduction}
+
+Satellite positioning fails where routes are most often wanted: tunnels, underground car parks,
+dense urban canyons, and aircraft cabins. The standard response is inertial dead reckoning ---
+integrate acceleration twice --- which is well known to diverge, since accelerometer bias is
+indistinguishable from sustained real acceleration and its double integral grows without bound.
+
+An alternative exists for wheeled vehicles. Road and engine vibration scale with speed, so a
+spectral signature of vertical acceleration can be mapped to speed directly, without
+integration and therefore without accumulation. CarSpeedNet~\cite{carspeednet} reports
+RMSE $1.8$~m/s from $13.2$~hours of accelerometer-only driving. That result is in-distribution:
+its test set is drawn from the same collection as its training data.
+
+This paper describes such a system built into a shipping application, and --- more usefully ---
+reports what happens outside the distribution, on a phone that is sometimes mounted, sometimes
+pocketed, sometimes in a hand, in a car, on a motorcycle, and once in an aircraft.
+
+\section{Method}
+
+\subsection{Signature}
+
+Vertical acceleration $x[n]$ is sampled at $50$~Hz into a ring buffer of $N = 256$ samples
+($4.0$~s), windowed and transformed:
+\begin{align}
+w[n] &= \tfrac{1}{2} - \tfrac{1}{2}\cos\!\left(\frac{2\pi n}{N-1}\right)\\
+X[k] &= \sum_{n=0}^{N-1}\big(x[n]-\bar{x}\big)\,w[n]\,e^{-2\pi i k n / N}
+\end{align}
+Energy is accumulated into nine logarithmically spaced bands bounded at
+$0.4, 0.8, 1.6, 2.5, 4, 6, 9, 13, 18, 24$~Hz:
+\begin{equation}
+f_b = \ln\!\Big(\textstyle\sum_{k \in b} |X[k]|^2 + \epsilon\Big), \quad b = 1\ldots 9
+\end{equation}
+Two time-domain terms complete an eleven-dimensional signature:
+\begin{equation}
+f_{10} = \ln \sigma(x), \qquad
+f_{11} = \ln\!\Big(\tfrac{1}{N-1}\textstyle\sum_n |x[n]-x[n-1]|\Big)
+\end{equation}
+
+The window length was measured rather than assumed. At $4$~s the held-out bias is
+$+1.0$~km/h at $2$--$10$~km/h; doubling to $8$~s raises it to $+6.0$, because the window
+then straddles changes in speed. Finer low-frequency banding changed nothing.
+
+\subsection{Speed}
+
+No functional form is imposed. The system stores $(\mathbf{f}, v)$ pairs whenever GPS supplies a
+speed, and answers by locality. With running feature means $\mu_i$ and variances $\sigma_i^2$,
+\begin{align}
+d^2(\mathbf{f},\mathbf{g}) &= \sum_{i=1}^{11}\left(\frac{f_i-\mu_i}{\sigma_i}-\frac{g_i-\mu_i}{\sigma_i}\right)^{\!2}\\
+\hat{v} &= \frac{\sum_{j=1}^{K} w_j v_j}{\sum_{j=1}^{K} w_j},
+\qquad w_j = \frac{1}{d_j^2 + \epsilon}
+\end{align}
+with $K = 12$. Crucially the estimator is allowed to decline:
+\begin{equation}
+\min_j d_j^2 > 4 \;\Longrightarrow\; \text{no answer}
+\end{equation}
+Error scales directly with match distance --- MAE $5.3$~km/h below $d^2\!=\!1.03$, rising to
+$16.9$ in the range $2.12$--$4.36$ --- so refusing a distant match removes the worst readings.
+
+\subsection{Regime separation}
+
+A store holding several vehicles holds several mutually incompatible mappings. Measured
+directly: a ground-trained model reported $19$~km/h at a $900$~km/h cruise, because cruise is
+\emph{quieter} than taxiing and the slowest stored signature was the closest match. After flight
+data entered the same store, a city drive reported a mean of $337$~km/h against a true $30$.
+Air and ground are therefore stored and searched as separate partitions.
+
+\subsection{Direction}
+
+Turn angle comes from the gyroscope, absolute direction from the magnetometer:
+\begin{equation}
+\theta_t = \theta_{t-1} + \Delta\psi_{\text{gyro}}
++ \kappa\big(\psi_{\text{datum}} + \beta - \theta_{t-1}\big)
+\end{equation}
+where $\beta$ is the \emph{carry offset}: the angle between where the phone points and where the
+body travels. $\beta$ is not observable without an external reference, so it is learned from GPS
+course over the first $180$~s of a workout and then frozen --- which mirrors the physical case
+the mode exists for: signal on the way to the aircraft, none thereafter.
+
+\subsection{Projection}
+
+\begin{equation}
+\Delta s = \hat{v}\,\Delta t, \quad
+\phi_t = \phi_{t-1} + \frac{\Delta s \cos\theta_t}{R}, \quad
+\lambda_t = \lambda_{t-1} + \frac{\Delta s \sin\theta_t}{R\cos\phi_t}
+\end{equation}
+Only the first point of a route originates from GPS.
+
+\section{Results}
+
+\subsection{Distance}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_distance.pdf}
+\caption{Recorded distance against GPS ground truth, seven journeys. The system is accurate when
+fast and steady, and reads long in slow traffic.}
+\label{fig:distance}
+\end{figure}
+
+Figure~\ref{fig:distance} gives the headline. A $15$~km open-road drive records to $+3.8\%$; a
+four-minute car-park trip to $+61.6\%$. The ordering is by average speed, not by any property of
+the route.
+
+\subsection{Why slow journeys read long}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_bias.pdf}
+\caption{Leave-one-out bias against true speed. A matched store is accurate to
+$1$--$2$~km/h across the range; adding other carry positions and vehicles roughly doubles it.}
+\label{fig:bias}
+\end{figure}
+
+Figure~\ref{fig:bias} resolves the apparent contradiction. On a store built from matched
+journeys, held-out bias is $+1.0$ to $+1.7$~km/h at \emph{every} speed. A constant absolute
+error is a constant \emph{relative} error only if speed is constant; at $50$~km/h it is $1\%$,
+at $5$~km/h it is over $100\%$. The percentage figures in Figure~\ref{fig:distance} are
+therefore a statement about the journeys, not about the estimator.
+
+This also explains why no correction helps. Subtracting a constant $6$~km/h --- fitted on two
+drives where the bias was $+6.0$ and $+6.8$ --- repaired those two and degraded three others,
+reducing total absolute error by only $7\%$.
+
+\subsection{Direction}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_heading.pdf}
+\caption{Mean signed heading error. Before $\beta$ was learned, routes were correctly shaped but
+pivoted about their origin.}
+\label{fig:heading}
+\end{figure}
+
+With $\beta$ unlearned, two journeys showed mean signed errors of $+24.9^\circ$ and
+$-35.8^\circ$ with circular concentration $R = 0.93$ and $0.71$: a near-constant rotation, not
+drift. The recorded shape and length were correct --- one $15$~km route matched its true net
+displacement to within $8$~m of magnitude while pointing $26^\circ$ wrong, finishing $4174$~m
+from the true endpoint. Re-integrating with $\beta$ applied moves the finish to $366$~m,
+$2.4\%$ of path length. After the bounded warm-up shipped, four consecutive journeys measured
+$+0.8^\circ$, $-1.3^\circ$, $+1.0^\circ$ and $+2.1^\circ$.
+
+\section{Negative results}
+
+We report these in full because each cost real effort and three share one cause.
+
+\subsection{Aircraft speed cannot be integrated}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_flight.pdf}
+\caption{Replay of a real $22.8$-minute flight with GPS removed at four points. Losing signal on
+the ground --- the normal case --- freezes taxi speed for the entire flight.}
+\label{fig:flight}
+\end{figure}
+
+A flight was recorded with GPS valid on all $1323$ ticks to $706$~km/h. Replaying it with GPS
+removed (Figure~\ref{fig:flight}) gives $-82\%$ to $-87\%$ distance when signal is lost on the
+ground. The along-track integral recovers approximately $60$~km/h of a $679$~km/h climb: after
+$400$~s of held speed the correction contributed $-2$~km/h.
+
+\subsection{One cause, three failures}
+
+\textbf{Core Motion's attitude filter reinterprets sustained linear acceleration as a change in
+the gravity direction.} A takeoff roll is the most sustained acceleration a phone will ever
+experience, and is therefore precisely what the filter removes. This defeated:
+
+\begin{enumerate}\itemsep2pt
+\item \emph{Aircraft speed integration}, above.
+\item \emph{Deriving $\beta$ from acceleration.} A vehicle accelerates along its axis, so the
+world-frame acceleration bearing should give the travel direction. Measured against known
+answers on three drives, circular concentration was $R = 0.15$, $0.18$, $0.19$ --- noise.
+\item \emph{Inertial takeoff detection.} Integrating positive along-track acceleration and
+latching at $45$~m/s in one unbroken episode should identify a takeoff and nothing else.
+Replayed: today's car $52.5$~m/s (latched), a second car $209.9$ (latched), a motorcycle $328.5$
+(latched), a two-minute \emph{walk} $119.7$ (latched), and the actual flight $15.4$ --- never
+latched. Backwards on every case. The episode rarely breaks in a vibrating vehicle because road
+noise holds the signal above the floor, so the integral accumulates the positive half of the
+noise indefinitely.
+\end{enumerate}
+
+\subsection{Regime identification does not transfer}
+
+Whole-session fingerprints --- the mean normalised signature of a workout --- separate regimes
+cleanly. Across eight sessions, same-vehicle-and-carry pairs sit $0.54$--$1.70$ apart,
+same-vehicle-different-carry $1.81$--$2.87$, and different-vehicle $4.30$--$6.97$.
+
+Restricting the neighbour search by that fingerprint nevertheless made prediction \emph{worse}
+($+2.2 \rightarrow +3.4$~km/h). The ranking is unreliable at the individual level: for one car
+journey the nearest stored session was a car ($1.38$), but the second was a \emph{hand-held}
+session ($1.54$) and the third a \emph{motorcycle in a pocket} ($1.74$), both ahead of the same
+car driven the same morning ($2.29$).
+
+\subsection{Confidence signals that do not work}
+
+Neighbour disagreement is the natural confidence measure for a $k$-NN regressor. It fails here
+in the wrong direction: out-of-distribution motorcycle queries had a \emph{tighter} neighbour
+spread than in-distribution car queries ($5.2$ vs $12.4$~km/h), because they land consistently
+in one wrong region. Session-level fingerprint distance correlated with speed bias at
+$r = -0.01$ over six journeys.
+
+\subsection{Discriminating a hijacked pedometer}
+
+On a motorcycle, engine vibration is counted as footsteps. Apple's activity classifier reported
+\texttt{automotive} on $636$ ticks and \texttt{walking} on $271$ of one continuous ride, and each
+flicker allowed the pedometer to take over: it drove $27\%$ of the ride, reporting a mean
+$3.3$~km/h while GPS recorded $49.6$.
+
+Three per-tick discriminators were measured against real walking and rejected: vibration energy
+($79\%$ caught at $21\%$ false), gait-band spectral concentration (distributions overlap), and
+both combined with rotation rate ($69\%$ at $7\%$). What worked was history rather than
+instantaneous features: across two real walks the classifier \emph{never} reported automotive in
+$190$ stepping ticks, while on motorcycles the median gap since it last did was $84$~s. Requiring
+two minutes of silence before a pedometer-driven revocation suppressed $61\%$ of false
+hand-overs at zero measured cost.
+
+\section{Systems failures}
+
+Three defects were not algorithmic, and each silently invalidated data for weeks.
+
+\textbf{A stale reading is not a missing reading.} \texttt{CLLocationManager} suspends heading
+updates outside the foreground, and the cached property is never cleared. On an $81$-minute drive
+the heading datum held \emph{one value for $4790$ of $4832$ seconds} while the device physically
+rotated $5264^\circ$. A fallback to Core Motion's heading had been added for the missing case and
+was never reached, because it was written as \texttt{clHeading ?? motionHeading} and a frozen
+value is not \texttt{nil}.
+
+\textbf{Background permission gating.} \texttt{allowsBackgroundLocationUpdates} was enabled only
+under \emph{Always} authorisation. Under \emph{When In Use} the process was suspended
+mid-journey: a single $371$-second hole in a $21$-minute drive, during which the $50$~Hz stream
+delivered $49$ samples where $18{,}550$ were due, accounting for the entire $20\%$ distance
+shortfall.
+
+\textbf{Instrumentation that cannot express the failure.} A $17$-minute workout the user believed
+was recording without GPS had the mode active for $34$~seconds; $63$ GPS fixes entered the route.
+The guarantee held --- the code path returns early --- but nothing in the log stated the mode's
+state, and it took an hour to establish from a side effect. Two columns now record it directly.
+
+\section{Limitations}
+
+\begin{itemize}\itemsep2pt
+\item \textbf{Hand or pocket carry destroys the signal.} At matched speeds a hand-held phone
+reads $0.6$--$0.8$ lower in the summary feature, and the feature stops varying with speed
+altogether: $7.10, 7.08, 7.07, 7.13, 7.25$ across $10$ to $65$~km/h. Reported speed becomes a
+constant near $15$--$25$~km/h regardless of truth.
+\item \textbf{Stationary vehicles with running engines.} A motorcycle at a red light reads
+$5.2$~km/h, accumulating $690$~m over $339$ stationary ticks. No tested signal separates an
+idling engine from a slow crawl.
+\item \textbf{Car-park ramps.} A vehicle crawling a concrete spiral shakes as hard as one at
+$40$~km/h on a road; measured error is $+169\%$ to $+297\%$. Detection requires two signals
+jointly --- barometric climb above $0.08$~m/s \emph{and} signed net rotation above $150^\circ$
+over $30$~s --- since the barometer alone flags every hill and rotation alone every junction.
+\item \textbf{Unseen vehicles.} The model answers only for conditions it has observed.
+\end{itemize}
+
+\section{Conclusion}
+
+Vibration-derived speed is a sound basis for GPS-free route recording within its regime: fast,
+steady travel with the phone mechanically coupled to the vehicle, where we measure $3.8\%$
+distance error over $15$~km and $5^\circ$ of heading error. Outside that regime the failures are
+not gradual --- a hand on the phone removes the signal entirely, and an aircraft's defining
+acceleration is erased by the platform's own sensor fusion.
+
+We would emphasise two lessons over any result. First, the dominant error sources across this
+work were not modelling choices but sensor-platform semantics: a suspended process, a stale
+cached heading, an attitude filter making a defensible choice that happens to destroy the signal
+of interest. Second, an estimator that reports without expressing doubt is dangerous in a way
+that a wrong estimator is not; every failure above persisted for as long as it did because the
+system reported it with the same confidence as a correct reading. The shipped application now
+exposes its own error bars to the user.
+
+\begin{thebibliography}{9}
+\small
+\bibitem{carspeednet} CarSpeedNet: A deep neural network for vehicle speed estimation from
+smartphone accelerometer. arXiv:2401.07468.
+\end{thebibliography}
+
+\end{document}
