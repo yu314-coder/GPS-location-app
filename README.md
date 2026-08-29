@@ -55,9 +55,10 @@ stops varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cann
 without GPS, because Core Motion's attitude filter absorbs a takeoff roll as a change in the
 gravity direction. A vehicle the model has never learned reads wrong until it has.
 
-📄 **[Read the paper](paper/velocity_mode.pdf)** — method, results, and eight approaches that were
-implemented, measured and rejected. The same material is in the app under
-**Settings → Velocity Mode**, with the equations and charts.
+📄 **[Read the paper](https://github.com/yu314-coder/GPS-location-app/releases/tag/v1.0-paper)**
+— method, results, and eight approaches that were implemented, measured and rejected.
+[LaTeX source](paper/). The paper also ships inside the app: **Settings → Velocity Mode → Read the
+paper**, alongside an interactive version with the equations and error charts.
 
 ### Live GPS Tracking
 
