@@ -6,6 +6,15 @@ import Charts
 /// Every number here is measured against GPS recorded at the same moment as the estimate. Nothing
 /// is modelled, simulated or extrapolated, and where the method fails it says so with a magnitude.
 struct VelocityMethodView: View {
+    /// AT ACCESSIBILITY TEXT SIZES A CHART IS WORSE THAN NO CHART.
+    ///
+    /// These are horizontal bars with a journey name inside each band. When the label grows and
+    /// the plot does not, the name lands on top of its own bar — measured at accessibility-medium,
+    /// where "Suburban, 12 min" had the bar drawn straight through it. The tables carry every
+    /// number the charts do, so above xxxLarge the charts step aside rather than overlap.
+    @Environment(\.dynamicTypeSize) private var typeSize
+    private var chartsFit: Bool { typeSize <= .xxxLarge }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -160,6 +169,7 @@ struct VelocityMethodView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Measured on the road",
                               subtitle: "recorded distance against GPS, same moment") { EmptyView() }
+                if chartsFit {
                 Chart {
                     ForEach(VelocityMethodData.journeys) { j in
                         BarMark(x: .value("Distance", j.trueM), y: .value("Journey", j.name))
@@ -182,20 +192,25 @@ struct VelocityMethodView: View {
                 ])
                 .chartXAxisLabel("metres travelled")
                 .chartXScale(domain: 0...17500)
+                // NO VERTICAL GRIDLINES. The journey names are drawn inside the plot area, and
+                // the dashed lines at 5,000 and 10,000 ran straight through the middle of
+                // "Suburban, 12 min" and "Motorcycle, 20 min". The axis values below carry the
+                // scale on their own.
+                .chartXAxis { AxisMarks { AxisValueLabel() } }
+                .chartYAxis { AxisMarks(position: .leading) { AxisValueLabel() } }
                 .chartLegend(position: .top, alignment: .leading)
                 .frame(height: 330)
+                }
 
                 Divider()
                 VStack(spacing: 0) {
-                    JourneyRow(name: "Journey", recorded: "app", truth: "GPS",
-                               error: "error", detail: "avg speed", header: true)
-                    ForEach(VelocityMethodData.journeys) { j in
-                        Divider()
+                    ForEach(Array(VelocityMethodData.journeys.enumerated()), id: \.element.id) { i, j in
+                        if i > 0 { Divider() }
                         JourneyRow(name: j.name,
-                                   recorded: "\(j.recordedM) m",
-                                   truth: "\(j.trueM) m",
+                                   recorded: "\(j.recordedM)\u{00A0}m",
+                                   truth: "\(j.trueM)\u{00A0}m",
                                    error: String(format: "%+.0f%%", j.errorPercent),
-                                   detail: String(format: "%.0f km/h", j.avgKmh))
+                                   detail: String(format: "%.0f km/h average", j.avgKmh))
                     }
                 }
             }
@@ -212,6 +227,7 @@ struct VelocityMethodView: View {
                 poor in traffic.
                 """)
                 .font(.callout)
+                if chartsFit {
                 Chart(VelocityMethodData.speedBias) { b in
                     BarMark(x: .value("Speed", b.band), y: .value("Bias", b.biasKmh))
                         .foregroundStyle(Color.accentColor.gradient)
@@ -222,7 +238,11 @@ struct VelocityMethodView: View {
                 }
                 .chartYAxisLabel("over-read, km/h")
                 .chartXAxisLabel("true speed, km/h")
-                .frame(height: 170)
+                .chartYScale(domain: 0...2.2)
+                .frame(height: 180)
+                } else {
+                    BiasTable()
+                }
                 Text("""
                 Leave-one-out over 4,178 stored observations from matched journeys. Adding other \
                 carry positions and vehicles to the same store roughly doubles these figures.
@@ -236,6 +256,7 @@ struct VelocityMethodView: View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader("Direction, before and after the carry offset")
+                if chartsFit {
                 Chart(VelocityMethodData.heading) { h in
                     BarMark(x: .value("Journey", h.label), y: .value("Error", h.degrees))
                         .foregroundStyle(h.afterFix ? Color.green : Color.red)
@@ -245,7 +266,11 @@ struct VelocityMethodView: View {
                         }
                 }
                 .chartYAxisLabel("mean direction error, °")
-                .frame(height: 170)
+                .chartYScale(domain: 0...42)
+                .frame(height: 180)
+                } else {
+                    HeadingTable()
+                }
                 Text("""
                 Red: the route came out correctly shaped but pivoted about its start. On one 15 km \
                 journey the recorded net displacement matched the true one to within 8 m of length \
@@ -270,14 +295,13 @@ struct VelocityMethodView: View {
                 """)
                 .font(.callout)
                 VStack(spacing: 0) {
-                    JourneyRow(name: "Journey", recorded: "app", truth: "GPS",
-                               error: "error", detail: "phase", header: true)
-                    ForEach(VelocityMethodData.rampSplit) { r in
-                        Divider()
-                        JourneyRow(name: r.name, recorded: "\(r.recordedM) m",
-                                   truth: "\(r.trueM) m",
+                    ForEach(Array(VelocityMethodData.rampSplit.enumerated()), id: \.element.id) { i, r in
+                        if i > 0 { Divider() }
+                        JourneyRow(name: r.name, recorded: "\(r.recordedM)\u{00A0}m",
+                                   truth: "\(r.trueM)\u{00A0}m",
                                    error: String(format: "%+.0f%%", r.errorPercent),
-                                   detail: r.phase, emphasise: r.phase == "ramp")
+                                   detail: r.phase == "ramp" ? "on the ramp" : "on the road",
+                                   emphasise: r.phase == "ramp")
                     }
                 }
                 Text("""
@@ -304,6 +328,7 @@ struct VelocityMethodView: View {
                 recorded had signal been lost there:
                 """)
                 .font(.callout)
+                if chartsFit {
                 Chart(VelocityMethodData.flight) { f in
                     BarMark(x: .value("Error", f.errorPercent), y: .value("Point", f.point))
                         .foregroundStyle(Color.red.opacity(0.85))
@@ -313,7 +338,12 @@ struct VelocityMethodView: View {
                         }
                 }
                 .chartXAxisLabel("distance error, %")
-                .frame(height: 150)
+                .chartXAxis { AxisMarks { AxisValueLabel() } }
+                .chartYAxis { AxisMarks(position: .leading) { AxisValueLabel() } }
+                .frame(height: 165)
+                } else {
+                    FlightTable()
+                }
                 Text("""
                 Signal is normally lost on the ground, which freezes taxi speed for the whole \
                 flight. The along-track correction recovers roughly 60 km/h of a 679 km/h climb: \
@@ -388,6 +418,11 @@ private struct Equation: View {
     }
 }
 
+/// One measured journey.
+///
+/// Two lines rather than one. A single row could not hold "Motorcycle, 20 min" beside four
+/// numeric columns without truncating it, and minimumScaleFactor made each row a different size
+/// as it shrank to fit — so rows that should have been comparable were not even the same height.
 private struct JourneyRow: View {
     let name: String
     let recorded: String
@@ -398,19 +433,28 @@ private struct JourneyRow: View {
     var emphasise: Bool = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Text(name).frame(maxWidth: .infinity, alignment: .leading)
-            Text(recorded).frame(width: 60, alignment: .trailing)
-            Text(truth).frame(width: 60, alignment: .trailing)
-            Text(error).frame(width: 52, alignment: .trailing)
-                .foregroundStyle(header ? Color.secondary : (emphasise ? .red : .primary))
-            Text(detail).frame(width: 62, alignment: .trailing)
+        if header { EmptyView() } else {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name).font(.caption).fontWeight(.medium)
+                    Text(detail).font(.caption2).foregroundStyle(.secondary)
+                }
+                .layoutPriority(1)
+                Spacer(minLength: 4)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(recorded).font(.system(.caption, design: .monospaced))
+                    Text("GPS\u{00A0}\(truth)").font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Text(error)
+                    .font(.system(.caption, design: .monospaced)).fontWeight(.semibold)
+                    .foregroundStyle(emphasise ? .red : .primary)
+                    .fixedSize()
+            }
+            // No lineLimit and no fixed widths: at accessibility sizes a clipped number is worse
+            // than a taller row, and every one of these was truncating.
+            .padding(.vertical, 7)
         }
-        .font(.system(.caption2, design: header ? .default : .monospaced))
-        .fontWeight(header ? .semibold : .regular)
-        .foregroundStyle(header ? Color.secondary : Color.primary)
-        .lineLimit(1).minimumScaleFactor(0.7)
-        .padding(.vertical, 5)
     }
 }
 
@@ -492,4 +536,60 @@ enum VelocityMethodData {
         .init(point: "60 s into climb", errorPercent: -31),
         .init(point: "At cruise", errorPercent: -34)
     ]
+}
+
+// MARK: - Text fallbacks, used when the type is too large for a chart
+
+private struct BiasTable: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(VelocityMethodData.speedBias.enumerated()), id: \.element.id) { i, b in
+                if i > 0 { Divider() }
+                HStack {
+                    Text("\(b.band) km/h").font(.caption)
+                    Spacer(minLength: 8)
+                    Text(String(format: "+%.1f km/h", b.biasKmh))
+                        .font(.system(.caption, design: .monospaced))
+                }
+                .padding(.vertical, 6)
+            }
+        }
+    }
+}
+
+private struct HeadingTable: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(VelocityMethodData.heading.enumerated()), id: \.element.id) { i, h in
+                if i > 0 { Divider() }
+                HStack {
+                    Text(h.label).font(.caption)
+                    Text(h.afterFix ? "offset learned" : "offset unlearned")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text(String(format: "%.1f°", h.degrees))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(h.afterFix ? .green : .red)
+                }
+                .padding(.vertical, 6)
+            }
+        }
+    }
+}
+
+private struct FlightTable: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(VelocityMethodData.flight.enumerated()), id: \.element.id) { i, f in
+                if i > 0 { Divider() }
+                HStack {
+                    Text(f.point).font(.caption)
+                    Spacer(minLength: 8)
+                    Text(String(format: "%.0f%%", f.errorPercent))
+                        .font(.system(.caption, design: .monospaced)).foregroundStyle(.red)
+                }
+                .padding(.vertical, 6)
+            }
+        }
+    }
 }
