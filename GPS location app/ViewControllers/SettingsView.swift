@@ -117,10 +117,17 @@ struct SettingsView: View {
                             title: "How Velocity Mode works",
                             subtitle: "The algorithm, and how accurate it is")
             }
+            NavigationLink {
+                PaperView()
+            } label: {
+                SettingsRow(symbol: "doc.richtext.fill", tint: .indigo,
+                            title: "Read the paper",
+                            subtitle: "Method, results and failure modes, in full")
+            }
         } header: {
             Text("Velocity Mode")
         } footer: {
-            Text("Records a route without satellite positioning, from vibration and the motion sensors. Includes the measured error on real journeys.")
+            Text("Records a route without satellite positioning, from vibration and the motion sensors. The paper reports its measured error across 23 instrumented journeys, and the approaches that did not work.")
         }
     }
 
