@@ -41,6 +41,7 @@ struct SettingsView: View {
             Form {
                 permissionsSection
                 unitsSection
+                velocitySection
                 mapSection
                 workoutSection
                 roadAlignmentSection
@@ -102,6 +103,24 @@ struct SettingsView: View {
             } label: {
                 SettingsRow(symbol: "mountain.2.fill", tint: .green, title: "Altitude")
             }
+        }
+    }
+
+    /// Velocity Mode is the least obvious thing this app does and the easiest to mistrust.
+    /// The method, the equations and the measured error are all here rather than hidden.
+    private var velocitySection: some View {
+        Section {
+            NavigationLink {
+                VelocityMethodView()
+            } label: {
+                SettingsRow(symbol: "speedometer", tint: .purple,
+                            title: "How Velocity Mode works",
+                            subtitle: "The algorithm, and how accurate it is")
+            }
+        } header: {
+            Text("Velocity Mode")
+        } footer: {
+            Text("Records a route without satellite positioning, from vibration and the motion sensors. Includes the measured error on real journeys.")
         }
     }
 
