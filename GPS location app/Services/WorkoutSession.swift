@@ -603,6 +603,32 @@ class WorkoutSession: ObservableObject {
     /// The last speed GPS actually measured while in a vehicle, held when GPS is lost. Exact at
     /// the moment of loss, degrades gracefully, needs no calibration and cannot diverge.
     private var lastMeasuredVehicleSpeed: Double?
+    /// When that measurement was taken, so "still true" can be told from "long stale".
+    private var lastMeasuredVehicleSpeedTime: Date?
+    /// How long a GPS speed stays authoritative for the SPEED READOUT.
+    ///
+    /// Deliberately generous next to the 5 s position gap: a Doppler speed is still broadly
+    /// right seconds later on any real vehicle, whereas a position that old is already wrong by
+    /// a car length or two.
+    private let GPS_SPEED_FRESHNESS: TimeInterval = 6.0
+
+    /// Whether satellite speed can be trusted for what the app DISPLAYS right now.
+    ///
+    /// Position and speed fail at different rates, and conflating them is what put a 0 on the
+    /// screen at a genuine 20 km/h. Dead reckoning can be the better source of POSITION — under
+    /// partial cover the fixes wander by a block — while GPS remains the better source of
+    /// SPEED, because a Doppler speed does not care that the position is vague.
+    ///
+    /// So the two are decided separately: this governs the number on the metrics card, and the
+    /// fallback state governs where the route is drawn. Forced Velocity Mode is excluded
+    /// entirely — its whole purpose is to answer without GPS, and a readout quietly corrected by
+    /// satellite speed would make every ground test of it meaningless.
+    private var gpsSpeedIsAuthoritative: Bool {
+        guard !forceMotionFallback,
+              let measured = lastMeasuredVehicleSpeed, measured >= 0,
+              let at = lastMeasuredVehicleSpeedTime else { return false }
+        return Date().timeIntervalSince(at) <= GPS_SPEED_FRESHNESS
+    }
     /// Metres dead-reckoned since the last real GPS fix, and the accuracy of that fix. Together
     /// they give each estimated point an uncertainty that grows with how far it has been carried.
     private var distanceSinceLastRealFix: Double = 0
@@ -3662,8 +3688,23 @@ class WorkoutSession: ObservableObject {
         // while standing still (ZUPT zeroing the velocity, no distance) the metrics card kept
         // showing its last, stale, high value while the DR status line correctly read 0 — the
         // mismatch between "the shown one" and "the purple one".
-        currentMetrics.currentSpeed = estimatedFallbackSpeed
-        currentMetrics.smoothedSpeed = estimatedFallbackSpeed
+        // GPS WINS THE READOUT WHENEVER IT HAS ONE.
+        //
+        // Dead reckoning may be running here because POSITION was lost or degraded, which says
+        // nothing about whether a satellite SPEED is available — and when one is, it is simply
+        // better. Measured at a steady 20 km/h the estimate read 0: a constant cruise produces
+        // almost no acceleration, the integrated velocity sags below the stationary detector's
+        // speed gate, and the detector then pins it to zero, from which only fresh acceleration
+        // can escape. The card showed a stopped vehicle to someone who was moving.
+        //
+        // Forced Velocity Mode is excluded inside gpsSpeedIsAuthoritative — see there.
+        if gpsSpeedIsAuthoritative, let measured = lastMeasuredVehicleSpeed {
+            currentMetrics.currentSpeed = measured
+            currentMetrics.smoothedSpeed = measured
+        } else {
+            currentMetrics.currentSpeed = estimatedFallbackSpeed
+            currentMetrics.smoothedSpeed = estimatedFallbackSpeed
+        }
 
         // Diagnostic: if the pedometer never delivered any data, Motion & Fitness permission
         // is likely denied — surface that so it is not mistaken for an algorithm bug.
@@ -4413,9 +4454,13 @@ class WorkoutSession: ObservableObject {
         // Mode status line disagreed. Geometry is also spiky when several ticks are batched
         // into one appended point, which is where absurd max speeds came from. Override with
         // the single authoritative value, and never let a geometric spike raise max speed.
-        currentMetrics.currentSpeed = speedMetersPerSecond
-        currentMetrics.smoothedSpeed = speedMetersPerSecond
-        currentMetrics.maxSpeed = max(maxSpeedBeforeUpdate, speedMetersPerSecond)
+        // Same rule as the per-tick readout: a live satellite speed outranks the integrated one.
+        // maxSpeed follows whichever was actually shown, so the summary cannot report a peak the
+        // workout never displayed.
+        let shownSpeed = (gpsSpeedIsAuthoritative ? lastMeasuredVehicleSpeed : nil) ?? speedMetersPerSecond
+        currentMetrics.currentSpeed = shownSpeed
+        currentMetrics.smoothedSpeed = shownSpeed
+        currentMetrics.maxSpeed = max(maxSpeedBeforeUpdate, shownSpeed)
         currentMetrics.currentPressure = locationManager.currentPressure
         currentMetrics.updateSplits(startDate: flight.startDate)
         persistActiveWorkoutSnapshot(force: false, reason: "estimatedLocationTick")
@@ -4721,6 +4766,7 @@ class WorkoutSession: ObservableObject {
         // Remember a genuine vehicle speed so it can be held once GPS goes.
         if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
             lastMeasuredVehicleSpeed = location.speed
+            lastMeasuredVehicleSpeedTime = Date()
             // A fresh measurement supersedes everything integrated since the last one.
             heldSpeedCorrection = 0
             if vehicleContextIsCurrent, !deviceIsBeingHandled {
