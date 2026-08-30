@@ -348,7 +348,29 @@ struct FlightMetrics: Codable, Hashable {
             // Dead-reckoned points carry small accuracies and are unaffected.
             let combinedUncertainty = max(location.horizontalAccuracy, 0) + max(previous.horizontalAccuracy, 0)
             let movementIsResolvable = distance >= combinedUncertainty * 0.5
-            if timeDelta >= 0.2 && distance > 0 && movementIsResolvable {
+            // MEASURE THE SPEED, DON'T INFER IT FROM TWO POSITIONS.
+            //
+            // Core Location reports speed from Doppler shift — an independent measurement that
+            // does not care how vague the position is. Differencing two fixes, by contrast,
+            // divides position noise by a short time and calls the result a speed, which is why
+            // it needed the resolvability gate below to stop a stationary phone reading 33 km/h.
+            //
+            // That gate then created the opposite failure, and a worse one, because it wrote a
+            // hard zero rather than declining to answer. At 20 km/h a one-second fix moves about
+            // 5.6 m; two fixes of ordinary ±10 m accuracy demand 10 m before the pair is
+            // believed, so the readout sat at 0 through an entire ride on perfectly good GPS.
+            // The faster you went the more likely it was to clear the gate, so it looked like
+            // the app only worked at speed.
+            //
+            // Doppler has neither problem: it is accurate at walking pace and does not inflate
+            // when the position wanders. Geometry stays as the fallback for the rare fix that
+            // carries no speed (reported as negative), and the gate still guards THAT path.
+            if location.speed >= 0 {
+                currentSpeed = location.speed
+                if totalPoints % 25 == 0 {
+                    print("⚡ Speed (Doppler): \(String(format: "%.1f", currentSpeed * 3.6))km/h  ±\(String(format: "%.0f", location.horizontalAccuracy))m")
+                }
+            } else if timeDelta >= 0.2 && distance > 0 && movementIsResolvable {
                 currentSpeed = distance / timeDelta
 
                 // Log speed calculation details every 25 points for background monitoring
