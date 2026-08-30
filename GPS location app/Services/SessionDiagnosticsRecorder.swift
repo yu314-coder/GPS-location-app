@@ -105,6 +105,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// Most recent row, for the live debug readout.
     @Published private(set) var latest: Row?
 
+    /// Whether this workout writes diagnostics files, sampled once when the workout starts.
+    ///
+    /// Read at `reset()` rather than per row so a workout cannot end up with half a log: the
+    /// answer is fixed for the whole recording, however the setting is flipped meanwhile.
+    private var loggingEnabled = true
+
     func reset() {
         try? rawFileHandle?.close()
         rawFileHandle = nil
@@ -116,13 +122,21 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         rawStart = nil
         rowCount = 0
         latest = nil
+        loggingEnabled = WorkoutSession.diagnosticsLoggingEnabled
+        if !loggingEnabled {
+            print("📉 Diagnostics logging off — no CSVs will be written for this workout")
+        }
     }
 
     func record(_ row: Row) {
+        // `latest` drives the live readout on the debug screen, which is a view of what the
+        // estimator is doing RIGHT NOW rather than a log. It stays live either way; only the
+        // accumulation that becomes a file is skipped.
+        latest = row
+        guard loggingEnabled else { return }
         rows.append(row)
         if rows.count > capacity { rows.removeFirst(rows.count - capacity) }
         rowCount = rows.count
-        latest = row
     }
 
     var isEmpty: Bool { rows.isEmpty }
@@ -215,6 +229,9 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     var latestGPSAccuracy: Double = -1
 
     func recordRaw(verticalAccel: Double, north: Double = 0, east: Double = 0, at time: Date) {
+        // The 50 Hz stream is by far the most expensive thing here — a file handle, a write per
+        // sample, and tens of megabytes over a long ride. With logging off it does not start.
+        guard loggingEnabled else { return }
         if rawStart == nil { rawStart = time }
         guard let start = rawStart else { return }
         var sample = RawSample(t: time.timeIntervalSince(start),
@@ -344,6 +361,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
 
     /// Write both logs for a finished workout. Cheap enough to do on the main actor at stop.
     func persistToDisk(workoutStart: Date) {
+        guard loggingEnabled else { return }
         // Close the stream first: the raw trace has been written as it went, so this only has to
         // flush the tail. Nothing here re-serialises hours of samples.
         let streamed = finishRawStream()

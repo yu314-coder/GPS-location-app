@@ -139,6 +139,23 @@ class WorkoutSession: ObservableObject {
     /// points the moment one arrives, so a workout that starts without GPS keeps its shape.
     private var pendingUnanchoredMovement: [(distance: Double, heading: Double, speed: Double, timestamp: Date)] = []
     private let ESTIMATED_LOCATION_GAP_THRESHOLD: TimeInterval = 5.0
+    /// How long the fixes may stay poor before Velocity Mode takes over on its own.
+    ///
+    /// A GAP is not the only way satellite positioning fails, and it is not the common one.
+    /// Under partial cover — a long tunnel with vents, a covered car park ramp, a street between
+    /// tall buildings — Core Location keeps answering, just badly: fixes arrive every second or
+    /// two carrying ±100 m or worse. Those fixes reset `lastRealLocationTime`, so a rule that
+    /// only watched for silence never engaged, and the route was drawn from positions that were
+    /// wrong by a block while a perfectly good inertial estimate sat unused.
+    ///
+    /// So degradation is watched as well as absence: no fix accurate enough to trust in this
+    /// long means the dead-reckoned track is the better one, and it takes over — seeded, as in
+    /// the gap case, from the last speed GPS actually measured, so the two join up continuously
+    /// instead of restarting from zero.
+    ///
+    /// Longer than the gap threshold on purpose. A momentary accuracy excursion under a bridge
+    /// should not hand the route over; a sustained one should.
+    private let DEGRADED_GPS_THRESHOLD: TimeInterval = 12.0
     private let ESTIMATED_LOCATION_TICK_INTERVAL: TimeInterval = 1.0
     private let ESTIMATED_LOCATION_HORIZONTAL_ACCURACY: Double = 250.0
     private let ESTIMATED_LOCATION_VERTICAL_ACCURACY: Double = 250.0
@@ -159,6 +176,27 @@ class WorkoutSession: ObservableObject {
         }
     }
     private var persistForceMotionFallback = true
+
+    /// Settings: keep dead reckoning through weak GPS while the app is in the background.
+    ///
+    /// Read on every tick rather than cached, so switching it mid-workout takes effect at once.
+    /// It governs the AUTOMATIC takeover only, and only while backgrounded — Velocity Mode
+    /// switched on by hand still runs everywhere, and a weak-signal stretch is still covered
+    /// while the workout is on screen. Turning this off buys background battery, not a
+    /// different recording method.
+    var velocityBackgroundRecordingEnabled: Bool {
+        UserDefaults.standard.object(forKey: "velocityBackgroundRecording") as? Bool ?? true
+    }
+
+    /// Settings: write the per-workout diagnostics CSVs.
+    ///
+    /// On, a workout leaves a 50 Hz raw sample file and a per-tick debug file behind — the
+    /// evidence every accuracy figure in the paper was measured from. That is a real amount of
+    /// disk for someone who is only here to record a run, so it can be switched off; nothing
+    /// about how the route is recorded changes either way.
+    static var diagnosticsLoggingEnabled: Bool {
+        UserDefaults.standard.object(forKey: "diagnosticsLoggingEnabled") as? Bool ?? true
+    }
 
     private func setForceMotionFallback(_ value: Bool, persist: Bool) {
         persistForceMotionFallback = persist
@@ -2797,11 +2835,39 @@ class WorkoutSession: ObservableObject {
             // and the old `guard anchor != nil` meant dead reckoning NEVER engaged — the
             // exact case where it is needed most. appendEstimatedLocation seeds a synthetic
             // anchor from the last-known position instead (mirrors the watch).
-            guard timeSinceRealFix >= ESTIMATED_LOCATION_GAP_THRESHOLD else {
+            //
+            // Two ways to lose usable positioning, and both have to be watched. Silence is the
+            // obvious one. Degradation is the common one, and it used to be invisible here
+            // because a ±150 m fix still counts as a fix (see DEGRADED_GPS_THRESHOLD).
+            //
+            // Before the first good fix of a workout there is nothing to measure from, so
+            // degradation is timed from the start of the workout instead — GPS gets the same
+            // grace period to produce something usable that it would get to recover.
+            let goodFixReference = lastGoodAccuracyFixTime == .distantPast
+                ? (workoutStartTime ?? Date())
+                : lastGoodAccuracyFixTime
+            let timeSinceGoodFix = Date().timeIntervalSince(goodFixReference)
+            let positioningLost = timeSinceRealFix >= ESTIMATED_LOCATION_GAP_THRESHOLD
+            let positioningDegraded = timeSinceGoodFix >= DEGRADED_GPS_THRESHOLD
+
+            // Backgrounded, and the user has asked us not to keep dead reckoning there: leave
+            // the automatic takeover alone and let GPS record what it can. Switching Velocity
+            // Mode on by hand skips this whole block, so the setting can never silence a mode
+            // the user asked for; and it is inert in the foreground. "Off" costs the background
+            // case and nothing else.
+            let suppressedInBackground = !velocityBackgroundRecordingEnabled
+                && UIApplication.shared.applicationState == .background
+
+            guard (positioningLost || positioningDegraded) && !suppressedInBackground else {
                 if isUsingEstimatedLocationFallback {
-                    endEstimatedLocationFallback(reason: "GPS returned")
+                    endEstimatedLocationFallback(
+                        reason: suppressedInBackground ? "backgrounded, background Velocity Mode off"
+                                                       : "GPS returned")
                 }
                 return
+            }
+            if !isUsingEstimatedLocationFallback && !positioningLost && positioningDegraded {
+                print("📉 GPS degraded — no fix better than ±\(Int(GOOD_FIX_ACCURACY))m for \(Int(timeSinceGoodFix))s; Velocity Mode taking over")
             }
         }
 

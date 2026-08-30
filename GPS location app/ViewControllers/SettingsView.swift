@@ -27,6 +27,8 @@ struct SettingsView: View {
     @AppStorage("useRawGPS") private var useRawGPS = false
     @AppStorage("healthKitExportType") private var healthKitExportType = "auto"
     @AppStorage("mapMatchingAPIKey") private var mapMatchingAPIKey = ""
+    @AppStorage("velocityBackgroundRecording") private var velocityBackgroundRecording = true
+    @AppStorage("diagnosticsLoggingEnabled") private var diagnosticsLoggingEnabled = true
 
     @StateObject private var locationManager = LocationManager()
     @ObservedObject private var healthKitManager = HealthKitManager.shared
@@ -124,10 +126,36 @@ struct SettingsView: View {
                             title: "Read the paper",
                             subtitle: "Method, results and failure modes, in full")
             }
+            Toggle(isOn: $velocityBackgroundRecording) {
+                SettingsRow(symbol: "moon.fill", tint: .purple,
+                            title: "Keep going in the background",
+                            subtitle: "Cover weak signal with the screen off")
+            }
+            Toggle(isOn: $diagnosticsLoggingEnabled) {
+                SettingsRow(symbol: "doc.text.magnifyingglass", tint: .gray,
+                            title: "Diagnostics logs",
+                            subtitle: "Write sensor CSVs for each workout")
+            }
         } header: {
             Text("Velocity Mode")
         } footer: {
-            Text("Records a route without satellite positioning, from vibration and the motion sensors. The paper reports its measured error across 23 instrumented journeys, and the approaches that did not work.")
+            // Two things people reasonably worry about — battery and storage — and in both cases
+            // the honest answer is that switching off costs something specific and nothing else.
+            Text("""
+            Records a route without satellite positioning, from vibration and the motion sensors. \
+            The paper reports its measured error across 23 instrumented journeys, and the \
+            approaches that did not work.
+
+            It takes over on its own whenever satellite positioning drops out or degrades — a \
+            tunnel, a car park, a street between tall buildings — carrying on from the last speed \
+            measured so the route stays joined up. Turning off background recording limits that to \
+            when the workout is on screen; switching Velocity Mode on during a workout always \
+            records everywhere.
+
+            Diagnostics logs are the raw sensor files behind every accuracy figure in the paper. \
+            They cost storage and nothing else — routes are recorded exactly the same way without \
+            them.
+            """)
         }
     }
 
