@@ -29,6 +29,12 @@ urban canyons, aircraft cabins. Velocity Mode records the journey anyway — **s
 vehicle shakes**, direction from the motion sensors, and position projected forward from a single
 starting fix. Only the first point of the route comes from GPS.
 
+It engages on its own. Velocity Mode takes over whenever satellite positioning drops out **or
+degrades** — a long tunnel with vents, a covered ramp, a street between tall buildings, where
+fixes keep arriving but are worth ±100 m — and it carries on from the last speed GPS actually
+measured, so the track stays joined up rather than restarting from zero. There is nothing to
+switch on mid-workout; the manual toggle exists to force it for testing.
+
 It does not integrate acceleration. Double integration diverges within seconds because
 accelerometer bias is indistinguishable from real acceleration. Instead a 4-second window of
 vertical acceleration is turned into an 11-dimensional spectral signature, and speed is read off
@@ -42,23 +48,39 @@ as ground truth:
 | Journey | Distance error | Heading |
 |---|---|---|
 | Open road, 15 km | **+3.8%** | 5° median |
-| Motorcycle, riding | +6% | — |
+| Motorcycle, mounted | +6% | — |
 | City driving, 12–19 min | +20% to +25% | 8–15° median |
 | Car park, 4–8 min | +58% to +62% | — |
+| **Motorcycle, phone in a pocket** | **no relationship to real speed** | — |
 
 The spread is a property of the signal, not a defect. Absolute speed error is a few km/h at any
 speed — 1% of a motorway pace and 140% of a walking one — so the same estimator looks excellent
 on an open road and poor in traffic.
 
+The last row is different in kind from the rest. Over a 19-minute ride with the phone in a
+trouser pocket the reported speed and the real speed were statistically unrelated (R = +0.13),
+and the vibration signature and the real speed more so (R = −0.02). The estimate reads roughly
+50 km/h whatever the motorcycle is doing, including standing still at a light. A car rests the
+phone on a rigid surface and delivers road noise that scales with speed; a motorcycle delivers
+engine vibration, which follows engine speed rather than road speed and is undiminished at a
+standstill in gear. There is no speed in the input, so nothing can recover one — and the model's
+own confidence signal failed to notice, which is the part worth fixing.
+
 **What it cannot do.** A phone held in the hand loses the speed signal entirely (the signature
-stops varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured
-without GPS, because Core Motion's attitude filter absorbs a takeoff roll as a change in the
-gravity direction. A vehicle the model has never learned reads wrong until it has.
+stops varying with speed: measured flat from 10 to 65 km/h), and a phone in a pocket on a
+motorcycle loses it completely — see the table above. Aircraft speed cannot be measured without
+GPS, because Core Motion's attitude filter absorbs a takeoff roll as a change in the gravity
+direction. A vehicle the model has never learned reads wrong until it has.
 
 📄 **[Read the paper](https://github.com/yu314-coder/GPS-location-app/releases/tag/v1.0-paper)**
-— method, results, and eight approaches that were implemented, measured and rejected.
+— method, results, and nine approaches that were implemented, measured and rejected.
 [LaTeX source](paper/). The paper also ships inside the app: **Settings → Velocity Mode → Read the
 paper**, alongside an interactive version with the equations and error charts.
+
+The in-app copy updates itself. A revision uploaded to that release reaches readers without an
+App Store submission — the app fetches it in the background and only replaces what it has once
+the download parses as a PDF. A full copy still ships in the binary, so the paper opens instantly,
+offline, and if every fetch fails forever.
 
 ### Live GPS Tracking
 
@@ -191,6 +213,10 @@ After stopping a session, a full summary is presented:
 - **GPS filtering**: Kalman sensitivity, raw GPS toggle
 - **HealthKit**: auto-save toggle, export type, heart rate toggle
 - **How Velocity Mode works**: the algorithm, its equations, and charts of its measured error
+- **Velocity Mode → Keep going in the background**: off limits the automatic takeover to when the
+  workout is on screen, for battery. Forcing the mode by hand still records everywhere
+- **Velocity Mode → Diagnostics logs**: off skips the per-workout 50 Hz raw and per-tick CSVs.
+  Storage only — routes record identically either way
 - Permission status cards with quick access to iOS Settings
 - Tap the version number five times for the developer screen: learned-model state, session logs,
   and diagnostics
@@ -201,7 +227,7 @@ After stopping a session, a full summary is presented:
 
 ### Requirements
 
-- macOS with Xcode 16.4+
+- macOS with Xcode 16.4+ (built and shipped with Xcode 26.5)
 - iPhone running iOS 18.5+ (physical device recommended)
 - Apple Watch running watchOS 11.5+ (optional)
 
@@ -237,7 +263,9 @@ GPS location app Watch App/ # watchOS companion
 
 WorkoutWidget/              # Widget + Live Activity extension
 
-paper/                      # LaTeX source and PDF for the Velocity Mode paper
+paper/                      # LaTeX source, figures and PDF for the Velocity Mode paper
+scripts/                    # release.sh — archive, export and upload in one command
+docs/icon-history/          # the icons the current one replaced, and why
 ```
 
 ## Documentation
@@ -247,6 +275,26 @@ paper/                      # LaTeX source and PDF for the Velocity Mode paper
 | [paper/velocity_mode.pdf](paper/velocity_mode.pdf) | The Velocity Mode method, its measured accuracy, and its failure modes |
 | [RESEARCH_GPS_ALTERNATIVES.md](RESEARCH_GPS_ALTERNATIVES.md) | Survey of GPS-free positioning approaches, with notes on which survived contact with measurement |
 | [CARPLAY_README.md](CARPLAY_README.md) | CarPlay entitlement and setup |
+| [scripts/release.sh](scripts/release.sh) | Archive, export and upload to App Store Connect in one command |
+| [docs/icon-history/](docs/icon-history/) | Previous app icons and the reasoning behind each change |
+
+---
+
+## Releasing
+
+```bash
+scripts/release.sh --bump     # bump the build number, archive, export, upload
+```
+
+Credentials are already on the machine and are not in this repo: the `.p8` sits in one of the
+directories `altool` searches by itself, and the key and issuer IDs are in
+`~/.config/appstoreconnect/gps-location-app.env`.
+
+The script also strips the build machine's OS stamp before exporting. Xcode records the host's
+build number in `BuildMachineOSBuild`, and on a macOS beta that is a beta seed — which Apple reads
+as "built against a beta SDK" and answers with ITMS-90111, by email, *after* the upload has
+succeeded and the build has validated. Nothing at upload time reveals it, so the fix belongs in
+the script rather than in someone's memory.
 
 ---
 
