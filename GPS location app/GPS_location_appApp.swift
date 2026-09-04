@@ -27,6 +27,15 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         _ = WatchConnectivityManager.shared  // Ensure watch connectivity is active for background watch messages
         WorkoutSession.shared.handleAppLaunch(launchOptions: launchOptions)
 
+        // The road-alignment API key has been removed from the app. Clear anything a previous
+        // build stored: without the settings field there is no way to see or change it, so a
+        // leftover value would keep third-party map matching switched on invisibly — and it is
+        // a credential, which should not outlive the screen that collected it.
+        if UserDefaults.standard.object(forKey: "mapMatchingAPIKey") != nil {
+            UserDefaults.standard.removeObject(forKey: "mapMatchingAPIKey")
+            print("🧹 Removed stored road-alignment API key")
+        }
+
         print("✅ App launched successfully")
         print("🔔 Notification center delegate configured")
 

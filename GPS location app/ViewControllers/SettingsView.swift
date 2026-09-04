@@ -26,7 +26,6 @@ struct SettingsView: View {
     @AppStorage("trackHeartRate") private var trackHeartRate = true
     @AppStorage("useRawGPS") private var useRawGPS = false
     @AppStorage("healthKitExportType") private var healthKitExportType = "auto"
-    @AppStorage("mapMatchingAPIKey") private var mapMatchingAPIKey = ""
     @AppStorage("velocityBackgroundRecording") private var velocityBackgroundRecording = true
     @AppStorage("diagnosticsLoggingEnabled") private var diagnosticsLoggingEnabled = true
 
@@ -46,7 +45,6 @@ struct SettingsView: View {
                 velocitySection
                 mapSection
                 workoutSection
-                roadAlignmentSection
                 aboutSection
             }
             .onAppear(perform: updatePermissionStatus)
@@ -209,26 +207,6 @@ struct SettingsView: View {
             Text(useRawGPS
                  ? "Unfiltered: every fix is recorded exactly as reported, including inaccurate ones."
                  : "Fixes that contradict their own accuracy are discarded before they reach the track.")
-        }
-    }
-
-    private var roadAlignmentSection: some View {
-        Section {
-            SecureField("Stadia Maps API key", text: $mapMatchingAPIKey)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            if let url = URL(string: "https://client.stadiamaps.com") {
-                Link(destination: url) {
-                    SettingsRow(symbol: "key.fill", tint: .brown, title: "Get a free key") {
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.caption).foregroundColor(.secondary)
-                    }
-                }
-            }
-        } header: {
-            Text("Road alignment")
-        } footer: {
-            Text("Snaps a recorded track to real road geometry on the Map tab. Without a key the app falls back to Apple Maps snapping, which is rougher.")
         }
     }
 
