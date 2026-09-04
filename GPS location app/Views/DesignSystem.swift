@@ -291,35 +291,3 @@ struct EmptyStateCard: View {
         }
     }
 }
-
-/// Stops a screen stretching to the full width of an iPad.
-///
-/// A settings row is a label at one end and its value at the other. That reads fine across a
-/// phone; across the 1100-point detail pane of a 13-inch iPad in landscape the two ends stop
-/// belonging to each other, and the eye has to travel the width of the screen to pair them. The
-/// same applies to any column of prose or form rows.
-///
-/// So the content keeps a readable measure and sits centred, with the extra width left as margin
-/// — which is what the platform's own settings do. Compact widths are untouched: on a phone
-/// there is no surplus to give away.
-private struct ReadableColumn: ViewModifier {
-    let maxWidth: CGFloat
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    func body(content: Content) -> some View {
-        if horizontalSizeClass == .regular {
-            content
-                .frame(maxWidth: maxWidth)
-                .frame(maxWidth: .infinity)
-        } else {
-            content
-        }
-    }
-}
-
-extension View {
-    /// Cap this screen at a readable measure on iPad, and centre it. No effect on iPhone.
-    func readableColumn(_ maxWidth: CGFloat = 760) -> some View {
-        modifier(ReadableColumn(maxWidth: maxWidth))
-    }
-}

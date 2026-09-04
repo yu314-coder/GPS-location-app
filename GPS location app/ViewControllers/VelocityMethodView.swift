@@ -32,7 +32,6 @@ struct VelocityMethodView: View {
                     pocket.id("pocket")
                     limits.id("limits")
                 }
-                .readableColumn(720)
                 .padding(16)
             }
             .onAppear {
