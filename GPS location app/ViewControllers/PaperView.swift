@@ -3,21 +3,20 @@ import PDFKit
 
 /// The paper, read inside the app.
 ///
-/// It is bundled rather than fetched. The claims in it are about the build you are holding, and
-/// a version that silently changed underneath the app it describes would be worse than none —
-/// so it ships with the binary and works with no network at all.
+/// A copy ships with the binary so this screen works instantly, offline, and on a plane. That
+/// copy is also the floor: the newest revision is fetched from the repository's release asset in
+/// the background, but nothing about that fetch can leave the reader without a document. See
+/// PaperStore — the download has to parse as a PDF before it is allowed to replace anything.
 struct PaperView: View {
-    @State private var showingShare = false
-
-    private var url: URL? {
-        Bundle.main.url(forResource: "velocity_mode", withExtension: "pdf")
-    }
+    @StateObject private var store = PaperStore.shared
 
     var body: some View {
         Group {
-            if let url {
+            if let url = store.url {
                 PDFDocumentView(url: url)
+                    .id(url)                       // reload the view when a newer copy lands
                     .ignoresSafeArea(edges: .bottom)
+                    .overlay(alignment: .bottom) { banner }
             } else {
                 EmptyStateCard(
                     icon: "doc.text.magnifyingglass",
@@ -30,12 +29,55 @@ struct PaperView: View {
         .navigationTitle("The paper")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let url {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                HStack(spacing: 14) {
+                    Button {
+                        Task { await store.refresh() }
+                    } label: {
+                        if case .checking = store.status {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(store.status == .checking)
+                    if let url = store.url {
+                        ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+                    }
                 }
             }
         }
+        .task {
+            // Check once per appearance. A conditional request costs a few hundred bytes when
+            // nothing has changed, so this is not worth rationing further.
+            await store.refresh()
+        }
+    }
+
+    /// Only says something when there is something to say. A permanent "up to date" badge over
+    /// the first paragraph would be noise on every single read.
+    @ViewBuilder private var banner: some View {
+        switch store.status {
+        case .updated:
+            label("Updated to the latest revision", icon: "checkmark.circle.fill", tint: .green)
+        case .failed(let why):
+            label("Showing the bundled copy — \(why)", icon: "wifi.exclamationmark", tint: .orange)
+        case .bundled, .cached, .checking:
+            EmptyView()
+        }
+    }
+
+    private func label(_ text: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+            Text(text).lineLimit(2)
+        }
+        .font(.caption)
+        .foregroundStyle(tint)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.bottom, 16)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 }
 
@@ -59,5 +101,9 @@ private struct PDFDocumentView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ view: PDFView, context: Context) {}
+    func updateUIView(_ view: PDFView, context: Context) {
+        if view.document?.documentURL != url {
+            view.document = PDFDocument(url: url)
+        }
+    }
 }
