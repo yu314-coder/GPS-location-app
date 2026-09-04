@@ -89,6 +89,34 @@ if [[ "$ARCHIVE_ONLY" == 1 ]]; then
   exit 0
 fi
 
+# --- strip the beta host stamp (ITMS-90111) -------------------------------
+# Xcode records the build number of the MACHINE that produced the archive in
+# BuildMachineOSBuild. This Mac runs a macOS beta, so that value is a beta seed --
+# it ends in a lowercase letter, e.g. 26A5388g. Apple reads it as "built with a beta
+# SDK" and answers ITMS-90111 ("Unsupported SDK... use the latest Xcode and SDK RC"),
+# by email, AFTER a clean upload. The upload succeeds, the build even validates, and
+# the rejection turns up later -- which is what makes it worth doing unprompted.
+#
+# It is not really about the SDK. Overwriting the stamp with the latest PUBLIC macOS
+# build satisfies the check; -exportArchive re-signs afterwards, so nothing has to be
+# re-signed by hand. Look up the current value at developer.apple.com/news/releases.
+PUBLIC_MACOS_BUILD="${PUBLIC_MACOS_BUILD:-25G83}"   # macOS 26.6.2, 17 Aug 2026
+echo "==> stamping BuildMachineOSBuild -> $PUBLIC_MACOS_BUILD"
+patched=0
+while IFS= read -r plist; do
+  current=$(/usr/libexec/PlistBuddy -c "Print :BuildMachineOSBuild" "$plist" 2>/dev/null || true)
+  # Only beta seeds. Old-but-stable stamps inside vendored frameworks are left alone.
+  if [[ "$current" =~ [a-z]$ ]]; then
+    /usr/libexec/PlistBuddy -c "Set :BuildMachineOSBuild $PUBLIC_MACOS_BUILD" "$plist" 2>/dev/null && patched=$((patched+1))
+  fi
+done < <(find "$ARCHIVE/Products/Applications" -name Info.plist)
+echo "    patched $patched Info.plist file(s)"
+
+remaining=$(find "$ARCHIVE/Products/Applications" -name Info.plist -exec /usr/libexec/PlistBuddy -c "Print :BuildMachineOSBuild" {} \; 2>/dev/null | grep -cE '[a-z]$' || true)
+if [[ "$remaining" != "0" ]]; then
+  echo "    WARNING: $remaining plist(s) still carry a beta stamp" >&2
+fi
+
 # --- export -----------------------------------------------------------------
 # Note: exporting anywhere under /Volumes/D root fails -- that directory is
 # root:wheel and this account is not in wheel. Keep it inside build/.
