@@ -16,8 +16,8 @@ Twice, so the figure references resolve. Requires a TeX distribution with `amsma
 | File | |
 |---|---|
 | `velocity_mode.tex` | Source |
-| `velocity_mode.pdf` | Compiled, 13 pages |
-| `figures/` | Four figures, generated from the recorded logs |
+| `velocity_mode.pdf` | Compiled, 14 pages |
+| `figures/` | Five figures, generated from the recorded logs |
 
 Every number in the paper is measured against GPS recorded at the same moment as the estimate —
 none is modelled, simulated or extrapolated. Where the method fails, the paper says so and gives

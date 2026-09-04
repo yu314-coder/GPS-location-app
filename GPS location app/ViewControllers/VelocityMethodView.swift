@@ -29,8 +29,10 @@ struct VelocityMethodView: View {
                     headingResults.id("heading")
                     basement.id("basement")
                     flight.id("flight")
+                    pocket.id("pocket")
                     limits.id("limits")
                 }
+                .readableColumn(720)
                 .padding(16)
             }
             .onAppear {
@@ -359,6 +361,65 @@ struct VelocityMethodView: View {
         }
     }
 
+    // MARK: - Where it fails completely
+
+    /// The worst measured result, kept in the app rather than only in the paper.
+    ///
+    /// Every other failure here is a matter of degree — too high, too low, right about the wrong
+    /// regime. This one is different: on a motorcycle with the phone in a pocket the input signal
+    /// contains no speed at all, so the estimate is flat. Showing it matters more than the
+    /// flattering cases do, because someone deciding whether to trust a route needs to know the
+    /// mode has a regime where it is confidently wrong.
+    private var pocket: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "Motorcycle, phone in a pocket",
+                              subtitle: "where it fails completely") { EmptyView() }
+                Text("""
+                19 minutes, 1146 readings. The estimate reports roughly 50 km/h whatever the \
+                motorcycle is doing — including standing still at a light:
+                """)
+                .font(.callout)
+                if chartsFit {
+                    Chart(VelocityMethodData.pocket) { b in
+                        BarMark(x: .value("Band", b.band), y: .value("km/h", b.realKmh))
+                            .position(by: .value("Source", "real"))
+                            .foregroundStyle(AppTheme.distance)
+                        BarMark(x: .value("Band", b.band), y: .value("km/h", b.estimatedKmh))
+                            .position(by: .value("Source", "estimated"))
+                            .foregroundStyle(Color.red.opacity(0.85))
+                    }
+                    .chartForegroundStyleScale([
+                        "real": AppTheme.distance, "estimated": Color.red.opacity(0.85)
+                    ])
+                    .chartXAxisLabel("real speed band, km/h")
+                    .chartYAxisLabel("km/h")
+                    .frame(height: 190)
+                } else {
+                    PocketTable()
+                }
+                Text("""
+                The reported speed and the real speed are unrelated: R = +0.13. The vibration \
+                signature and the real speed are related at R = −0.02, which is to say not at all.
+
+                The signature reads 7.467 while the motorcycle is stopped and 7.386 at over \
+                45 km/h — indistinguishable, and marginally higher at rest. A car rests the phone \
+                on a rigid surface and delivers road noise that scales with speed. A motorcycle \
+                delivers engine vibration, which follows engine speed rather than road speed and \
+                is undiminished at a standstill in gear, through clothing that damps what little \
+                road input survives. There is no speed in the input, so nothing can recover one: \
+                47 stationary readings accumulated 468 m that did not happen.
+
+                What matters most is the confidence. The regime-distance signal sat at 3.51 all \
+                ride — outside the 1.81–2.87 range for the same vehicle carried differently — and \
+                the extrapolation warning was false on all 1146 readings. It reported 53.8 km/h at \
+                a red light and never signalled that it was guessing.
+                """)
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
     // MARK: - Limits
 
     private var limits: some View {
@@ -368,7 +429,9 @@ struct VelocityMethodView: View {
                 Limitation("Hold the phone in your hand and the speed signal disappears.",
                            "Body contact damps the vibration until the signature stops varying with speed — measured at 7.10, 7.08, 7.07, 7.13 and 7.25 across 10 to 65 km/h. Reported speed becomes a constant. Rest the phone in the vehicle.")
                 Limitation("A stationary engine reads as movement.",
-                           "A motorcycle at a red light reads 5.2 km/h, accumulating 690 m over 339 stationary ticks. No tested signal separates an idling engine from a slow crawl.")
+                           "A motorcycle at a red light reads 5.2 km/h in a mount, and 53.8 km/h in a pocket. No tested signal separates an idling engine from a moving one.")
+                Limitation("In a pocket on a motorcycle it does not work at all.",
+                           "Not merely inaccurate: the estimate is flat, unrelated to real speed at R = +0.13, and the model does not warn that it is guessing. See above.")
                 Limitation("Aircraft speed cannot be measured without GPS.",
                            "See above: −82% to −87% when signal is lost on the ground.")
                 Limitation("A vehicle it has never learned reads wrong at first.",
@@ -496,6 +559,13 @@ enum VelocityMethodData {
         var errorPercent: Double { 100.0 * Double(recordedM - trueM) / Double(trueM) }
     }
     struct FlightPoint: Identifiable { let id = UUID(); let point: String; let errorPercent: Double }
+    /// Motorcycle, phone in a trouser pocket: mean estimated speed within each band of real
+    /// speed. Kept as a pair rather than an error, because the point is that one moves and the
+    /// other does not.
+    struct PocketBand: Identifiable {
+        let id = UUID(); let band: String
+        let realKmh: Double; let estimatedKmh: Double
+    }
 
     static let journeys: [Journey] = [
         .init(name: "Open road, 25 min",  recordedM: 14994, trueM: 14445, avgKmh: 43.2),
@@ -530,6 +600,15 @@ enum VelocityMethodData {
         .init(name: "Car park, 8 min", phase: "road", recordedM: 1930, trueM: 1387)
     ]
 
+    /// 19.1 minutes, 1146 ticks at 1 Hz, Velocity Mode on for 1143 of them.
+    static let pocket: [PocketBand] = [
+        .init(band: "0–2",   realKmh: 1.0,  estimatedKmh: 36.2),
+        .init(band: "2–10",  realKmh: 5.6,  estimatedKmh: 54.4),
+        .init(band: "10–25", realKmh: 17.0, estimatedKmh: 57.8),
+        .init(band: "25–45", realKmh: 34.0, estimatedKmh: 55.5),
+        .init(band: "45–70", realKmh: 54.0, estimatedKmh: 49.8)
+    ]
+
     static let flight: [FlightPoint] = [
         .init(point: "At the gate", errorPercent: -82),
         .init(point: "Before takeoff", errorPercent: -87),
@@ -539,6 +618,24 @@ enum VelocityMethodData {
 }
 
 // MARK: - Text fallbacks, used when the type is too large for a chart
+
+private struct PocketTable: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(VelocityMethodData.pocket) { b in
+                HStack {
+                    Text("\(b.band) km/h").font(.caption)
+                    Spacer()
+                    Text("real \(b.realKmh, specifier: "%.0f")").font(.caption).foregroundStyle(.secondary)
+                    Text("est \(b.estimatedKmh, specifier: "%.0f")").font(.caption).foregroundStyle(.red)
+                        .frame(width: 62, alignment: .trailing)
+                }
+                .padding(.vertical, 5)
+                Divider()
+            }
+        }
+    }
+}
 
 private struct BiasTable: View {
     var body: some View {

@@ -50,6 +50,7 @@ struct SettingsView: View {
                 aboutSection
             }
             .onAppear(perform: updatePermissionStatus)
+            .readableColumn()
         }
     }
 

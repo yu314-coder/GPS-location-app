@@ -405,6 +405,62 @@ journey the nearest stored session was a car ($1.38$), but the second was a \emp
 session ($1.54$) and the third a \emph{motorcycle in a pocket} ($1.74$), both ahead of the same
 car driven the same morning ($2.29$).
 
+\subsection{On a motorcycle in a pocket the signature carries no speed at all}
+\label{sec:pocket}
+
+Every failure above is a matter of degree: the estimate is too high, or too low, or right about
+the wrong regime. This one is different in kind. Over a $19.1$-minute motorcycle ride with the
+phone in a trouser pocket --- $1146$ ticks at a clean $1$~Hz, Velocity Mode on for $1143$ of
+them, three GPS fixes in the drawn route --- the reported speed and the real speed are
+statistically unrelated: $R = +0.13$. The vibration signature and the real speed are related at
+$R = -0.02$, which is to say not at all.
+
+Table~\ref{tab:pocket} shows what that looks like from the outside. The estimate reports roughly
+$50$~km/h whatever the motorcycle is doing, including when it is stationary at a light.
+
+\begin{table}[htbp]
+\centering
+\caption{Motorcycle, phone in a pocket. Mean estimated speed within each band of real speed. The
+estimate is flat: it does not fall when the motorcycle stops and does not rise when it accelerates.}
+\label{tab:pocket}
+\begin{tabular}{lrr}
+\toprule
+Real speed & Ticks & Mean estimated \\
+\midrule
+$0$--$2$~km/h (stopped) & $47$ & $36.2$~km/h \\
+$2$--$10$~km/h          & $25$ & $54.4$~km/h \\
+$10$--$25$~km/h         & $3$  & $57.8$~km/h \\
+$25$--$45$~km/h         & $14$ & $55.5$~km/h \\
+$45$--$70$~km/h         & $54$ & $49.8$~km/h \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/fig_motorcycle.pdf}
+\caption{Left: estimated against real speed by band --- the estimate is flat where the truth is
+not. Right: the vibration signature is indistinguishable between a standstill and $45$~km/h, and
+marginally \emph{higher} at rest.}
+\label{fig:motorcycle}
+\end{figure}
+
+The cause is visible in the signature itself. Its median value is $7.467$ while the motorcycle is
+stopped and $7.386$ while it is doing over $45$~km/h --- indistinguishable, and marginally higher
+at rest. A car carries the phone on a rigid surface and delivers road and tyre noise that scales
+with speed. A motorcycle delivers engine vibration, which tracks engine speed rather than road
+speed and is undiminished at a standstill in gear, through a layer of clothing that damps what
+little road input survives. There is no speed information in the input, so no estimator built on
+this feature can recover one; the $47$ stationary ticks accumulated $468$~m of distance that did
+not happen.
+
+What makes this the most serious result in the paper is not the error but the confidence.
+Fingerprint distance sat at $3.51$ for the entire ride, outside the same-vehicle-different-carry
+range of $1.81$--$2.87$ measured in \S\ref{sec:onecause} and approaching the different-vehicle
+range. The extrapolation flag --- the mechanism whose job is to notice exactly this --- was
+\emph{false on all $1146$ ticks}. The system reported $53.8$~km/h at a red light and never
+signalled that it was answering about a regime it had never seen.
+
 \subsection{Confidence signals that do not work}
 
 Neighbour disagreement is the natural confidence measure for a $k$-NN regressor. It fails here
