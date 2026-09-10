@@ -865,6 +865,23 @@ class WorkoutSession: ObservableObject {
     private let LEARNED_HOLD_MAX_AGE: TimeInterval = 120.0
     private var recentLearnedAnswer: Double? {
         guard let v = lastLearnedAnswer, let t = lastLearnedAnswerTime else { return nil }
+        // A WALK IS PROOF THIS IS NO LONGER A VEHICLE.
+        //
+        // This hold exists so a car does not drop to zero when someone reaches for their phone
+        // mid-drive, and for that it is right. It cannot tell that from getting off and walking
+        // away, and the two look identical: device handled, vehicle context still current. On a
+        // ride that went walk - motorcycle - walk, the last two minutes were spent on foot at
+        // 6-8 km/h while this held the motorcycle's 38 km/h, inventing almost a kilometre.
+        //
+        // Steps settle it. The pedometer firing while the phone is in a hand is direct evidence
+        // of walking, and no amount of recent vehicle context outweighs it — a motorcycle does
+        // not take steps. (The reverse error, engine vibration counted AS steps, is guarded
+        // separately; that one needs history, this one does not.)
+        //
+        // Exempt above MAX_GROUND_STOP_SPEED for the same reason as the expiry below: nothing
+        // that fast is being walked, and a stray step count must not zero an aircraft.
+        let steppingNow = (lastStepIncrementTime.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude) < 3.0
+        if steppingNow, v < MAX_GROUND_STOP_SPEED { return nil }
         // The two-minute expiry keeps a stale city-driving answer from being held all afternoon.
         // It must not apply to something that was travelling faster than any road vehicle: an
         // aircraft cannot come to rest in mid-air, so letting the estimate expire to zero there
@@ -3805,6 +3822,8 @@ class WorkoutSession: ObservableObject {
             tickInterval: lastDiagnosticTickTime.map { Date().timeIntervalSince($0) } ?? 0,
             regimeDistance: learnedSpeed.regimeDistanceCached,
             regimeDeclined: learnedSpeed.lastEstimateDeclinedUnlearnedRegime,
+            localError: learnedSpeed.lastLocalError,
+            localDeclined: learnedSpeed.lastEstimateDeclinedUnreliableLocally,
             offsetWarmup: offsetWarmupActive,
             velocityMode: forceMotionFallback,
             gpsFixesInRoute: gpsFixesInRoute,

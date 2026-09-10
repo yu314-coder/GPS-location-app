@@ -218,6 +218,21 @@ final class LearnedSpeedEstimator {
     /// indistinguishable from the outside and need opposite fixes.
     private(set) var lastEstimateDeclinedUnlearnedRegime = false
 
+    /// Mean absolute error, in m/s, of the neighbourhood the last estimate was drawn from —
+    /// measured by holding each near neighbour out and predicting it from the others.
+    private(set) var lastLocalError: Double?
+    /// True when the last estimate was refused because that error was too large to interpolate
+    /// through.
+    private(set) var lastEstimateDeclinedUnreliableLocally = false
+    /// Above this, the stored labels around the query disagree so much that a weighted mean of
+    /// them is not a measurement of anything. 4 m/s is 14 km/h — larger than the worst honest
+    /// band error in the paper, so it fires on genuinely incoherent neighbourhoods rather than
+    /// on ordinary spread.
+    private let MAX_LOCAL_ERROR: Double = 4.0
+    /// How many neighbours to hold out, and how many to predict each from.
+    private let LOO_HELD_OUT = 8
+    private let LOO_POOL = 24
+
     /// `distanceToNearestKnownRegime` walks every observation of every session to rebuild the
     /// fingerprints, which is far too much to repeat per tick. It only moves as the session
     /// accumulates evidence, so it is recomputed on a slow cadence and held in between.
@@ -461,6 +476,8 @@ final class LearnedSpeedEstimator {
     func estimate(airborne: Bool = false) -> Double? {
         lastEstimateUsedWarmup = false
         lastEstimateDeclinedUnlearnedRegime = false
+        lastEstimateDeclinedUnreliableLocally = false
+        lastLocalError = nil
         guard let f = currentFeatures(), featureMean.count == f.count else { return nil }
 
         // REFUSE TO ANSWER ABOUT A REGIME THIS WORKOUT HAS NEVER BEEN TAUGHT.
@@ -550,6 +567,33 @@ final class LearnedSpeedEstimator {
         // fitted curve cannot.
         if best[0].d > MAX_MATCH_DISTANCE_SQUARED { return nil }
 
+        // IS THIS NEIGHBOURHOOD ACTUALLY ABLE TO PREDICT?
+        //
+        // Closeness says the signature has been seen before. It says nothing about whether the
+        // speeds attached to those signatures agree well enough for a weighted mean of them to
+        // mean anything. Where the store holds a region labelled with a wide range of speeds —
+        // the same vibration recorded at a crawl and at a cruise — the lookup still returns a
+        // confident number, and it is an average of contradictions.
+        //
+        // Neighbour SPREAD does not measure this; the paper reports it failing in the wrong
+        // direction, because out-of-distribution queries land consistently in one wrong region
+        // and so look tighter than honest ones. What does measure it is holding each near
+        // neighbour out and predicting it from the others: that asks whether interpolation
+        // works HERE, which is the assumption the whole estimate rests on, rather than whether
+        // the neighbours happen to resemble each other.
+        //
+        // Note what this cannot do, so it is not mistaken for a general safety net: a query that
+        // lands in a region that is internally consistent and simply wrong — walking vibration
+        // matching stored motorcycle observations that all agree on 38 km/h — has a LOW local
+        // error and passes. Consistency is not correctness. That case needs evidence from
+        // outside the model, which is why the caller also refuses to hold a vehicle speed while
+        // the pedometer is counting steps.
+        if let mae = localError(around: f, pool: pool), mae > MAX_LOCAL_ERROR {
+            lastLocalError = mae
+            lastEstimateDeclinedUnreliableLocally = true
+            return nil
+        }
+
         var num = 0.0, den = 0.0
         for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
         guard den > 0 else { return nil }
@@ -557,6 +601,55 @@ final class LearnedSpeedEstimator {
         // them. Applying it to the air partition would be extrapolating a road correction into a
         // regime it has never seen, so the air answers raw until it has enough of its own.
         return max(0, airborne ? num / den : calibrated(num / den))
+    }
+
+    /// Mean absolute error of predicting each of the nearest few observations from the others.
+    ///
+    /// Bounded work: the nearest `LOO_POOL` are collected in one pass, then `LOO_HELD_OUT` of
+    /// them are predicted from the rest of that set — a few hundred operations, not a rescan of
+    /// several thousand observations per tick.
+    private func localError(around f: [Double], pool: [Observation]) -> Double? {
+        var near = [(d: Double, o: Observation)]()
+        near.reserveCapacity(LOO_POOL + 1)
+        for o in pool {
+            var d = 0.0
+            for i in 0..<f.count {
+                let sd = max(featureVar[i].squareRoot(), 1e-6)
+                let z = (f[i] - featureMean[i]) / sd - (o.f[i] - featureMean[i]) / sd
+                d += z * z
+            }
+            if near.count < LOO_POOL {
+                near.append((d, o))
+                if near.count == LOO_POOL { near.sort { $0.d < $1.d } }
+            } else if d < near[LOO_POOL - 1].d {
+                near[LOO_POOL - 1] = (d, o)
+                var i = LOO_POOL - 1
+                while i > 0 && near[i].d < near[i - 1].d { near.swapAt(i, i - 1); i -= 1 }
+            }
+        }
+        guard near.count >= LOO_HELD_OUT + 4 else { return nil }
+
+        var total = 0.0, counted = 0
+        for h in 0..<min(LOO_HELD_OUT, near.count) {
+            let held = near[h].o
+            var num = 0.0, den = 0.0
+            for (j, other) in near.enumerated() where j != h {
+                var d = 0.0
+                for i in 0..<held.f.count {
+                    let sd = max(featureVar[i].squareRoot(), 1e-6)
+                    let z = (held.f[i] - featureMean[i]) / sd - (other.o.f[i] - featureMean[i]) / sd
+                    d += z * z
+                }
+                let w = 1.0 / (d + 1e-6)
+                num += w * other.o.speed; den += w
+            }
+            guard den > 0 else { continue }
+            total += abs(num / den - held.speed); counted += 1
+        }
+        guard counted > 0 else { return nil }
+        let mae = total / Double(counted)
+        lastLocalError = mae
+        return mae
     }
 
     // MARK: - Self-calibration against its own measured bias
