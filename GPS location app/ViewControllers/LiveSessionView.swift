@@ -663,6 +663,33 @@ struct LiveSessionView: View {
                         }
                         .disabled(!workoutSession.isActive)
 
+                        // WHEN THE MODEL IS OUT OF ITS DEPTH, SAY SO ON SCREEN.
+                        //
+                        // The regime gate makes Velocity Mode decline rather than assert a speed
+                        // about a vehicle and carry it has never learned, and falls through to the
+                        // last GPS-measured speed instead. That is the right behaviour and it is
+                        // invisible: the number on the card simply comes from somewhere else. On a
+                        // ride where the estimate would previously have read a confident ~50 km/h
+                        // at a red light, the rider deserves to know which of the two they are
+                        // looking at — and it makes a test drive answerable on the spot instead of
+                        // afterwards in a CSV.
+                        if workoutSession.forceMotionFallback, workoutSession.speedModelIsOutOfItsDepth {
+                            HStack(spacing: 10) {
+                                Image(systemName: "questionmark.circle.fill")
+                                    .foregroundColor(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Unfamiliar vehicle or carry")
+                                        .font(.subheadline).fontWeight(.semibold)
+                                    Text("Holding the last GPS speed rather than guessing")
+                                        .font(.caption2).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .padding()
+                            .background(Color.orange.opacity(0.12))
+                            .cornerRadius(12)
+                        }
+
                         // STATED SPEED. The phone cannot measure vehicle speed without GPS —
                         // measured, not assumed. But a traveller knows their cruise speed, and
                         // one number they supply beats any inference from a sensor that does not

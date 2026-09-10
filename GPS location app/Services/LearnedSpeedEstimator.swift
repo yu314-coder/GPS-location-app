@@ -203,6 +203,48 @@ final class LearnedSpeedEstimator {
     /// because only the second kind predicts what happens when GPS has been gone for hours.
     private(set) var lastEstimateUsedWarmup = false
 
+    /// Fingerprint distance beyond which this workout is a regime the model has never learned,
+    /// and its answers about it should not be trusted however close the individual matches look.
+    ///
+    /// Calibrated against the eight instrumented sessions in the paper: the same vehicle carried
+    /// the same way sits 0.54-1.70 apart, the same vehicle carried differently 1.81-2.87, and a
+    /// different vehicle 4.30-6.97. Three separates "a carry I can absorb" from "something I have
+    /// not seen". The motorcycle-in-pocket ride that produced the worst result yet measured sat
+    /// at 3.51 for its whole 19 minutes.
+    private let REGIME_DISTANCE_LIMIT = 3.0
+
+    /// True when the last estimate was refused because the workout is an unlearned regime.
+    /// Recorded so a log can tell "declined, correctly" from "answered, wrongly" - the two are
+    /// indistinguishable from the outside and need opposite fixes.
+    private(set) var lastEstimateDeclinedUnlearnedRegime = false
+
+    /// `distanceToNearestKnownRegime` walks every observation of every session to rebuild the
+    /// fingerprints, which is far too much to repeat per tick. It only moves as the session
+    /// accumulates evidence, so it is recomputed on a slow cadence and held in between.
+    private var cachedRegimeDistance: Double?
+    private var cachedRegimeDistanceAt: Date = .distantPast
+    private let REGIME_CACHE_TTL: TimeInterval = 20
+
+    /// The cached view of how far this workout sits from anything already learned.
+    var regimeDistanceCached: Double? {
+        if Date().timeIntervalSince(cachedRegimeDistanceAt) > REGIME_CACHE_TTL {
+            cachedRegimeDistance = distanceToNearestKnownRegime
+            cachedRegimeDistanceAt = Date()
+        }
+        return cachedRegimeDistance
+    }
+
+    /// Whether this workout looks like something the model has never been taught.
+    ///
+    /// Deliberately false when the answer is unknown. The distance needs 20 observations in the
+    /// session before it means anything, and needs at least one other session to compare with, so
+    /// a first-ever workout has no answer - and refusing on "no answer" would record nothing at
+    /// all, which is the worse failure of the two.
+    var regimeIsUnlearned: Bool {
+        guard let d = regimeDistanceCached else { return false }
+        return d > REGIME_DISTANCE_LIMIT
+    }
+
     /// How stale a quarantined observation must be before the estimate may see it.
     ///
     /// Quarantine exists to stop the model answering from the fix it was just handed - the
@@ -418,7 +460,37 @@ final class LearnedSpeedEstimator {
     /// evidence. Distance-weighted so a near-exact match dominates a merely similar one.
     func estimate(airborne: Bool = false) -> Double? {
         lastEstimateUsedWarmup = false
+        lastEstimateDeclinedUnlearnedRegime = false
         guard let f = currentFeatures(), featureMean.count == f.count else { return nil }
+
+        // REFUSE TO ANSWER ABOUT A REGIME THIS WORKOUT HAS NEVER BEEN TAUGHT.
+        //
+        // The per-match gate below asks "have I seen a signature like this one?". That is not
+        // the same question as "does the speed attached to it transfer to what I am riding now",
+        // and the difference is where the worst measured result in this project came from.
+        //
+        // A motorcycle with the phone in a trouser pocket: every individual 4-second signature
+        // matched something in the store closely enough to clear MAX_MATCH_DISTANCE_SQUARED, so
+        // the model answered on essentially every tick - and the answers carried no information
+        // at all. Reported speed against real speed came out at R = +0.13, the vibration feature
+        // against real speed at R = -0.02, and it read a steady ~50 km/h whether the motorcycle
+        // was at 64 km/h or standing at a red light. Engine vibration through clothing tracks
+        // engine speed, not road speed, and is undiminished at a standstill in gear; there is no
+        // speed in the input for any estimator to recover.
+        //
+        // What did know was the fingerprint: 3.51 for the entire ride, outside the same-vehicle
+        // range and heading toward different-vehicle. It was computed every tick, written to the
+        // diagnostics file, and never consulted. Consulting it is this gate.
+        //
+        // Declining is not the same as failing. The caller falls through to the last speed GPS
+        // actually measured, which is a far better answer than a confident number about a
+        // vehicle the model has never ridden - and, unlike that number, it is honest about what
+        // it is. Airborne is exempt: the air partition is small and separately judged, and there
+        // is no ground truth to have built fingerprints from in the first place.
+        if !airborne, regimeIsUnlearned {
+            lastEstimateDeclinedUnlearnedRegime = true
+            return nil
+        }
 
         // COLD START MUST NOT MEAN NO ROUTE.
         //

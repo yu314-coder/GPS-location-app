@@ -177,6 +177,10 @@ class WorkoutSession: ObservableObject {
     }
     private var persistForceMotionFallback = true
 
+    /// True while the speed model is declining to answer because this workout is a regime it has
+    /// never learned. Drives the on-screen notice; see LearnedSpeedEstimator.regimeIsUnlearned.
+    @Published var speedModelIsOutOfItsDepth = false
+
     /// Settings: keep dead reckoning through weak GPS while the app is in the background.
     ///
     /// Read on every tick rather than cached, so switching it mid-workout takes effect at once.
@@ -3773,6 +3777,16 @@ class WorkoutSession: ObservableObject {
         // that; see updateRampDetection.
         if onRampNow { distance = 0 }
         defer { lastDiagnosticTickTime = Date() }
+        // Surface the gate's verdict once per tick. Read from the cached fingerprint rather than
+        // the raw one — the raw property walks every observation of every session, which is far
+        // too much to repeat at this rate.
+        let outOfDepth = forceMotionFallback && learnedSpeed.regimeIsUnlearned
+        if speedModelIsOutOfItsDepth != outOfDepth {
+            speedModelIsOutOfItsDepth = outOfDepth
+            print(outOfDepth
+                  ? "🤷 Speed model out of its depth (regime distance \(learnedSpeed.regimeDistanceCached.map { String(format: "%.2f", $0) } ?? "?")) — holding last GPS speed"
+                  : "✅ Speed model back within a learned regime")
+        }
         sessionDiagnostics.record(.init(
             t: now,
             source: sourceTag,
@@ -3789,7 +3803,8 @@ class WorkoutSession: ObservableObject {
             calSamples: vd.samples,
             extrapolating: vd.isExtrapolating,
             tickInterval: lastDiagnosticTickTime.map { Date().timeIntervalSince($0) } ?? 0,
-            regimeDistance: learnedSpeed.distanceToNearestKnownRegime,
+            regimeDistance: learnedSpeed.regimeDistanceCached,
+            regimeDeclined: learnedSpeed.lastEstimateDeclinedUnlearnedRegime,
             offsetWarmup: offsetWarmupActive,
             velocityMode: forceMotionFallback,
             gpsFixesInRoute: gpsFixesInRoute,
