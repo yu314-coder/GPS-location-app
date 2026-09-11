@@ -685,6 +685,18 @@ class WorkoutSession: ObservableObject {
     private var deviceIsBeingHandled: Bool {
         handlingRotationLevel > HANDLING_ROTATION_THRESHOLD
     }
+    /// When the current unbroken stretch of handling began, or nil when the device is at rest
+    /// in the vehicle. Distinguishes reaching for the phone from having got off and walked away.
+    private var handlingSince: Date?
+    /// How long the device has been continuously in a hand, 0 when it is not.
+    private var continuousHandlingDuration: TimeInterval {
+        guard let since = handlingSince else { return 0 }
+        return Date().timeIntervalSince(since)
+    }
+    /// Beyond this, handling is no longer a driver reaching for their phone. Reaching over takes
+    /// a second or two and putting it in a cradle a few more; half a minute of unbroken rotation
+    /// means the phone is being carried, and a carried phone is not in a moving vehicle.
+    private let HANDLING_MEANS_DISMOUNTED: TimeInterval = 30.0
     /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
     /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
     private var longRunMeanNorth: Double = 0
@@ -882,6 +894,14 @@ class WorkoutSession: ObservableObject {
         // that fast is being walked, and a stray step count must not zero an aircraft.
         let steppingNow = (lastStepIncrementTime.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude) < 3.0
         if steppingNow, v < MAX_GROUND_STOP_SPEED { return nil }
+        // Steps are the clean signal but they arrive late. Walking away from a parked motorcycle
+        // produced 74 ticks of held vehicle speed before the pedometer caught up — 414 m at about
+        // 20 km/h, on foot. Handling that has gone on this long is its own evidence: reaching for
+        // a phone takes seconds, so half a minute of unbroken rotation means it is being carried,
+        // and a carried phone is not in a moving vehicle. Same aircraft exemption as above.
+        if continuousHandlingDuration > HANDLING_MEANS_DISMOUNTED, v < MAX_GROUND_STOP_SPEED {
+            return nil
+        }
         // The two-minute expiry keeps a stale city-driving answer from being held all afternoon.
         // It must not apply to something that was travelling faster than any road vehicle: an
         // aircraft cannot come to rest in mid-air, so letting the estimate expire to zero there
@@ -2946,6 +2966,14 @@ class WorkoutSession: ObservableObject {
         // a car's turn does not trip it but continuous handling does.
         if let rr = locationManager.currentRotationRate {
             handlingRotationLevel += (rr - handlingRotationLevel) * min(dt / (3.0 + dt), 1.0)
+            // Start the clock on the first handled tick and let it run until the device is set
+            // down again. The level is already smoothed over ~3 s, so this does not restart on
+            // every wobble.
+            if deviceIsBeingHandled {
+                if handlingSince == nil { handlingSince = Date() }
+            } else {
+                handlingSince = nil
+            }
         }
 
         // Feed the flight-phase detector every tick; cabin pressure is the one signal that can
@@ -3829,6 +3857,7 @@ class WorkoutSession: ObservableObject {
             gpsFixesInRoute: gpsFixesInRoute,
             onRamp: onRampNow,
             handlingRotation: handlingRotationLevel,
+            handledSeconds: continuousHandlingDuration,
             headingUnreliable: headingIsUnreliable,
             walkAxis: lastResolvedWalkAxis,
             walkSkew: walkingSkewEMAValid ? walkingSkewEMA : nil,
