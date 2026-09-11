@@ -418,8 +418,32 @@ class WorkoutSession: ObservableObject {
         for i in 1..<rampYawHistory.count {
             netTurn += normalizedSignedAngle(rampYawHistory[i].deg - rampYawHistory[i - 1].deg)
         }
-        onRampNow = climbRate > RAMP_CLIMB_RATE && abs(netTurn) > RAMP_NET_TURN
+        // A STRAIGHT RAMP CLIMBS WITHOUT TURNING.
+        //
+        // Requiring both climb and sustained yaw finds a helical ramp and sleeps through a
+        // straight one, which is the more common shape and carries the same error: the vibration
+        // model reads a crawl on concrete as about 40 km/h, measured at +170% and +299% on the
+        // two ramps in the paper.
+        //
+        // The turn was required because climb alone was tried and rejected -- it fired on
+        // ordinary hills and withheld more road than ramp. But a hill is outdoors. Underground
+        // there is no satellite signal, and that is the difference the old rule never used: a
+        // sustained climb with no usable fix for this long is not a hill, because a hill would
+        // still be answering. So climb plus turn stays, and climb plus darkness joins it.
+        //
+        // Airborne is excluded outright. A climbing aircraft satisfies every one of these
+        // conditions -- rate of climb, no fix, and a banking turn -- and zeroing distance there
+        // would turn the one case this mode exists for into a recording of nothing.
+        let sinceGoodFix = Date().timeIntervalSince(lastGoodAccuracyFixTime)
+        let undergroundClimb = sinceGoodFix > RAMP_NO_FIX_WINDOW
+        onRampNow = !isAirborneForEstimation
+            && climbRate > RAMP_CLIMB_RATE
+            && (abs(netTurn) > RAMP_NET_TURN || undergroundClimb)
     }
+    /// How long without a fix good enough to trust before a sustained climb is read as being
+    /// under a building rather than over a hill. Twenty seconds is longer than a gap between
+    /// fixes in a street canyon and far shorter than any real descent into a car park.
+    private let RAMP_NO_FIX_WINDOW: TimeInterval = 20.0
     private let OFFSET_WARMUP_WINDOW: TimeInterval = 180
     /// True while the window is open, so a log can never mistake a warmed offset for one the
     /// mode derived without GPS.
