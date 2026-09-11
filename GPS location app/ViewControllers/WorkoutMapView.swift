@@ -21,6 +21,9 @@ private struct WorkoutMapTrack: Identifiable {
     let transportType: MKDirectionsTransportType
     let canRoadAlign: Bool
     let costing: MapMatchingService.Costing
+    /// Formatted once when the track is built. Date formatting is not free, and the chip row
+    /// was doing it for every workout on every body evaluation.
+    let dateLabel: String
 
     var coordinateCount: Int { coordinates.count }
 }
@@ -36,7 +39,29 @@ private struct RoadAlignmentSegment {
 /// (via MKMultiPolylineRenderer) instead of thousands of SwiftUI overlays — this
 /// is what lets the map show every route smoothly without lag/heat. SwiftUI's
 /// MapPolyline can't take an MKMultiPolyline, hence the UIViewRepresentable.
-private struct TracksMapLayer: UIViewRepresentable {
+private struct TracksMapLayer: UIViewRepresentable, Equatable {
+    /// THE COMMENT ABOVE WAS ASPIRATIONAL UNTIL THIS EXISTED.
+    ///
+    /// Without Equatable conformance SwiftUI re-runs updateUIView on every evaluation of the
+    /// parent's body — and download progress, road-alignment progress and every other piece of
+    /// panel state lives in that same body. The first thing updateUIView does is hand the whole
+    /// track array to the coordinator, so an unrelated progress tick was copying every route's
+    /// coordinates.
+    ///
+    /// Compared on identity rather than contents: dataVersion already increments whenever the
+    /// track set is rebuilt, so there is no need to walk hundreds of thousands of coordinates to
+    /// discover that nothing changed. The closure is deliberately excluded — closures are not
+    /// comparable, and it is only ever stale when dataVersion says the tracks are unchanged.
+    static func == (a: TracksMapLayer, b: TracksMapLayer) -> Bool {
+        a.dataVersion == b.dataVersion
+            && a.selectedTrackID == b.selectedTrackID
+            && a.satellite == b.satellite
+            && a.fitGeneration == b.fitGeneration
+            && a.tracks.count == b.tracks.count
+            && a.roadAlignedCoordinates.count == b.roadAlignedCoordinates.count
+            && (a.multiPolyline === b.multiPolyline)
+    }
+
     let tracks: [WorkoutMapTrack]
     let selectedTrackID: UUID?
     let roadAlignedCoordinates: [UUID: [CLLocationCoordinate2D]]
@@ -281,6 +306,7 @@ struct WorkoutMapView: View {
                     fitGeneration: fitGeneration,
                     onTapCoordinate: { coordinate in selectNearestTrack(to: coordinate) }
                 )
+                .equatable()
                 .ignoresSafeArea(edges: .bottom)
 
                 VStack(spacing: 0) {
@@ -502,8 +528,12 @@ struct WorkoutMapView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 8)
             } else {
+                // LAZY. This was a plain HStack, so every workout's chip was built and laid out
+                // on every body evaluation — hundreds of Buttons, each with a shape, a background
+                // and a date format, almost all of them off screen. LazyHStack builds only what
+                // is visible, which is what the row scrolls through.
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                    LazyHStack(spacing: 8) {
                         Button(action: {
                             selectedTrackID = nil
                             fitAllTracks()
@@ -527,7 +557,7 @@ struct WorkoutMapView: View {
                                     Circle()
                                         .fill(routeColor(for: index))
                                         .frame(width: 8, height: 8)
-                                    Text(track.startDate, format: .dateTime.month(.abbreviated).day())
+                                    Text(track.dateLabel)
                                 }
                                 .font(.caption)
                                 .fontWeight(track.id == selectedTrackID ? .bold : .medium)
@@ -733,7 +763,8 @@ struct WorkoutMapView: View {
                     coordinates: coordinates,
                     transportType: mapTransportType(for: summary),
                     canRoadAlign: canRoadAlign(flight: summary),
-                    costing: MapMatchingService.costing(for: activityType)
+                    costing: MapMatchingService.costing(for: activityType),
+                    dateLabel: Self.chipDateFormatter.string(from: summary.startDate)
                 )
             }
             .sorted { $0.startDate > $1.startDate }
@@ -905,6 +936,11 @@ struct WorkoutMapView: View {
             return DateInterval(start: startOfDay, end: endOfDay)
         }
     }
+
+    /// One formatter, not one per chip per render. DateFormatter construction is expensive.
+    private static let chipDateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d"; return f
+    }()
 
     private func routeColor(for index: Int) -> Color {
         routePalette[index % routePalette.count]
