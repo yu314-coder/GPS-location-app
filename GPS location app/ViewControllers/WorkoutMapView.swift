@@ -100,7 +100,7 @@ private struct TracksMapLayer: UIViewRepresentable, Equatable {
         let signature = "\(dataVersion)|sel:\(selectedTrackID?.uuidString ?? "none")|al:\(roadAlignedCoordinates.count)"
         if signature != coord.lastSignature {
             coord.lastSignature = signature
-            rebuildOverlays(on: map)
+            rebuildOverlays(on: map, coordinator: coord)
         }
 
         // Apply a requested camera fit when the generation changes.
@@ -117,14 +117,14 @@ private struct TracksMapLayer: UIViewRepresentable, Equatable {
         (roadAlignedCoordinates[track.id] ?? track.coordinates).forAppleBasemap
     }
 
-    private func rebuildOverlays(on map: MKMapView) {
+    private func rebuildOverlays(on map: MKMapView, coordinator: Coordinator) {
         map.removeOverlays(map.overlays)
         map.removeAnnotations(map.annotations.filter { !($0 is MKUserLocation) })
 
-        // Always one multi-polyline overlay (raw or corrected — the parent rebuilds
-        // it when smoothing/matching changes the geometry). Keeps rendering fast
-        // no matter how many routes are shown.
-        if let multiPolyline { map.addOverlay(multiPolyline, level: .aboveRoads) }
+        // Still exactly one multi-polyline overlay, but now built from the tracks that are
+        // actually on screen and thinned to a fixed segment budget. See Coordinator.
+        coordinator.setGeometries(from: tracks)
+        coordinator.rebuildVisibleOverlay(on: map, force: true)
 
         // Highlight + endpoint pins for the selected route.
         if let id = selectedTrackID, let track = tracks.first(where: { $0.id == id }) {
@@ -143,6 +143,13 @@ private struct TracksMapLayer: UIViewRepresentable, Equatable {
         }
     }
 
+    /// One track reduced to what drawing needs: basemap-shifted points and the rectangle they
+    /// occupy, so visibility can be tested without touching the coordinates.
+    struct TrackGeometry {
+        let coords: [CLLocationCoordinate2D]
+        let rect: MKMapRect
+    }
+
     final class Coordinator: NSObject, MKMapViewDelegate {
         weak var mapView: MKMapView?
         var onTapCoordinate: (CLLocationCoordinate2D) -> Void
@@ -150,8 +157,104 @@ private struct TracksMapLayer: UIViewRepresentable, Equatable {
         var lastSignature = ""
         var lastFitGeneration = Int.min
 
+        /// DRAW WHAT IS ON SCREEN, NOT WHAT IS STORED.
+        ///
+        /// Collapsing every route into one MKMultiPolyline made the overlay COUNT small, which
+        /// is what the original comment was about, and it is still the right shape. But one
+        /// overlay spanning the world has a bounding rect spanning the world, so MapKit cannot
+        /// cull any part of it: at 2,269 tracks every route was rasterised every frame at every
+        /// zoom. Measured on device: 43.8 ms of GPU per frame, 29.8 FPS.
+        ///
+        /// The stroke is translucent, so overlapping routes blend rather than overwrite, and a
+        /// few thousand journeys through the same city overlap enormously. Overdraw is the cost,
+        /// and overdraw is a function of how many segments land in the viewport — not of how far
+        /// away the rest of the library is.
+        ///
+        /// So the overlay is rebuilt for the current viewport: tracks whose rect does not meet
+        /// the visible rect are left out entirely, and the remainder share a fixed segment
+        /// budget, thinned by stride. Zoomed out, each route contributes a handful of points and
+        /// still reads as a line at that scale; zoomed in, few tracks qualify so each gets its
+        /// full detail back. The work is bounded by the screen either way.
+        var geometries: [TrackGeometry] = []
+        private var lastRenderedRect: MKMapRect = .null
+        private var rebuildWork: DispatchWorkItem?
+        /// Total points allowed on screen at once. The ceiling that turns "as many as exist"
+        /// into a constant.
+        private let VISIBLE_POINT_BUDGET = 12000
+
         init(onTapCoordinate: @escaping (CLLocationCoordinate2D) -> Void) {
             self.onTapCoordinate = onTapCoordinate
+        }
+
+        /// Cache geometry once per data change rather than per draw.
+        func setGeometries(from tracks: [WorkoutMapTrack]) {
+            geometries = tracks.compactMap { t in
+                let coords = t.coordinates.forAppleBasemap
+                guard coords.count > 1 else { return nil }
+                var rect = MKMapRect.null
+                for c in coords {
+                    let p = MKMapPoint(c)
+                    rect = rect.union(MKMapRect(x: p.x, y: p.y, width: 0, height: 0))
+                }
+                return TrackGeometry(coords: coords, rect: rect)
+            }
+            lastRenderedRect = .null
+        }
+
+        func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
+            scheduleRebuild(on: mapView)
+        }
+
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            scheduleRebuild(on: mapView)
+        }
+
+        /// Coalesced: a pan gesture emits region changes continuously, and rebuilding the
+        /// overlay on each one would cost more than it saves.
+        private func scheduleRebuild(on map: MKMapView) {
+            rebuildWork?.cancel()
+            let work = DispatchWorkItem { [weak self, weak map] in
+                guard let self, let map else { return }
+                self.rebuildVisibleOverlay(on: map)
+            }
+            rebuildWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        }
+
+        func rebuildVisibleOverlay(on map: MKMapView, force: Bool = false) {
+            guard !geometries.isEmpty else { return }
+            let visible = map.visibleMapRect
+            // Ignore small movements; the margin below already covers them.
+            if !force, !lastRenderedRect.isNull {
+                let moved = abs(visible.origin.x - lastRenderedRect.origin.x) > lastRenderedRect.size.width * 0.25
+                    || abs(visible.origin.y - lastRenderedRect.origin.y) > lastRenderedRect.size.height * 0.25
+                let zoomed = abs(visible.size.width - lastRenderedRect.size.width) > lastRenderedRect.size.width * 0.25
+                guard moved || zoomed else { return }
+            }
+            lastRenderedRect = visible
+            // Render a margin around the viewport so a small pan does not expose bare map.
+            let pad = visible.insetBy(dx: -visible.size.width * 0.35, dy: -visible.size.height * 0.35)
+            let onScreen = geometries.filter { $0.rect.intersects(pad) }
+            guard !onScreen.isEmpty else {
+                map.removeOverlays(map.overlays.filter { $0 is MKMultiPolyline })
+                return
+            }
+            let perTrack = max(4, VISIBLE_POINT_BUDGET / onScreen.count)
+            let polylines: [MKPolyline] = onScreen.map { g in
+                guard g.coords.count > perTrack else {
+                    return MKPolyline(coordinates: g.coords, count: g.coords.count)
+                }
+                let stride = max(1, g.coords.count / perTrack)
+                var thinned = [CLLocationCoordinate2D]()
+                thinned.reserveCapacity(perTrack + 1)
+                var i = 0
+                while i < g.coords.count { thinned.append(g.coords[i]); i += stride }
+                if let last = g.coords.last { thinned.append(last) }
+                return MKPolyline(coordinates: thinned, count: thinned.count)
+            }
+            let multi = MKMultiPolyline(polylines)
+            map.removeOverlays(map.overlays.filter { $0 is MKMultiPolyline })
+            map.addOverlay(multi, level: .aboveRoads)
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
