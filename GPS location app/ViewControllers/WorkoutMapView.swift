@@ -283,6 +283,9 @@ struct WorkoutMapView: View {
     private let roadAlignmentMaxTracks = 60
 
     private var isIPad: Bool { sizeClass == .regular }
+    /// Height of the horizontal track-chip row. Explicit because a LazyHStack cannot size
+    /// itself; scaled so it grows with Dynamic Type instead of clipping the labels.
+    @ScaledMetric(relativeTo: .caption) private var chipRowHeight: CGFloat = 36
 
     private var selectedTrack: WorkoutMapTrack? {
         guard let selectedTrackID else { return nil }
@@ -532,6 +535,11 @@ struct WorkoutMapView: View {
                 // on every body evaluation — hundreds of Buttons, each with a shape, a background
                 // and a date format, almost all of them off screen. LazyHStack builds only what
                 // is visible, which is what the row scrolls through.
+                // MUST BE GIVEN A HEIGHT. A plain HStack reports the height of its children, so
+                // the ScrollView wrapped snugly around the chips. LazyHStack has not built its
+                // children yet and cannot answer, so the ScrollView took every point it was
+                // offered and the panel swallowed the map. Pin it to one chip's height, scaled so
+                // larger Dynamic Type still fits rather than clipping.
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 8) {
                         Button(action: {
@@ -570,6 +578,7 @@ struct WorkoutMapView: View {
                         }
                     }
                 }
+                .frame(height: chipRowHeight)
             }
         }
         .padding(12)
