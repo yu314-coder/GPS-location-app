@@ -453,6 +453,17 @@ class WorkoutSession: ObservableObject {
         // turn requirement even the robust slope fires 163 times on that ride, 73 times on the
         // flight and 176 times on a hill. That needs a real straight-ramp recording to solve.
         //
+        // The first straight one (motorcycle, 2026-09-14) argues against zeroing it at all. It
+        // climbed 12.6 m in 70 s over 1.15 km at 45-74 km/h - a 1.2% grade, net turn under 45
+        // degrees - and the estimate there was already right: 1135 m against GPS 1153 m, and
+        // 725 against 721 on the way down. Every window passed slope, fit and rise; only the
+        // turn test held it back, and passing it would have withheld over a kilometre of correct
+        // distance. A turn-free climb test tightened to 6 m and R^2 0.9 still fires on 2169
+        // ticks across 64 recordings, nearly all of them ordinary hills - and 131 on a flight's
+        // cabin pressure. The model over-reads a crawl up concrete, not a road that rises, so a
+        // straight ramp only needs catching if it is slow - and GPS-free, slow is the one thing
+        // the estimate cannot vouch for.
+        //
         // Airborne stays excluded outright: once the flight phase does latch, a climbing,
         // banking aircraft would otherwise satisfy every condition here.
         let t0 = firstAlt.t
@@ -3947,6 +3958,7 @@ class WorkoutSession: ObservableObject {
             // that column read one constant value (1 m) for an entire drive and could not be
             // used to tell a tracking fix from a stale one.
             gpsAccuracy: sessionDiagnostics.latestGPSAccuracy >= 0 ? sessionDiagnostics.latestGPSAccuracy : nil,
+            gpsAge: sessionDiagnostics.latestGPSFixTime.map { now.timeIntervalSince($0) },
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
             truthLatitude: sessionDiagnostics.latestGPSLatitude,
@@ -4671,6 +4683,7 @@ class WorkoutSession: ObservableObject {
             sessionDiagnostics.latestGPSLatitude = location.latitude
             sessionDiagnostics.latestGPSLongitude = location.longitude
             sessionDiagnostics.latestGPSAccuracy = location.horizontalAccuracy
+            sessionDiagnostics.latestGPSFixTime = location.timestamp
 
             // GPS may still TEACH the learned model here, even though it must not SUPPLY the
             // answer. Learning is calibration, not measurement — it is exactly what happens on
@@ -4899,6 +4912,7 @@ class WorkoutSession: ObservableObject {
         sessionDiagnostics.latestGPSLatitude = location.latitude
         sessionDiagnostics.latestGPSLongitude = location.longitude
         sessionDiagnostics.latestGPSAccuracy = location.horizontalAccuracy
+        sessionDiagnostics.latestGPSFixTime = location.timestamp
         // Remember a genuine vehicle speed so it can be held once GPS goes.
         if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
             lastMeasuredVehicleSpeed = location.speed

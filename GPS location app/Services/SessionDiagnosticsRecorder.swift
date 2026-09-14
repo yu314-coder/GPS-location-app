@@ -98,6 +98,14 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let learnSlope: Double?
         let gpsSpeed: Double?
         let gpsAccuracy: Double?
+        /// SECONDS SINCE THE GPS COLUMNS WERE LAST TRUE.
+        ///
+        /// The speed, accuracy and truth position are the latest fix, repeated on every tick
+        /// until another arrives - in Velocity Mode that can be half a minute. One motorcycle
+        /// ride held a 0 km/h reading for 33 ticks while the rider pulled away, which scored as
+        /// the model reporting 60 km/h at a standstill and inflated the ride's error from +36%
+        /// to +47%. Nothing in the row said the zero was stale. Filter on this before comparing.
+        let gpsAge: Double?
         let latitude: Double?
         let longitude: Double?
         /// Where GPS says we ACTUALLY are, recorded even in Force Velocity where GPS is
@@ -241,6 +249,9 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// bogus reference bearing that inflates every measured heading error. On one walk that
     /// alone accounted for the difference between a 113 deg and a 48 deg p90.
     var latestGPSAccuracy: Double = -1
+    /// When that fix was taken. Every GPS column above keeps its last value between fixes, so
+    /// without this a repeated reading is indistinguishable from a fresh one. See Row.gpsAge.
+    var latestGPSFixTime: Date?
 
     func recordRaw(verticalAccel: Double, north: Double = 0, east: Double = 0, at time: Date) {
         // The 50 Hz stream is by far the most expensive thing here — a file handle, a write per
@@ -465,7 +476,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "tick_dt_s,regime_distance,regime_declined,local_error_ms,local_declined,offset_warmup,velocity_mode,gps_fixes_in_route,on_ramp,handling_rot_rads,handled_s,heading_unreliable,walk_axis_deg,walk_skew_ema,walk_axis_raw_deg,walk_axis_gated,"
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m\n"
+        // Appended at the end so every existing column keeps its position.
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -496,7 +508,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + "\n"
         }
         return out
     }
