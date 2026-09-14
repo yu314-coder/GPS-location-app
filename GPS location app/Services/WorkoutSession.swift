@@ -406,44 +406,91 @@ class WorkoutSession: ObservableObject {
         rampYawHistory.append((now, motionHeadingDegrees))
         rampAltitudeHistory.removeAll { now.timeIntervalSince($0.t) > RAMP_WINDOW }
         rampYawHistory.removeAll { now.timeIntervalSince($0.t) > RAMP_WINDOW }
-        guard rampAltitudeHistory.count >= 4, rampYawHistory.count >= 8,
-              let firstAlt = rampAltitudeHistory.first, let lastAlt = rampAltitudeHistory.last,
+        guard rampAltitudeHistory.count >= 10, rampYawHistory.count >= 8,
+              let firstAlt = rampAltitudeHistory.first,
               now.timeIntervalSince(firstAlt.t) >= RAMP_WINDOW * 0.6 else {
             onRampNow = false
             return
         }
         let span = max(now.timeIntervalSince(firstAlt.t), 1)
-        let climbRate = abs(lastAlt.m - firstAlt.m) / span
         var netTurn = 0.0
         for i in 1..<rampYawHistory.count {
             netTurn += normalizedSignedAngle(rampYawHistory[i].deg - rampYawHistory[i - 1].deg)
         }
-        // A STRAIGHT RAMP CLIMBS WITHOUT TURNING.
+
+        // A RAMP IS A STEADY CLIMB, NOT TWO BAROMETER READINGS THAT HAPPEN TO DIFFER.
         //
-        // Requiring both climb and sustained yaw finds a helical ramp and sleeps through a
-        // straight one, which is the more common shape and carries the same error: the vibration
-        // model reads a crawl on concrete as about 40 km/h, measured at +170% and +299% on the
-        // two ramps in the paper.
+        // The old test took the first and last altitude in the window and divided by the time
+        // between them. One noisy reading at either end was enough, and a pocketed barometer at
+        // speed is noisy: over 30 seconds it shows a "climb" above threshold on 30% of ordinary
+        // riding ticks. So the climb is now a least-squares slope over every sample, it must fit
+        // (R^2 >= 0.8, a sustained change rather than scatter), it must add up to most of a
+        // storey (2.5 m), and it must be slower than a lift or an aircraft's cabin (0.35 m/s).
         //
-        // The turn was required because climb alone was tried and rejected -- it fired on
-        // ordinary hills and withheld more road than ramp. But a hill is outdoors. Underground
-        // there is no satellite signal, and that is the difference the old rule never used: a
-        // sustained climb with no usable fix for this long is not a hill, because a hill would
-        // still be answering. So climb plus turn stays, and climb plus darkness joins it.
+        // Replayed across 60 recordings before shipping. Against the previous rule it keeps the
+        // confirmed car-park exit (23 ticks, all in its first minute) and the other basement
+        // entries and exits (56 true-ramp ticks either way), while false ramps fall from 1019
+        // ticks to 592 overall -- and to zero on a real flight, on barometric swings, on a 36 m
+        // climb, on a staircase walk, and on every motorcycle and car ride tested.
         //
-        // Airborne is excluded outright. A climbing aircraft satisfies every one of these
-        // conditions -- rate of climb, no fix, and a banking turn -- and zeroing distance there
-        // would turn the one case this mode exists for into a recording of nothing.
-        let sinceGoodFix = Date().timeIntervalSince(lastGoodAccuracyFixTime)
-        let undergroundClimb = sinceGoodFix > RAMP_NO_FIX_WINDOW
+        // The flight is the reason this matters beyond car parks. The old rule fired on 6 ticks
+        // at 16-17 m of cabin altitude, while the flight-phase estimator still read GROUND --
+        // it needs 120 m before it will call a flight -- so the airborne exclusion below did not
+        // protect them, and distance would have been zeroed on the ground roll. The new rule
+        // does not fire there at all.
+        //
+        // The cap and fit were chosen on that replay, not guessed. A 0.6 or 1.0 m/s cap catches
+        // no additional true ramps and roughly triples the false ones on hills and stairs; a fit
+        // of 0.7 re-admits the flight; 0.9 halves the true ramps.
+        //
+        // STRAIGHT RAMPS REMAIN UNDETECTED, and the turn test is why. Build 1.4 (7) tried "climb
+        // plus no trustworthy fix for 20 s" instead, reasoning that a hill is outdoors and a
+        // basement is dark. lastGoodAccuracyFixTime is only written after the forced branch of
+        // processNewLocation returns, so in Velocity Mode that condition was true from the first
+        // tick and the rule became climb-alone on every recording: 267 ramp ticks on one ride,
+        // 257 of them from that condition, about 2.4 km withheld at 55-65 km/h. Replayed, no
+        // GPS-free climb test separates a straight ramp from a flyover or a hill -- without the
+        // turn requirement even the robust slope fires 163 times on that ride, 73 times on the
+        // flight and 176 times on a hill. That needs a real straight-ramp recording to solve.
+        //
+        // Airborne stays excluded outright: once the flight phase does latch, a climbing,
+        // banking aircraft would otherwise satisfy every condition here.
+        let t0 = firstAlt.t
+        let xs = rampAltitudeHistory.map { $0.t.timeIntervalSince(t0) }
+        let ys = rampAltitudeHistory.map { $0.m }
+        let count = Double(xs.count)
+        let xMean = xs.reduce(0, +) / count
+        let yMean = ys.reduce(0, +) / count
+        var sxx = 0.0, sxy = 0.0, sst = 0.0
+        for i in 0..<xs.count {
+            let dx = xs[i] - xMean, dy = ys[i] - yMean
+            sxx += dx * dx; sxy += dx * dy; sst += dy * dy
+        }
+        guard sxx > 1e-6 else {
+            onRampNow = false
+            return
+        }
+        let slope = sxy / sxx
+        var ssr = 0.0
+        for i in 0..<xs.count {
+            let residual = ys[i] - (yMean + slope * (xs[i] - xMean))
+            ssr += residual * residual
+        }
+        let fit = sst > 1e-9 ? 1 - ssr / sst : 0
+        let rise = abs(slope) * span
         onRampNow = !isAirborneForEstimation
-            && climbRate > RAMP_CLIMB_RATE
-            && (abs(netTurn) > RAMP_NET_TURN || undergroundClimb)
+            && abs(slope) > RAMP_CLIMB_RATE
+            && abs(slope) < RAMP_MAX_CLIMB_RATE
+            && fit >= RAMP_MIN_FIT
+            && rise >= RAMP_MIN_RISE
+            && abs(netTurn) > RAMP_NET_TURN
     }
-    /// How long without a fix good enough to trust before a sustained climb is read as being
-    /// under a building rather than over a hill. Twenty seconds is longer than a gap between
-    /// fixes in a street canyon and far shorter than any real descent into a car park.
-    private let RAMP_NO_FIX_WINDOW: TimeInterval = 20.0
+    /// Faster than this is a lift or an aircraft cabin, not a vehicle on a ramp.
+    private let RAMP_MAX_CLIMB_RATE = 0.35
+    /// How well a straight line must explain the altitude over the window.
+    private let RAMP_MIN_FIT = 0.80
+    /// Most of a storey. Less than this is a kerb, a speed bump or barometer drift.
+    private let RAMP_MIN_RISE = 2.5
     private let OFFSET_WARMUP_WINDOW: TimeInterval = 180
     /// True while the window is open, so a log can never mistake a warmed offset for one the
     /// mode derived without GPS.
@@ -3844,7 +3891,9 @@ class WorkoutSession: ObservableObject {
         let lastFix = flight.locations.last(where: { !$0.isEstimated && $0.isValid })
         // On a ramp the vibration says 40 km/h and the car is doing 8. Add nothing rather than
         // that; see updateRampDetection.
-        if onRampNow { distance = 0 }
+        // Only the vehicle model over-reads a ramp. Steps counted on a ramp, an escalator or a
+        // spiral walkway are steps actually taken, and zeroing them erased real walking.
+        if onRampNow, !sourceTag.hasPrefix("PDR") { distance = 0 }
         defer { lastDiagnosticTickTime = Date() }
         // Surface the gate's verdict once per tick. Read from the cached fingerprint rather than
         // the raw one — the raw property walks every observation of every session, which is far
