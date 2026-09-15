@@ -779,23 +779,30 @@ class WorkoutSession: ObservableObject {
     /// a second or two and putting it in a cradle a few more; half a minute of unbroken rotation
     /// means the phone is being carried, and a carried phone is not in a moving vehicle.
     private let HANDLING_MEANS_DISMOUNTED: TimeInterval = 30.0
-    /// When handling last became VIGOROUS - the swing of a phone carried in a walking hand, not
+    /// When rotation last became VIGOROUS - the swing of a phone carried by someone walking, not
     /// the turn of one being picked up - or nil when it is not.
     private var vigorousHandlingSince: Date?
-    /// Smoothed rotation, rad/s, that only a walking hand sustains.
+    /// Smoothed rotation, rad/s, that only walking sustains.
     ///
-    /// Thirty seconds is right for ordinary handling and far too long for this. Walking away from
-    /// a parked motorcycle with the phone in hand held 53 km/h for the whole thirty seconds while
-    /// GPS read 3-5 km/h: about 450 m on foot counted as riding. The rotation there climbed to
-    /// 2.3-2.7 rad/s. A phone held on a moving vehicle never came close: across 67 recordings its
-    /// smoothed rotation, wherever fresh GPS put the vehicle above 15 km/h, peaked at 0.55.
+    /// "Handling" is a misnomer for most of what reaches this: the recordings behind it were all
+    /// Velocity Mode on a motorcycle with the phone in a TROUSER POCKET, and a pocket on a walking
+    /// leg swings the phone through far more rotation than a hand does. The log tags those ticks
+    /// "in hand" regardless.
+    ///
+    /// Thirty seconds is right for reaching for a phone and far too long for this. Walking away
+    /// from a parked motorcycle held 53 km/h for the whole thirty seconds while GPS read 3-5 km/h:
+    /// about 450 m on foot counted as riding. The rotation there climbed to 2.3-2.7 rad/s. A phone
+    /// on a moving vehicle never came close: across 67 recordings its smoothed rotation, wherever
+    /// fresh GPS put the vehicle above 15 km/h, peaked at 0.55.
     private let CARRIED_ROTATION = 1.2
     /// How long that rotation must last. Replayed over the same 67 recordings, 1.2 rad/s for 8 s
     /// fires on no tick where the vehicle was genuinely moving; the only firings above 15 km/h
-    /// were walks whose GPS jumped for a single tick.
+    /// were walks whose GPS jumped for a single tick. On the vehicle rides among them it fired in
+    /// 39 episodes, every one a walk before mounting or after parking - none with riding within a
+    /// minute on both sides, so feet down at a light or shifting on the seat does not trip it.
     private let CARRIED_HOLD: TimeInterval = 8.0
-    /// The phone is in a hand that has got off the vehicle: either handled for longer than
-    /// reaching for it takes, or swung as only walking swings it.
+    /// The phone has been carried off the vehicle: either handled for longer than reaching for it
+    /// takes, or swung as only walking swings it.
     private var handlingShowsDismount: Bool {
         if continuousHandlingDuration > HANDLING_MEANS_DISMOUNTED { return true }
         guard let since = vigorousHandlingSince else { return false }
@@ -4217,7 +4224,7 @@ class WorkoutSession: ObservableObject {
                                 // vehicle TTL - 300 would have caught 93%.
                                 //
                                 // That residual cost more than it looked. Parking a motorcycle
-                                // and walking off with the phone in hand, the classifier's last
+                                // and walking off with the phone in a pocket, the classifier's last
                                 // [car] was seconds old, so steps stayed refused for two minutes:
                                 // 95 s of walking at 4-5 km/h counted as nothing. By then the
                                 // hold had already decided the phone was carried off the vehicle
