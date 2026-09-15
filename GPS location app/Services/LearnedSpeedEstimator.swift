@@ -213,6 +213,18 @@ final class LearnedSpeedEstimator {
     /// at 3.51 for its whole 19 minutes.
     private let REGIME_DISTANCE_LIMIT = 3.0
 
+    /// How many of this workout's own observations its fingerprint must rest on before the
+    /// distance may REFUSE an answer. Twenty is enough to compute one and far too few to act on.
+    ///
+    /// A motorcycle ride (2026-09-15) collected its first 20 observations while stopping, pulling
+    /// away and briefly holding the phone; GPS then stopped reporting a usable speed, so nothing
+    /// more was ever learned. The fingerprint froze at 6.12 - "a different vehicle" - on the
+    /// same motorcycle that had sat at 0.29-1.88 that morning, and the gate refused every tick
+    /// for 9.5 minutes: 4.3 km ridden, 20 m recorded. Across 21 earlier sessions the distance
+    /// read above 3 only while the session had about 20 observations - 3.35, 4.47, 4.78, all
+    /// settling to 0.7-1.1 - and never once passed 2.57 after 60.
+    private let REGIME_MIN_OBSERVATIONS = 60
+
     /// True when the last estimate was refused because the workout is an unlearned regime.
     /// Recorded so a log can tell "declined, correctly" from "answered, wrongly" - the two are
     /// indistinguishable from the outside and need opposite fixes.
@@ -244,9 +256,17 @@ final class LearnedSpeedEstimator {
     var regimeDistanceCached: Double? {
         if Date().timeIntervalSince(cachedRegimeDistanceAt) > REGIME_CACHE_TTL {
             cachedRegimeDistance = distanceToNearestKnownRegime
+            cachedSessionObservations = observations.filter { $0.session == currentSession }.count
+                + quarantined.filter { $0.session == currentSession }.count
             cachedRegimeDistanceAt = Date()
         }
         return cachedRegimeDistance
+    }
+    private var cachedSessionObservations = 0
+    /// How many observations the current fingerprint was built from, refreshed with the distance.
+    var regimeObservationsCached: Int {
+        _ = regimeDistanceCached
+        return cachedSessionObservations
     }
 
     /// Whether this workout looks like something the model has never been taught.
@@ -256,7 +276,8 @@ final class LearnedSpeedEstimator {
     /// a first-ever workout has no answer - and refusing on "no answer" would record nothing at
     /// all, which is the worse failure of the two.
     var regimeIsUnlearned: Bool {
-        guard let d = regimeDistanceCached else { return false }
+        guard let d = regimeDistanceCached,
+              cachedSessionObservations >= REGIME_MIN_OBSERVATIONS else { return false }
         return d > REGIME_DISTANCE_LIMIT
     }
 
