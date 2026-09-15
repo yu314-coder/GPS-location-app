@@ -779,6 +779,28 @@ class WorkoutSession: ObservableObject {
     /// a second or two and putting it in a cradle a few more; half a minute of unbroken rotation
     /// means the phone is being carried, and a carried phone is not in a moving vehicle.
     private let HANDLING_MEANS_DISMOUNTED: TimeInterval = 30.0
+    /// When handling last became VIGOROUS - the swing of a phone carried in a walking hand, not
+    /// the turn of one being picked up - or nil when it is not.
+    private var vigorousHandlingSince: Date?
+    /// Smoothed rotation, rad/s, that only a walking hand sustains.
+    ///
+    /// Thirty seconds is right for ordinary handling and far too long for this. Walking away from
+    /// a parked motorcycle with the phone in hand held 53 km/h for the whole thirty seconds while
+    /// GPS read 3-5 km/h: about 450 m on foot counted as riding. The rotation there climbed to
+    /// 2.3-2.7 rad/s. A phone held on a moving vehicle never came close: across 67 recordings its
+    /// smoothed rotation, wherever fresh GPS put the vehicle above 15 km/h, peaked at 0.55.
+    private let CARRIED_ROTATION = 1.2
+    /// How long that rotation must last. Replayed over the same 67 recordings, 1.2 rad/s for 8 s
+    /// fires on no tick where the vehicle was genuinely moving; the only firings above 15 km/h
+    /// were walks whose GPS jumped for a single tick.
+    private let CARRIED_HOLD: TimeInterval = 8.0
+    /// The phone is in a hand that has got off the vehicle: either handled for longer than
+    /// reaching for it takes, or swung as only walking swings it.
+    private var handlingShowsDismount: Bool {
+        if continuousHandlingDuration > HANDLING_MEANS_DISMOUNTED { return true }
+        guard let since = vigorousHandlingSince else { return false }
+        return Date().timeIntervalSince(since) > CARRIED_HOLD
+    }
     /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
     /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
     private var longRunMeanNorth: Double = 0
@@ -981,7 +1003,8 @@ class WorkoutSession: ObservableObject {
         // 20 km/h, on foot. Handling that has gone on this long is its own evidence: reaching for
         // a phone takes seconds, so half a minute of unbroken rotation means it is being carried,
         // and a carried phone is not in a moving vehicle. Same aircraft exemption as above.
-        if continuousHandlingDuration > HANDLING_MEANS_DISMOUNTED, v < MAX_GROUND_STOP_SPEED {
+        // A phone swung by a walking hand says so within seconds; see CARRIED_ROTATION.
+        if handlingShowsDismount, v < MAX_GROUND_STOP_SPEED {
             return nil
         }
         // The two-minute expiry keeps a stale city-driving answer from being held all afternoon.
@@ -3056,6 +3079,11 @@ class WorkoutSession: ObservableObject {
             } else {
                 handlingSince = nil
             }
+            if handlingRotationLevel > CARRIED_ROTATION {
+                if vigorousHandlingSince == nil { vigorousHandlingSince = Date() }
+            } else {
+                vigorousHandlingSince = nil
+            }
         }
 
         // Feed the flight-phase detector every tick; cabin pressure is the one signal that can
@@ -4186,10 +4214,19 @@ class WorkoutSession: ObservableObject {
                                 // The residual risk is a walk beginning within two minutes of
                                 // parking, which is why this is 120 s and not the full 300 s
                                 // vehicle TTL - 300 would have caught 93%.
+                                //
+                                // That residual cost more than it looked. Parking a motorcycle
+                                // and walking off with the phone in hand, the classifier's last
+                                // [car] was seconds old, so steps stayed refused for two minutes:
+                                // 95 s of walking at 4-5 km/h counted as nothing. By then the
+                                // hold had already decided the phone was carried off the vehicle
+                                // (handlingShowsDismount), and that verdict is exactly what the
+                                // recency was standing in for - a pocketed phone on a moving bike
+                                // never reaches it. So it lifts the block.
                                 let automotiveRecently = self.lastAutomotiveClassificationTime
                                     .map { now.timeIntervalSince($0) < 120 } ?? false
                                 if self.stepCadence >= 1.0, !self.activityIsAutomotive,
-                                   !automotiveRecently {
+                                   !automotiveRecently || self.handlingShowsDismount {
                                     self.lastStepIncrementTime = now
                                     // Counted steps at a walking cadence are direct evidence of
                                     // being on foot, and outrank any earlier GPS speed spike.
