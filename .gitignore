@@ -20,3 +20,12 @@ Pods/
 
 # Claude Code
 .claude/
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
