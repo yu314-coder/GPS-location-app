@@ -12,7 +12,7 @@
 \title{\vspace{-1.5em}\textbf{Recording a route without satellites:\\
 vibration-derived speed and its failure modes}}
 \author{Yu Yao-Hsing\\\small\texttt{euler.yu@gmail.com}}
-\date{\small August 2026}
+\date{\small September 2026}
 
 \begin{document}
 \maketitle
@@ -25,10 +25,15 @@ car, motorcycle and on foot. Each was recorded with GPS running alongside, used 
 reference: we call that the \emph{real} speed, and what the sensors produced the \emph{estimated}
 speed. Driving fast and steadily with the phone resting in the vehicle, estimated distance is
 within $3.8\%$ over $15$~km and direction within $5^\circ$; in slow stop-start traffic the same
-system reads $20$--$60\%$ long. We show that this gap is a property of the signal rather than a
-defect: the estimate reads one to two km/h high at any speed, which is $2\%$ of a motorway pace
-and $40\%$ of a crawl. We give equal space to eight approaches that were implemented, measured and
-rejected. Three failed for one reason. An accelerometer cannot tell gravity apart from the vehicle
+system reads $20$--$60\%$ long. Part of that gap is a property of the signal --- the estimate reads
+one to two km/h high at any speed, which is $2\%$ of a motorway pace and $40\%$ of a crawl --- but
+most of it turned out not to be. The store evicts from its most crowded speed bin so that rare fast
+examples survive, and that policy alone leaves it holding $5\%$ of its examples below $5$~km/h where
+the riding produces $24\%$. Replaying the estimator against a store rebuilt under that rule
+reproduces the shipped application's error on six instrumented rides; the same estimator on an
+unrebalanced store does not. Undoing the imbalance at lookup takes mean distance error from $20\%$
+to $8\%$ (\S\ref{sec:cache}). We give equal space to twelve approaches that were implemented,
+measured and rejected. Three failed for one reason. An accelerometer cannot tell gravity apart from the vehicle
 pushing it --- long known in attitude estimation --- and on this platform the sensor fusion that
 resolves that ambiguity is the vendor's, cannot be replaced, and quietly removes the very signal
 that aircraft dead reckoning, direction-from-acceleration and takeoff detection all rely on. We
@@ -59,7 +64,9 @@ pocketed, sometimes in a hand, in a car, on a motorcycle, and once in an aircraf
 vehicle types, on one device and one user, with per-regime error.
 \item The measured cost of the specific-force ambiguity on a consumer platform: three distinct
 approaches defeated, with magnitudes.
-\item Eight negative results reported in full, including two that look correct in aggregate and
+\item A cache-policy bias: the eviction rule that protects rare fast examples silently reshapes
+the training distribution, and accounts for most of the low-speed over-read (\S\ref{sec:cache}).
+\item Twelve negative results reported in full, including two that look correct in aggregate and
 fail per-query.
 \item Three sensor-platform defects that silently invalidated weeks of data, offered as evidence
 that platform semantics dominate modelling error in this setting.
@@ -152,7 +159,18 @@ d^2(\mathbf{f},\mathbf{g}) &= \sum_{i=1}^{11}\left(\frac{f_i-\mu_i}{\sigma_i}-\f
 \hat{v} &= \frac{\sum_{j=1}^{K} w_j v_j}{\sum_{j=1}^{K} w_j},
 \qquad w_j = \frac{1}{d_j^2 + \epsilon}
 \end{align}
-with $K = 12$. Crucially the estimator is allowed to decline:
+with $K = 12$, where $\pi_j$ corrects for how over- or under-represented a neighbour's speed is in
+the store relative to how often that speed was actually travelled:
+\begin{equation}
+\pi(v) = \operatorname{clamp}\!\left(\frac{P_{\text{ridden}}(\text{bin}(v))}{P_{\text{store}}(\text{bin}(v))},\;0.05,\;20\right),
+\qquad w_j = \frac{\pi(v_j)}{d_j^2 + \epsilon}
+\end{equation}
+$P_{\text{ridden}}$ is a decaying histogram of every observation as it was learned, over $2$~km/h
+bins, with a half-life of about $1400$ observations; $P_{\text{store}}$ is the same histogram of
+what the store currently holds. The two differ because of the eviction policy, not because of
+anything about the signal, and \S\ref{sec:cache} shows that difference accounts for most of the
+low-speed over-read. Both are $1$ on a fresh install, where the estimator reduces to the
+unweighted form above. Crucially the estimator is allowed to decline:
 \begin{equation}
 \min_j d_j^2 > 4 \;\Longrightarrow\; \text{no answer}
 \end{equation}
@@ -255,6 +273,76 @@ looks poor in traffic, without anything about it having changed.
 This is also why no correction helps. Subtracting a constant $6$~km/h --- fitted on two journeys
 where the estimate happened to read exactly that much high --- repaired those two and made three
 others worse, reducing total absolute error across all journeys by only $7\%$.
+
+That account is correct as far as it goes, and it is not the whole story. It was measured by
+holding out stored examples, so it describes the error on the distribution the store holds. The
+riding has a different distribution, and \S\ref{sec:cache} shows that the difference between the
+two --- created entirely by the cache's eviction rule --- is the larger term.
+
+\subsection{The cache policy is the bias}\label{sec:cache}
+
+The store holds $4000$ observations. When it is full, an incoming observation displaces one drawn
+from the most crowded $2$~km/h speed bin. The intent is to stop a rare $100$~km/h example being
+squeezed out by thousands of red lights, and it achieves that. What it also does is make the store
+stop resembling the riding.
+
+\begin{table}[htbp]
+\centering\small
+\caption{What was ridden against what the store keeps, over $44$ instrumented recordings. The
+eviction rule is the only difference between the two rows.}
+\label{tab:storemix}
+\begin{tabular}{lrrr}
+\toprule
+& $<5$~km/h & $5$--$30$~km/h & $>30$~km/h\\
+\midrule
+Observations as learned & $24\%$ & $31\%$ & $45\%$\\
+Observations the store keeps & $5\%$ & $26\%$ & $69\%$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A query that lands between regimes is answered by whatever its twelve nearest neighbours happen to
+be, and after rebalancing most of them are fast. That predicts a specific signature of error:
+correct where the store is dense in both versions, wrong and high where the rebalancing has thinned
+the evidence. This is what the shipped application does --- within a few percent above $50$~km/h,
+roughly double at $15$--$30$~km/h.
+
+To test it rather than assert it, the estimator was reimplemented offline against the same feature
+extraction, the same $K$, the same decline threshold, and trained leave-one-ride-out on the other
+rides' labelled windows. The only variable is how the training pool is assembled.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Distance error, leave-one-ride-out. Rebuilding the pool under the shipped eviction rule
+reproduces the shipped error; the same estimator on an unrebalanced pool does not. Weighting keeps
+the balanced store and corrects the imbalance at lookup.}
+\label{tab:cache}
+\begin{tabular}{lrrrr}
+\toprule
+Ride & Shipped app & Replay, evicted pool & Replay, natural pool & Replay, weighted\\
+\midrule
+Motorcycle, 14 Sep & $+32\%$ & $+7\%$  & $-5\%$  & $-4\%$\\
+Motorcycle, 15 Sep & $+53\%$ & $+23\%$ & $+3\%$  & $+8\%$\\
+Motorcycle, 16 Sep a & $+11\%$ & $-0\%$  & $-19\%$ & $-8\%$\\
+Motorcycle, 16 Sep b & $+39\%$ & $+38\%$ & $-2\%$  & $+10\%$\\
+Motorcycle, 16 Sep c & $+50\%$ & $+36\%$ & $+12\%$ & $+9\%$\\
+Motorcycle, 16 Sep d & $+30\%$ & $+15\%$ & $-9\%$  & $-8\%$\\
+\midrule
+Mean $|$error$|$ & $36\%$ & $20\%$ & $8\%$ & $8\%$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two things follow from Table~\ref{tab:cache}. The estimator was never the problem: on a pool that
+was never rebalanced it is within $8\%$ on the same rides, using the same eleven features that
+\S\ref{sec:pocket} had concluded carried no speed. And the fix does not require giving up the
+eviction rule --- weighting each neighbour by $\pi(v)$ recovers the same $8\%$ while keeping the
+rare fast examples an aircraft partition depends on. The residual gap between the replay's $20\%$
+and the shipped $36\%$ is the store's older content, which the replay cannot reconstruct.
+
+We record this as a modelling lesson of the same kind as the platform defects in \S6: nothing about
+the eviction rule is wrong locally, it is sound cache management, and it was invisible for weeks
+because the store's contents were never compared against the distribution they were drawn from.
 
 \subsection{Direction: the angle the phone sits at}
 
@@ -461,6 +549,45 @@ range. The extrapolation flag --- the mechanism whose job is to notice exactly t
 \emph{false on all $1146$ ticks}. The system reported $53.8$~km/h at a red light and never
 signalled that it was answering about a regime it had never seen.
 
+\subsection{Correction: the pocket signature does carry speed}\label{sec:pocketfix}
+
+\S\ref{sec:pocket} is the strongest claim in this paper and it is partly wrong. The quantity
+measured there at $R = -0.02$ against real speed is a scalar from the superseded hand-built
+estimator --- a scaled dominant vibration frequency, which the diagnostics file still records
+beside the learned model's output --- and not the eleven-dimensional signature \S3.1 defines.
+The two were conflated. Re-measured on four motorcycle rides with the phone in a trouser pocket
+under open sky, the signal is present and strong:
+
+\begin{table}[htbp]
+\centering\small
+\caption{Motorcycle, phone in a trouser pocket, $16$ September. RMS of vertical acceleration
+against real speed, in $4$-second windows. The relationship the earlier scalar could not see.}
+\label{tab:rms}
+\begin{tabular}{lrrrrrr}
+\toprule
+Real speed (km/h) & $0$--$5$ & $5$--$15$ & $15$--$30$ & $30$--$45$ & $45$--$60$ & $60$--$90$\\
+\midrule
+Median RMS (m/s$^2$) & $0.11$ & $0.39$ & $0.63$ & $0.95$ & $1.11$ & $1.27$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Over $331$ windows on one ride, RMS ranks with real speed at Spearman $+0.82$, ahead of the
+shipped application's own reported speed ($+0.73$); spectral centroid ranks at $-0.64$, so the
+information is in amplitude rather than in where the energy sits. RMS is already one of the
+eleven features ($f_{10}$, \S3.1). The flat $\sim\!50$~km/h reading that \S\ref{sec:pocket}
+reports is therefore not an absence of signal in the input but the cache bias of
+\S\ref{sec:cache} overwhelming it: the same features, searched against an unrebalanced pool,
+place the same pocketed rides within $8$--$10\%$.
+
+What survives from \S\ref{sec:pocket} is the part about confidence, which the correction makes
+worse rather than better. The system reported $53.8$~km/h at a red light, the extrapolation flag
+was false on all $1146$ ticks, and the diagnosis that followed --- \emph{this carry has no
+signal} --- was itself wrong and stood for three weeks, because the log recorded a feature that
+was no longer the one being used. An instrument that reports a superseded quantity beside a
+current one, with no indication of which is which, produces confident wrong conclusions in the
+analyst as readily as in the application.
+
 \subsection{Confidence signals that do not work}
 
 Neighbour disagreement is the natural confidence measure for a $k$-NN regressor. It fails here
@@ -484,6 +611,29 @@ $190$ stepping ticks, while on motorcycles the median gap since it last did was 
 two minutes of silence before a pedometer-driven revocation suppressed $61\%$ of false
 hand-overs at zero measured cost.
 
+\subsection{Four more that were measured and rejected}
+
+\textbf{Integrating between stops.} Each detected stop is a known zero, so acceleration along the
+travel direction can be integrated between two of them with the drift pinned out at both ends.
+Measured over the segments of one ride: $-65\%$ of the real distance using the application's
+heading, $-50\%$ using the raw motion heading, and $-75\%$ even when the GPS course was supplied
+as a perfect direction. Residual drift reaches $10$--$21$~m/s per segment for a pocketed phone.
+
+\textbf{Time since the last stop.} If the over-read were a pull-away artefact it would concentrate
+after a stop. It does not: on two rides the excess distance splits $+64\%$, $+54\%$, $+48\%$ and
+$+81\%$ across $10$--$30$, $30$--$60$, $60$--$120$ and $120$~s${+}$ since the last stop.
+
+\textbf{Zeroing an idling engine.} Shake does not separate a stationary motorcycle with its engine
+running from one crawling: accelerometer magnitude has median $0.22$~m/s$^2$ stopped against
+$0.65$ at $4$--$12$~km/h, heavily overlapped. The best threshold tested removes $1142$~m of
+phantom distance across $70$ recordings while zeroing $312$ crawling and $200$ slow-riding ticks
+--- about $2000$~m that was really travelled.
+
+\textbf{Reweighting the amplitude features.} Since $f_{10}$ and $f_{11}$ carry the speed
+information (\S\ref{sec:pocketfix}), weighting them above the nine band energies in the distance
+metric should help. It changes nothing measurable ($8\%$ mean distance error at $\times1$,
+$\times2$ and $\times3$). The neighbour search was never the problem; the pool was.
+
 \section{Systems failures}
 
 Three defects were not algorithmic, and each silently invalidated data for weeks.
@@ -506,13 +656,34 @@ was recording without GPS had the mode active for $34$~seconds; $63$ GPS fixes e
 The guarantee held --- the code path returns early --- but nothing in the log stated the mode's
 state, and it took an hour to establish from a side effect. Two columns now record it directly.
 
+\textbf{A repeated reading is not a new one.} The diagnostics file carries the latest GPS speed,
+accuracy and position on every tick, holding the last fix until another arrives --- in Velocity
+Mode, up to $45$~s. One ride held a $0$~km/h reading for $33$ consecutive ticks while the rider
+pulled away, which scored as the estimator reporting $60$~km/h at a standstill and put that ride at
+$+47\%$ where fresh fixes alone give $+36\%$. The column was not wrong; it was undated. Every
+figure in \S\ref{sec:cache} is computed against fixes under two seconds old, using an age column
+added afterwards.
+
+\textbf{A gate that cannot recover.} The estimator refuses to answer when the workout's fingerprint
+sits further than $3.0$ from every learned session (\S3.3). That fingerprint is the mean of the
+workout's own GPS-labelled observations, and it only grows while GPS supplies a usable speed. On
+one ride GPS did so twenty times, during stops and a pull-away, and then effectively stopped: the
+fingerprint froze at $6.12$ --- a different-vehicle value, for the same motorcycle that had scored
+$0.29$--$1.88$ that morning --- and the gate refused every tick for $9.5$~minutes, recording $20$~m
+of a $4.3$~km ride. Across $21$ sessions the fingerprint exceeds $3$ only while a session holds
+about twenty observations ($3.35$, $4.47$, $4.78$, each settling to $0.7$--$1.1$) and never passes
+$2.57$ after sixty. A refusal now requires sixty. The defect is not the threshold but that a
+quantity computed from an eight-sample minimum was allowed to be authoritative and could not be
+revised once the evidence feeding it stopped.
+
 \section{Limitations}
 
 \begin{itemize}\itemsep2pt
-\item \textbf{Hand or pocket carry destroys the signal.} At matched speeds a hand-held phone
-reads $0.6$--$0.8$ lower in the summary feature, and the feature stops varying with speed
-altogether: $7.10, 7.08, 7.07, 7.13, 7.25$ across $10$ to $65$~km/h. Reported speed becomes a
-constant near $15$--$25$~km/h regardless of truth.
+\item \textbf{Hand carry destroys the signal; pocket carry degrades it.} At matched speeds a
+hand-held phone reads $0.6$--$0.8$ lower in the superseded summary feature, which stops varying
+with speed altogether. A pocket is different and was misdiagnosed for three weeks
+(\S\ref{sec:pocketfix}): the signature there does track speed, and a pocketed ride places within
+$8$--$10\%$ once the store's composition is corrected for.
 \item \textbf{Stationary vehicles with running engines.} A motorcycle at a red light reads
 $5.2$~km/h, accumulating $690$~m over $339$ stationary ticks. No tested signal separates an
 idling engine from a slow crawl.
@@ -520,6 +691,15 @@ idling engine from a slow crawl.
 $40$~km/h on a road; measured error is $+169\%$ to $+297\%$. Detection requires two signals
 jointly --- barometric climb above $0.08$~m/s \emph{and} signed net rotation above $150^\circ$
 over $30$~s --- since the barometer alone flags every hill and rotation alone every junction.
+\item \textbf{Straight ramps are not detected, and it matters less than expected.} The turn
+requirement excludes any ramp that does not spiral. The first straight one recorded --- $12.6$~m
+of climb over $1.15$~km at $45$--$74$~km/h, under $45^\circ$ of net turning --- showed why the
+rule should not simply be relaxed: the estimate there was already right ($1135$~m against
+$1153$~m by GPS), so withholding it would have discarded a kilometre of correct distance. A
+turn-free climb test tightened to $6$~m of rise at $R^2 \geq 0.9$ still fires on $2169$ ticks
+across $64$ recordings, almost all ordinary hills, and on $131$ ticks of a flight's cabin
+pressure. Only a \emph{slow} straight ramp needs catching, and slow is the one thing the estimate
+cannot vouch for without GPS.
 \item \textbf{Unseen vehicles.} The model answers only for conditions it has observed.
 \end{itemize}
 
@@ -533,7 +713,12 @@ and we have no evidence ours do.
 
 \paragraph{GPS as ground truth.} Errors are measured against GPS recorded simultaneously. Where
 GPS is degraded --- underground, and in the urban canyon immediately after --- the reference is
-itself uncertain. We use the integral of GPS speed rather than the sum of fix-to-fix
+itself uncertain. For walking it can be worse than uncertain: on one $4.5$-minute walk the Doppler
+speed averaged $1.06$~m/s while position chords gave $1.6$--$2.2$~m/s depending on the sampling
+interval, at $14$--$20$~m accuracy. The accelerometer settles it without GPS --- autocorrelation
+gives a $1.05$~s stride period, so the application's $1.55$~m/s implies a $0.85$~m stride and the
+Doppler figure implies $0.55$~m, which is not the gait that was recorded. Walking figures in
+earlier drafts that rested on GPS alone should be treated as unproven. We use the integral of GPS speed rather than the sum of fix-to-fix
 displacements, because the latter accumulates position scatter: on one $15$~km drive the two
 differ by $35\%$ ($14{,}445$~m against $19{,}496$~m), and the fix-summed figure is the wrong one.
 Segments with no valid GPS speed are excluded and reported separately, but a systematic bias in
@@ -563,7 +748,13 @@ distance error over $15$~km and $5^\circ$ of heading error. Outside that regime 
 not gradual --- a hand on the phone removes the signal entirely, and an aircraft's defining
 acceleration is erased by the platform's own sensor fusion.
 
-We would emphasise two lessons over any result. First, the dominant error sources across this
+We would emphasise three lessons over any result. The one added by this revision is that a
+component can be locally correct and globally biasing: the cache's eviction rule is sound cache
+management, defensible in isolation, and it silently reshaped the distribution the estimator
+answers from (\S\ref{sec:cache}). It went unnoticed for weeks while four other explanations were
+measured and rejected, because the store's contents were never compared with the distribution they
+were sampled from. Where a system learns continuously and stores what it learns, the storage policy
+is part of the model and belongs in its evaluation. First, the dominant error sources across this
 work were not modelling choices but sensor-platform semantics: a suspended process, a stale
 cached heading, an attitude filter making a defensible choice that happens to destroy the signal
 of interest. Second, an estimator that reports without expressing doubt is dangerous in a way
