@@ -225,6 +225,65 @@ final class LearnedSpeedEstimator {
     /// settling to 0.7-1.1 - and never once passed 2.57 after 60.
     private let REGIME_MIN_OBSERVATIONS = 60
 
+    /// SPEED BINS AS THEY WERE ACTUALLY RIDDEN, not as the store ended up holding them.
+    ///
+    /// insert() evicts from the most crowded speed bin, which is what stops a rare 100 km/h
+    /// sample being squeezed out by thousands of red lights. The cost was invisible until it was
+    /// replayed: the store stops resembling the riding. Measured over 44 recordings, 24% of
+    /// observations are under 5 km/h and 45% above 30, while the store that rule produces holds
+    /// 5% and 69%. A lookup that lands between regimes then averages mostly fast neighbours,
+    /// which is exactly the measured failure - 15-30 km/h reported as ~50, +30-50% distance on
+    /// six rides - while 50+ km/h, where the store is dense either way, reads correctly.
+    ///
+    /// So the store stays balanced and the IMBALANCE IS UNDONE AT LOOKUP: each neighbour is
+    /// weighted by how over- or under-represented its speed is. Replayed leave-one-ride-out,
+    /// that takes mean distance error from 20% to 8% - what the same model scores on a store
+    /// that was never rebalanced - without giving up the rare fast samples a flight needs.
+    ///
+    /// Decayed rather than cumulative: a half-life of about 1400 observations means this tracks
+    /// how the phone is being used now, and that a store carried over from an older build stops
+    /// dominating after two or three rides.
+    private static let PRIOR_BINS = 101
+    private static let PRIOR_BIN_WIDTH = 2.0 / 3.6            // 2 km/h, in m/s
+    private let PRIOR_DECAY = 0.9995
+    private var naturalSpeedCounts = [Double](repeating: 0, count: LearnedSpeedEstimator.PRIOR_BINS)
+    private var naturalSpeedTotal: Double = 0
+    private var storeSpeedCounts = [Double](repeating: 0, count: LearnedSpeedEstimator.PRIOR_BINS)
+    private var storeDistributionIsStale = true
+
+    private func speedBin(_ speed: Double) -> Int {
+        min(max(Int(speed / Self.PRIOR_BIN_WIDTH), 0), Self.PRIOR_BINS - 1)
+    }
+
+    /// Record what was actually ridden, before any eviction decides what to keep.
+    private func noteNaturalSpeed(_ speed: Double) {
+        for i in 0..<naturalSpeedCounts.count { naturalSpeedCounts[i] *= PRIOR_DECAY }
+        naturalSpeedCounts[speedBin(speed)] += 1
+        naturalSpeedTotal = naturalSpeedTotal * PRIOR_DECAY + 1
+    }
+
+    private func refreshStoreDistributionIfNeeded() {
+        guard storeDistributionIsStale else { return }
+        storeDistributionIsStale = false
+        storeSpeedCounts = [Double](repeating: 0, count: Self.PRIOR_BINS)
+        for o in observations where !o.airborne { storeSpeedCounts[speedBin(o.speed)] += 1 }
+    }
+
+    /// How much a neighbour's speed should count, given how over-represented that speed is in
+    /// the store. 1 while the store is faithful to the riding; below 1 for the fast samples
+    /// eviction preserves, above 1 for the slow ones it thins. Clamped so a bin holding almost
+    /// nothing cannot carry an answer on its own, and inert until there is a distribution worth
+    /// trusting - a fresh install answers exactly as before.
+    private func representationWeight(for speed: Double) -> Double {
+        let storeTotal = storeSpeedCounts.reduce(0, +)
+        guard naturalSpeedTotal > 200, storeTotal > 0 else { return 1 }
+        let bin = speedBin(speed)
+        let natural = naturalSpeedCounts[bin] / naturalSpeedTotal
+        let held = storeSpeedCounts[bin] / storeTotal
+        guard natural > 0, held > 0 else { return 1 }
+        return min(max(natural / held, 0.05), 20)
+    }
+
     /// True when the last estimate was refused because the workout is an unlearned regime.
     /// Recorded so a log can tell "declined, correctly" from "answered, wrongly" - the two are
     /// indistinguishable from the outside and need opposite fixes.
@@ -387,6 +446,7 @@ final class LearnedSpeedEstimator {
         let observation = Observation(f: f, speed: gpsSpeed, airborne: airborne,
                                       t: isQuarantined ? Date() : nil,
                                       session: currentSession)
+        if !airborne { noteNaturalSpeed(gpsSpeed) }
         if isQuarantined {
             if quarantined.count < capacity { quarantined.append(observation) }
             return
@@ -405,6 +465,7 @@ final class LearnedSpeedEstimator {
     private var sinceLastCalibration = 0
 
     private func insert(_ observation: Observation) {
+        storeDistributionIsStale = true
         if observations.count < capacity {
             observations.append(observation)
         } else if let victim = mostRedundantIndex(for: observation.speed) {
@@ -615,8 +676,15 @@ final class LearnedSpeedEstimator {
             return nil
         }
 
+        refreshStoreDistributionIfNeeded()
         var num = 0.0, den = 0.0
-        for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
+        for b in best {
+            // Undo the store's rebalancing; see naturalSpeedCounts. The air partition is small
+            // and separately judged, so it answers unweighted.
+            let w = (1.0 / (b.d + 1e-6)) * (airborne ? 1 : representationWeight(for: b.s))
+            num += w * b.s
+            den += w
+        }
         guard den > 0 else { return nil }
         // The compression curve is fitted on GROUND observations, where there are thousands of
         // them. Applying it to the air partition would be extrapolating a road correction into a
@@ -747,6 +815,7 @@ final class LearnedSpeedEstimator {
         guard observations.count != observationsAtLastCalibration else { return }
         observationsAtLastCalibration = observations.count
 
+        refreshStoreDistributionIfNeeded()
         let stride = max(1, observations.count / 300)
         var n = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0
         var samples: [(predicted: Double, actual: Double)] = []
@@ -780,7 +849,11 @@ final class LearnedSpeedEstimator {
             index += stride
             guard best.count == K, best[0].d <= MAX_MATCH_DISTANCE_SQUARED else { continue }
             var num = 0.0, den = 0.0
-            for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
+            for b in best {
+                let w = (1.0 / (b.d + 1e-6)) * representationWeight(for: b.s)
+                num += w * b.s
+                den += w
+            }
             guard den > 0 else { continue }
             let predicted = num / den
             n += 1; sx += predicted; sy += held.speed
@@ -853,21 +926,49 @@ final class LearnedSpeedEstimator {
             seen = 0
             for o in saved { updateNormalisation(o.f) }
         }
+        // A STORE FROM AN OLDER BUILD HAS NO RECORD OF WHAT WAS RIDDEN, only of what survived
+        // eviction. Seeding the prior from it makes every weight 1, so the first ride behaves
+        // exactly as before and the decay in noteNaturalSpeed lets real riding take over within
+        // two or three of them. Inventing a distribution here would be worse than waiting.
+        if let pdata = try? Data(contentsOf: Self.priorURL),
+           let counts = try? JSONDecoder().decode([Double].self, from: pdata),
+           counts.count == Self.PRIOR_BINS {
+            naturalSpeedCounts = counts
+        } else {
+            naturalSpeedCounts = [Double](repeating: 0, count: Self.PRIOR_BINS)
+            for o in saved where !o.airborne { naturalSpeedCounts[speedBin(o.speed)] += 1 }
+        }
+        naturalSpeedTotal = naturalSpeedCounts.reduce(0, +)
+        storeDistributionIsStale = true
         print("🧠 Learned speed model: restored \(saved.count) observations")
         // Re-measure the compression against everything restored, so the first drive after a
         // launch is corrected too rather than waiting for 200 fresh observations.
         recalibrate()
     }
 
+    /// What was ridden, kept beside what was stored. Without it every launch would start with a
+    /// flat prior and answer unweighted until a few minutes of fresh evidence arrived.
+    private static let priorURL: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("learned_speed_prior_v1.json")
+    }()
+
     func save() {
         guard !observations.isEmpty, let data = try? JSONEncoder().encode(observations) else { return }
         try? data.write(to: Self.storeURL, options: .atomic)
+        if let pdata = try? JSONEncoder().encode(naturalSpeedCounts) {
+            try? pdata.write(to: Self.priorURL, options: .atomic)
+        }
         print("🧠 Learned speed model: saved \(observations.count) observations")
     }
 
     func forget() {
         observations.removeAll(); featureMean = []; featureVar = []; seen = 0
+        naturalSpeedCounts = [Double](repeating: 0, count: Self.PRIOR_BINS)
+        naturalSpeedTotal = 0
+        storeDistributionIsStale = true
         try? FileManager.default.removeItem(at: Self.storeURL)
+        try? FileManager.default.removeItem(at: Self.priorURL)
     }
 
     /// Per-workout signal state only. The learned observations deliberately survive.
