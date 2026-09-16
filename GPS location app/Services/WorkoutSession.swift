@@ -795,12 +795,17 @@ class WorkoutSession: ObservableObject {
     /// on a moving vehicle never came close: across 67 recordings its smoothed rotation, wherever
     /// fresh GPS put the vehicle above 15 km/h, peaked at 0.55.
     private let CARRIED_ROTATION = 1.2
-    /// How long that rotation must last. Replayed over the same 67 recordings, 1.2 rad/s for 8 s
-    /// fires on no tick where the vehicle was genuinely moving; the only firings above 15 km/h
-    /// were walks whose GPS jumped for a single tick. On the vehicle rides among them it fired in
-    /// 39 episodes, every one a walk before mounting or after parking - none with riding within a
-    /// minute on both sides, so feet down at a light or shifting on the seat does not trip it.
-    private let CARRIED_HOLD: TimeInterval = 8.0
+    /// How long that rotation must last. Replayed over 69 recordings, 1.2 rad/s for 5 s fires on
+    /// no tick where the vehicle was genuinely moving; the only firing above 15 km/h was a walk
+    /// whose GPS jumped for a single tick. Of the 53 firings on vehicle rides, every one was a
+    /// walk before mounting or after parking - none with riding within a minute on both sides, so
+    /// feet down at a light or shifting on the seat does not trip it.
+    ///
+    /// Eight seconds shipped first and was measurably slow: walking away from the bike on
+    /// 2026-09-16 the hold ran another 14 s at 61 km/h while GPS had the walk at 2-3 km/h, about
+    /// 230 m. Five is the shortest the replay supports - at 1.0 rad/s for 5 s, or 0.8 for 8, the
+    /// rule starts firing mid-ride.
+    private let CARRIED_HOLD: TimeInterval = 5.0
     /// The phone has been carried off the vehicle: either handled for longer than reaching for it
     /// takes, or swung as only walking swings it.
     private var handlingShowsDismount: Bool {
