@@ -1207,6 +1207,20 @@ class WorkoutSession: ObservableObject {
     }
 
     private func setupLocationUpdates() {
+        // NO WI-FI FALLBACK IN VELOCITY MODE.
+        //
+        // After ten seconds without a fix the location manager drops to hundred-metre accuracy so
+        // iOS will position from Wi-Fi and cell towers. For a route drawn from GPS that is better
+        // than nothing. Velocity Mode draws nothing from GPS; it uses the satellites only to learn
+        // and, in the log, to be checked against - and a Wi-Fi fix carries no speed, so it gives
+        // neither. It also tells iOS to stop trying for satellites, so the mode rarely ends: on
+        // three motorcycle rides with the phone in a pocket, satellite speed was present on 42%,
+        // 40% and 30% of ticks before the first ten-second gap and 2%, 1% and 6% after it, while
+        // two rides that recovered from the same gap kept 71% and 78%. Those three rides learned
+        // nothing, which also left the store unable to improve.
+        locationManager.shouldSuppressWiFiFallback = { [weak self] in
+            self?.forceMotionFallback ?? false
+        }
         locationManager.onLocationUpdate = { [weak self] location in
             self?.processNewLocation(location)
         }
@@ -4010,6 +4024,7 @@ class WorkoutSession: ObservableObject {
             priorWeight: learnedSpeed.lastNeighbourWeight,
             thermalState: thermalState.rawValue,
             lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            wifiFallback: locationManager.isFallbackModeActive,
             regimeObservations: learnedSpeed.regimeObservationsCached,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,

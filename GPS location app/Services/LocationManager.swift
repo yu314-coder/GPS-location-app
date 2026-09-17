@@ -118,7 +118,11 @@ class LocationManager: NSObject, ObservableObject {
     private let maxFilterDivergenceAirborne: CLLocationDistance = 5000.0
 
     // WiFi/Cellular fallback settings
-    private var isFallbackModeActive = false
+    private(set) var isFallbackModeActive = false
+    /// Asked before switching to Wi-Fi/cellular positioning, and every second while that mode is
+    /// on. When it answers true the switch is refused, or undone. See WorkoutSession for why
+    /// Velocity Mode needs that.
+    var shouldSuppressWiFiFallback: (() -> Bool)?
     private var fallbackModeStartTime: Date?
     private let FALLBACK_ACTIVATION_DELAY: TimeInterval = 10.0 // Activate WiFi/Cellular after 10s without GPS
     private let FALLBACK_DEACTIVATION_DELAY: TimeInterval = 5.0 // Return to GPS after 5s of good signal
@@ -520,6 +524,12 @@ class LocationManager: NSObject, ObservableObject {
     private func checkGPSTimeout() {
         guard isTracking else { return }
 
+        // Velocity Mode may have started - by the user, or by the automatic takeover when GPS
+        // degraded - after the fallback had already engaged. Put the satellites back at once.
+        if isFallbackModeActive, shouldSuppressWiFiFallback?() == true {
+            deactivateFallbackMode()
+        }
+
         guard let lastUpdate = lastLocationUpdateTime else {
             // No location received yet, this is normal at startup
             return
@@ -545,7 +555,8 @@ class LocationManager: NSObject, ObservableObject {
         gpsSignalQuality = .noSignal
 
         // Activate WiFi/Cellular fallback if timeout persists
-        if timeSinceLastUpdate >= FALLBACK_ACTIVATION_DELAY && !isFallbackModeActive {
+        if timeSinceLastUpdate >= FALLBACK_ACTIVATION_DELAY && !isFallbackModeActive,
+           shouldSuppressWiFiFallback?() != true {
             activateFallbackMode()
         }
 

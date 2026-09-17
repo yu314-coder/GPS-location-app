@@ -112,10 +112,14 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// ProcessInfo thermal state, 0 nominal to 3 critical, and whether Low Power Mode was on.
         /// A 15-minute ride delivered 40 m accuracy and a GPS speed on 4% of ticks, against 8-14 m
         /// and 70-80% on the same route that morning, and the log could not say why. The app
-        /// coarsens GPS itself above state 2; iOS may do so on its own; Low Power Mode may too.
+        /// coarsens GPS itself at state 2 and above; iOS may do so on its own; Low Power Mode may too.
         /// These columns tell the three apart.
         let thermalState: Int
         let lowPowerMode: Bool
+        /// 1 while the location manager has switched itself to Wi-Fi/cellular positioning. Those
+        /// fixes carry no speed and 15-65 m accuracy, so every GPS column is a different kind of
+        /// measurement while this is set.
+        let wifiFallback: Bool
         /// Observations this workout's fingerprint rests on. regime_distance means little on a
         /// young fingerprint - one ride read 4.27 at sixty-four observations and 1.2 by two
         /// hundred - so the gate ignores it below 150; without this a log cannot show which case
@@ -492,7 +496,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power\n"
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -523,7 +527,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0)\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)\n"
         }
         return out
     }
