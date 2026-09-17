@@ -251,10 +251,16 @@ final class LearnedSpeedEstimator {
     /// which is exactly the measured failure - 15-30 km/h reported as ~50, +30-50% distance on
     /// six rides - while 50+ km/h, where the store is dense either way, reads correctly.
     ///
-    /// So the store stays balanced and the IMBALANCE IS UNDONE AT LOOKUP: each neighbour is
-    /// weighted by how over- or under-represented its speed is. Replayed leave-one-ride-out,
-    /// that takes mean distance error from 20% to 8% - what the same model scores on a store
-    /// that was never rebalanced - without giving up the rare fast samples a flight needs.
+    /// So each neighbour is weighted by how over- or under-represented its speed is. Replayed
+    /// leave-one-ride-out with the TRUE riding distribution, that takes mean distance error from
+    /// 20% to 8%.
+    ///
+    /// ON ITS OWN IT DID NOT CONVERGE, and 1.4 (14)'s prior_w column showed it: median weight
+    /// 1.01 at 15-30 km/h where about 4 was needed. A decayed count describes the last few rides,
+    /// while the store was built over months, so the ratio between them is not the correction the
+    /// store needs - replayed as shipped it gave 22% against 22% with no weighting at all. What
+    /// converges is changing the eviction itself (evictionIndex). The weighting stays as a small
+    /// residual correction while an old store turns over, worth 13% -> 11% in that replay.
     ///
     /// Decayed rather than cumulative: a half-life of about 1400 observations means this tracks
     /// how the phone is being used now, and that a store carried over from an older build stops
@@ -496,9 +502,10 @@ final class LearnedSpeedEstimator {
 
     private func insert(_ observation: Observation) {
         storeDistributionIsStale = true
+        insertsSinceProtectionUpdate += 1
         if observations.count < capacity {
             observations.append(observation)
-        } else if let victim = mostRedundantIndex(for: observation.speed) {
+        } else if let victim = evictionIndex(for: observation) {
             observations[victim] = observation
         }
     }
@@ -560,14 +567,62 @@ final class LearnedSpeedEstimator {
         print("🧠 Learned speed model: folded in \(count) observations held back during Velocity Mode")
     }
 
-    /// Index of an observation whose speed bucket is the most crowded, so replacing it preserves
-    /// coverage. Returns nil if this sample's own bucket is the crowded one, i.e. nothing to gain.
-    private func mostRedundantIndex(for incoming: Double) -> Int? {
-        var counts = [Int: Int]()
-        for o in observations { counts[Int(o.speed / 2.0), default: 0] += 1 }
-        guard let crowded = counts.max(by: { $0.value < $1.value })?.key else { return nil }
-        if crowded == Int(incoming / 2.0) { return nil }
-        return observations.firstIndex { Int($0.speed / 2.0) == crowded }
+    /// Which stored observation to give up for an incoming one, once the store is full.
+    ///
+    /// RANDOM, NOT THE MOST CROWDED SPEED BIN.
+    ///
+    /// Evicting from the most crowded bin kept the store flat across speeds, which is what let a
+    /// rare fast sample survive thousands of red lights - and it is also why the store stopped
+    /// resembling the riding (5% of it below 5 km/h, where the riding is 24%) and why every
+    /// ambiguous lookup averaged mostly fast neighbours. Worse, it cannot recover: the rule
+    /// throws away incoming slow observations for exactly as long as slow is the crowded bin.
+    /// Replayed from a store built that way through seven motorcycle rides in order, it stayed at
+    /// 5% slow the whole time and the last four rides averaged 82% distance error.
+    ///
+    /// Replacing a random observation lets real riding flow back in. The same replay reaches 11%
+    /// slow and 13% mean error over those four rides - improving from the very next ride - and 11%
+    /// with the representation weighting kept alongside. Nothing is deleted; old observations are
+    /// simply outlived.
+    ///
+    /// Two things random replacement would eventually lose, so they are protected:
+    /// - FLIGHT DATA. Ground observations never evict airborne ones. An airborne observation
+    ///   evicts a ground one while the air partition holds under a quarter of the store, so a
+    ///   flight is still learned into a store full of roads.
+    /// - THE FASTEST GROUND SPEEDS. The top 2% are never chosen, so the store keeps the evidence
+    ///   that lets it answer at speeds it rarely sees rather than capping itself at a commute.
+    private func evictionIndex(for incoming: Observation) -> Int? {
+        guard !observations.isEmpty else { return nil }
+        refreshProtectedSpeedIfNeeded()
+        let airCount = observations.reduce(0) { $0 + ($1.airborne ? 1 : 0) }
+        let victimsAreAirborne = incoming.airborne && airCount >= capacity / 4
+        func eligible(_ o: Observation) -> Bool {
+            guard o.airborne == victimsAreAirborne else { return false }
+            return o.airborne || o.speed < protectedGroundSpeed
+        }
+        for _ in 0..<16 {
+            let i = Int.random(in: 0..<observations.count)
+            if eligible(observations[i]) { return i }
+        }
+        // A heavily partitioned store can defeat a handful of random draws; scan instead so new
+        // evidence is still accepted.
+        return observations.indices.filter { eligible(observations[$0]) }.randomElement()
+    }
+
+    /// Ground speed at or above which an observation is never evicted: the 98th percentile of
+    /// what the store holds, re-measured every 200 insertions. Unset until there are enough ground
+    /// observations to make a percentile mean something.
+    private var protectedGroundSpeed: Double = .greatestFiniteMagnitude
+    private var insertsSinceProtectionUpdate = 200
+
+    private func refreshProtectedSpeedIfNeeded() {
+        guard insertsSinceProtectionUpdate >= 200 else { return }
+        insertsSinceProtectionUpdate = 0
+        let ground = observations.filter { !$0.airborne }.map(\.speed).sorted()
+        guard ground.count >= 50 else {
+            protectedGroundSpeed = .greatestFiniteMagnitude
+            return
+        }
+        protectedGroundSpeed = ground[Int(Double(ground.count - 1) * 0.98)]
     }
 
     private func updateNormalisation(_ f: [Double]) {

@@ -1193,7 +1193,15 @@ class WorkoutSession: ObservableObject {
         // Only throttle GPS/motion while a workout is active.
         guard isActive else { return }
         locationManager.applyThermalAccuracy(reduced: hot)
-        locationManager.applyThermalMotionInterval(hot: hot)
+        // NOT THE MOTION RATE. This used to drop device motion to 1 Hz whenever the phone ran hot.
+        // Every speed source Velocity Mode has - the 4-second vibration signature, the footfall
+        // detector, the automatic takeover when GPS degrades - is built on 50 Hz, so on a hot day
+        // the mode would have lost its speed entirely and reported nothing, with no indication
+        // why. A phone in a trouser pocket in summer is exactly that case. It has not yet fired on
+        // any recorded ride; it would have been the worst failure in the log when it did.
+        // Location accuracy is throttled instead, which costs the model some learning but never
+        // its answer.
+        locationManager.applyThermalMotionInterval(hot: false)
         // Snapshot + Live Activity intervals adjust automatically via their
         // thermal-aware computed properties.
     }
@@ -4000,6 +4008,8 @@ class WorkoutSession: ObservableObject {
             gpsAccuracy: sessionDiagnostics.latestGPSAccuracy >= 0 ? sessionDiagnostics.latestGPSAccuracy : nil,
             gpsAge: sessionDiagnostics.latestGPSFixTime.map { now.timeIntervalSince($0) },
             priorWeight: learnedSpeed.lastNeighbourWeight,
+            thermalState: thermalState.rawValue,
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
             regimeObservations: learnedSpeed.regimeObservationsCached,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
