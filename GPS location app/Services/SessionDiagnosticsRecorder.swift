@@ -106,8 +106,13 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// the model reporting 60 km/h at a standstill and inflated the ride's error from +36%
         /// to +47%. Nothing in the row said the zero was stale. Filter on this before comparing.
         let gpsAge: Double?
-        /// Observations this workout's fingerprint rests on. regime_distance means little below
-        /// 60, and the gate ignores it there; without this a log cannot show which case it is.
+        /// Mean representation weight over the neighbours the estimate used; see
+        /// LearnedSpeedEstimator.lastNeighbourWeight. 1 means the weighting changed nothing.
+        let priorWeight: Double?
+        /// Observations this workout's fingerprint rests on. regime_distance means little on a
+        /// young fingerprint - one ride read 4.27 at sixty-four observations and 1.2 by two
+        /// hundred - so the gate ignores it below 150; without this a log cannot show which case
+        /// it is.
         let regimeObservations: Int
         let latitude: Double?
         let longitude: Double?
@@ -480,7 +485,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs\n"
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -511,7 +516,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + "\n"
         }
         return out
     }

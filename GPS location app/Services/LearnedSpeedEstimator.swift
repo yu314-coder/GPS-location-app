@@ -220,10 +220,26 @@ final class LearnedSpeedEstimator {
     /// away and briefly holding the phone; GPS then stopped reporting a usable speed, so nothing
     /// more was ever learned. The fingerprint froze at 6.12 - "a different vehicle" - on the
     /// same motorcycle that had sat at 0.29-1.88 that morning, and the gate refused every tick
-    /// for 9.5 minutes: 4.3 km ridden, 20 m recorded. Across 21 earlier sessions the distance
-    /// read above 3 only while the session had about 20 observations - 3.35, 4.47, 4.78, all
-    /// settling to 0.7-1.1 - and never once passed 2.57 after 60.
-    private let REGIME_MIN_OBSERVATIONS = 60
+    /// for 9.5 minutes: 4.3 km ridden, 20 m recorded.
+    ///
+    /// SIXTY WAS STILL TOO FEW. It was chosen because across 21 sessions the distance never
+    /// passed 2.57 after sixty observations; the next ride (2026-09-17) read 4.27 at sixty-four
+    /// and refused 21 ticks, 201 m, before settling to 1.2 by two hundred. Replayed over every
+    /// recording since, 150 observations produces no refusal at all, and neither does 100 - so
+    /// this threshold currently costs nothing and the only refusals it has ever produced on real
+    /// data were wrong.
+    ///
+    /// Two reasons not to delete the gate outright. A genuinely different vehicle would hold a
+    /// large distance with hundreds of observations, which this still catches; and the ride the
+    /// gate was built for - a pocketed motorcycle reporting a flat 50 km/h - turned out to be the
+    /// store's own composition rather than an unlearned regime, which naturalSpeedCounts now
+    /// corrects at source. The gate is the backstop, not the fix.
+    private let REGIME_MIN_OBSERVATIONS = 150
+    /// How long the distance must stay past the limit before it may refuse. A fingerprint built
+    /// while stopping and pulling away starts unrepresentative and settles: on the ride above it
+    /// sat above 3 for about 40 s out of 19 minutes.
+    private let REGIME_CONFIRM_SECONDS: TimeInterval = 60
+    private var regimeUnlearnedSince: Date?
 
     /// SPEED BINS AS THEY WERE ACTUALLY RIDDEN, not as the store ended up holding them.
     ///
@@ -292,6 +308,12 @@ final class LearnedSpeedEstimator {
     /// Mean absolute error, in m/s, of the neighbourhood the last estimate was drawn from —
     /// measured by holding each near neighbour out and predicting it from the others.
     private(set) var lastLocalError: Double?
+    /// Mean representation weight over the neighbours the last estimate used, or nil when it did
+    /// not answer. 1 means the store's speed mix matched the riding and the weighting changed
+    /// nothing; above 1 means the answer was pulled toward under-represented (slow) neighbours.
+    /// Recorded because a correction that silently fails to engage is indistinguishable from one
+    /// that engaged and did not help - which is the position this project was in for three weeks.
+    private(set) var lastNeighbourWeight: Double?
     /// True when the last estimate was refused because that error was too large to interpolate
     /// through.
     private(set) var lastEstimateDeclinedUnreliableLocally = false
@@ -336,8 +358,16 @@ final class LearnedSpeedEstimator {
     /// all, which is the worse failure of the two.
     var regimeIsUnlearned: Bool {
         guard let d = regimeDistanceCached,
-              cachedSessionObservations >= REGIME_MIN_OBSERVATIONS else { return false }
-        return d > REGIME_DISTANCE_LIMIT
+              cachedSessionObservations >= REGIME_MIN_OBSERVATIONS,
+              d > REGIME_DISTANCE_LIMIT else {
+            regimeUnlearnedSince = nil
+            return false
+        }
+        guard let since = regimeUnlearnedSince else {
+            regimeUnlearnedSince = Date()
+            return false
+        }
+        return Date().timeIntervalSince(since) >= REGIME_CONFIRM_SECONDS
     }
 
     /// How stale a quarantined observation must be before the estimate may see it.
@@ -560,6 +590,7 @@ final class LearnedSpeedEstimator {
         lastEstimateDeclinedUnlearnedRegime = false
         lastEstimateDeclinedUnreliableLocally = false
         lastLocalError = nil
+        lastNeighbourWeight = nil
         guard let f = currentFeatures(), featureMean.count == f.count else { return nil }
 
         // REFUSE TO ANSWER ABOUT A REGIME THIS WORKOUT HAS NEVER BEEN TAUGHT.
@@ -677,15 +708,18 @@ final class LearnedSpeedEstimator {
         }
 
         refreshStoreDistributionIfNeeded()
-        var num = 0.0, den = 0.0
+        var num = 0.0, den = 0.0, weightSum = 0.0
         for b in best {
             // Undo the store's rebalancing; see naturalSpeedCounts. The air partition is small
             // and separately judged, so it answers unweighted.
-            let w = (1.0 / (b.d + 1e-6)) * (airborne ? 1 : representationWeight(for: b.s))
+            let representation = airborne ? 1 : representationWeight(for: b.s)
+            weightSum += representation
+            let w = (1.0 / (b.d + 1e-6)) * representation
             num += w * b.s
             den += w
         }
         guard den > 0 else { return nil }
+        lastNeighbourWeight = weightSum / Double(best.count)
         // The compression curve is fitted on GROUND observations, where there are thousands of
         // them. Applying it to the air partition would be extrapolating a road correction into a
         // regime it has never seen, so the air answers raw until it has enough of its own.

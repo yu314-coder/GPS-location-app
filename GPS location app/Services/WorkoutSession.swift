@@ -3999,6 +3999,7 @@ class WorkoutSession: ObservableObject {
             // used to tell a tracking fix from a stale one.
             gpsAccuracy: sessionDiagnostics.latestGPSAccuracy >= 0 ? sessionDiagnostics.latestGPSAccuracy : nil,
             gpsAge: sessionDiagnostics.latestGPSFixTime.map { now.timeIntervalSince($0) },
+            priorWeight: learnedSpeed.lastNeighbourWeight,
             regimeObservations: learnedSpeed.regimeObservationsCached,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
