@@ -1277,15 +1277,21 @@ class WorkoutSession: ObservableObject {
         print("📱 Watch connectivity initialized (iPhone → Watch sync only)")
     }
 
+    /// Whether the app is in the background right now, for the diagnostics file. Tracked from the
+    /// lifecycle notifications rather than read per tick, so it is safe off the main thread.
+    private var appIsInBackground = false
+
     private func setupAppLifecycleObservers() {
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
             .sink { [weak self] _ in
+                self?.appIsInBackground = true
                 self?.handleDidEnterBackground()
             }
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .sink { [weak self] _ in
+                self?.appIsInBackground = false
                 self?.handleWillEnterForeground()
             }
             .store(in: &cancellables)
@@ -4025,6 +4031,10 @@ class WorkoutSession: ObservableObject {
             thermalState: thermalState.rawValue,
             lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
             wifiFallback: locationManager.isFallbackModeActive,
+            gpsSpeedAccuracy: sessionDiagnostics.latestGPSSpeedAccuracy >= 0
+                ? sessionDiagnostics.latestGPSSpeedAccuracy : nil,
+            accuracyReduced: locationManager.accuracyIsReduced,
+            inBackground: appIsInBackground,
             regimeObservations: learnedSpeed.regimeObservationsCached,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
@@ -4759,6 +4769,7 @@ class WorkoutSession: ObservableObject {
             sessionDiagnostics.latestGPSLatitude = location.latitude
             sessionDiagnostics.latestGPSLongitude = location.longitude
             sessionDiagnostics.latestGPSAccuracy = location.horizontalAccuracy
+            sessionDiagnostics.latestGPSSpeedAccuracy = location.speedAccuracy ?? -1
             sessionDiagnostics.latestGPSFixTime = location.timestamp
 
             // GPS may still TEACH the learned model here, even though it must not SUPPLY the
@@ -4988,6 +4999,7 @@ class WorkoutSession: ObservableObject {
         sessionDiagnostics.latestGPSLatitude = location.latitude
         sessionDiagnostics.latestGPSLongitude = location.longitude
         sessionDiagnostics.latestGPSAccuracy = location.horizontalAccuracy
+        sessionDiagnostics.latestGPSSpeedAccuracy = location.speedAccuracy ?? -1
         sessionDiagnostics.latestGPSFixTime = location.timestamp
         // Remember a genuine vehicle speed so it can be held once GPS goes.
         if location.speed >= 0, location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {

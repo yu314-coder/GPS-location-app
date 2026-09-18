@@ -119,6 +119,11 @@ class LocationManager: NSObject, ObservableObject {
 
     // WiFi/Cellular fallback settings
     private(set) var isFallbackModeActive = false
+    /// Whether iOS is currently restricting this app to approximate location.
+    var accuracyIsReduced: Bool {
+        if #available(iOS 14.0, *) { return locationManager.accuracyAuthorization == .reducedAccuracy }
+        return false
+    }
     /// Asked before switching to Wi-Fi/cellular positioning, and every second while that mode is
     /// on. When it answers true the switch is refused, or undone. See WorkoutSession for why
     /// Velocity Mode needs that.
@@ -243,6 +248,21 @@ class LocationManager: NSObject, ObservableObject {
             || authorizationStatus == .authorizedWhenInUse
         locationManager.allowsBackgroundLocationUpdates = canRunInBackground
         locationManager.showsBackgroundLocationIndicator = canRunInBackground
+
+        // ASK FOR PRECISE LOCATION AT THE START, NOT AFTER A MINUTE OF NOTHING.
+        //
+        // This check previously lived only in recovery mode, which fires after 60 s without a
+        // VALID fix - and any fix with a non-negative accuracy counts as valid, so it effectively
+        // never ran. An OS upgrade can leave the app on approximate location, and the app would
+        // never have noticed: it would simply have recorded coarse fixes with no speed, which is
+        // indistinguishable from a pocket blocking the sky until someone asks iOS which it is.
+        if #available(iOS 14.0, *), locationManager.accuracyAuthorization == .reducedAccuracy {
+            print("📍 ⚠️ Approximate location only — requesting temporary full accuracy")
+            locationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: "FullAccuracyTracking") { error in
+                print(error.map { "❌ Full accuracy refused: \($0.localizedDescription)" }
+                      ?? "✅ Full accuracy granted for this session")
+            }
+        }
 
         print("   Calling CLLocationManager.startUpdatingLocation()...")
         locationManager.startUpdatingLocation()

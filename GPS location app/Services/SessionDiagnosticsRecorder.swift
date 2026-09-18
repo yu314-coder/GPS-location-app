@@ -120,6 +120,13 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// fixes carry no speed and 15-65 m accuracy, so every GPS column is a different kind of
         /// measurement while this is set.
         let wifiFallback: Bool
+        /// How far iOS says the reported speed may be off, m/s, or blank when it reports no speed.
+        /// Separates "the satellites gave a speed I should not trust" from "there was no speed".
+        let gpsSpeedAccuracy: Double?
+        /// 1 while iOS restricts the app to approximate location - which an OS upgrade can do
+        /// silently - and 1 while the app is in the background, where iOS may also throttle.
+        let accuracyReduced: Bool
+        let inBackground: Bool
         /// Observations this workout's fingerprint rests on. regime_distance means little on a
         /// young fingerprint - one ride read 4.27 at sixty-four observations and 1.2 by two
         /// hundred - so the gate ignores it below 150; without this a log cannot show which case
@@ -268,6 +275,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// bogus reference bearing that inflates every measured heading error. On one walk that
     /// alone accounted for the difference between a 113 deg and a 48 deg p90.
     var latestGPSAccuracy: Double = -1
+    /// Accuracy of the SPEED in that fix, m/s, or -1 when iOS reported no speed.
+    var latestGPSSpeedAccuracy: Double = -1
     /// When that fix was taken. Every GPS column above keeps its last value between fixes, so
     /// without this a repeated reading is indistinguishable from a fresh one. See Row.gpsAge.
     var latestGPSFixTime: Date?
@@ -496,7 +505,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback\n"
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -527,7 +536,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)\n"
         }
         return out
     }

@@ -38,6 +38,10 @@ struct FlightLocation: Identifiable, Codable, Hashable {
     var roll: Double?                      // degrees
     var yaw: Double?                       // degrees
     var rotationRate: Double?              // rad/s magnitude
+    /// How far the reported speed may be off, in m/s, or nil when iOS gives no speed at all.
+    /// The learning gate tests horizontal accuracy, which describes the POSITION; the label the
+    /// model needs is the speed, and the two are not the same measurement.
+    var speedAccuracy: Double? = nil
     var verticalSpeed: Double?             // m/s (barometric climb rate)
     var relativeAltitude: Double?          // m, barometric altitude change since start
 
@@ -81,6 +85,7 @@ struct FlightLocation: Identifiable, Codable, Hashable {
         self.verticalAccuracy = location.verticalAccuracy
         self.speed = location.speed
         self.course = location.course
+        self.speedAccuracy = location.speedAccuracy >= 0 ? location.speedAccuracy : nil
         self.pressure = pressure
         self.satelliteCount = satelliteCount
         self.signalStrength = signalStrength
