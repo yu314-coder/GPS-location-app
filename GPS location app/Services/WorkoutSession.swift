@@ -2741,7 +2741,13 @@ class WorkoutSession: ObservableObject {
     /// GPS just claimed, we are on foot.
     private func confirmVehicleFromGPS(_ location: FlightLocation) {
         let stepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
-        guard location.speed > 8.0, location.horizontalAccuracy >= 0,
+        // TWENTY KM/H, NOT TWENTY-NINE. Eight m/s was chosen as "far past any walking or running
+        // pace", which it is, and it also excludes an entire class of ride: urban riding that never
+        // sustains 29 km/h. On the 2026-09-19 21:00 ride the median fresh fix was 23 km/h and only
+        // 13 ticks would ever have confirmed a vehicle. At 5.5 m/s the same corpus of 70 recordings
+        // still produces no false confirmation on foot, because three consecutive fixes, accuracy
+        // under 20 m and the stepping veto all still apply.
+        guard location.speed > 5.5, location.horizontalAccuracy >= 0,
               location.horizontalAccuracy < 20.0, !stepping else {
             consecutiveVehicleSpeedFixes = 0
             return
@@ -2755,6 +2761,24 @@ class WorkoutSession: ObservableObject {
 
     /// Walking, confirmed by counted steps, revokes vehicle status. Nothing else could clear it,
     /// so a trip that briefly looked vehicular stayed that way even once plainly on foot.
+    /// A FRESH SATELLITE SPEED NO ONE CAN WALK AT.
+    ///
+    /// Engine vibration is counted as footsteps often enough that counted steps cannot be trusted
+    /// on their own to mean walking, and counted steps REVOKE the vehicle - which stops the speed
+    /// model answering at all. On one 9-minute ride (2026-09-19 21:00) that cost 167 ticks reported
+    /// as 0 km/h and 667 m recorded against 1.9-2.6 km travelled: the classifier never said
+    /// automotive, so the 120 s recency guard never applied, and the pedometer took the ride.
+    /// Satellite speed during those "step" ticks reached 38 km/h.
+    ///
+    /// Fifteen km/h is past any walking or running pace this app will see, so a fresh fix above it
+    /// settles the question in the direction physics allows. Deliberately narrow: it does not stop
+    /// steps being counted for distance, only their power to revoke a vehicle.
+    private var gpsSaysFasterThanWalking: Bool {
+        guard sessionDiagnostics.latestGPSSpeed >= 4.2,
+              let taken = sessionDiagnostics.latestGPSFixTime else { return false }
+        return Date().timeIntervalSince(taken) < 6.0
+    }
+
     private func revokeVehicleEvidenceIfWalking() {
         vehicleConfirmedByGPSSpeed = false
         vehicleLaunchDetected = false
@@ -4279,6 +4303,7 @@ class WorkoutSession: ObservableObject {
                                 let automotiveRecently = self.lastAutomotiveClassificationTime
                                     .map { now.timeIntervalSince($0) < 120 } ?? false
                                 if self.stepCadence >= 1.0, !self.activityIsAutomotive,
+                                   !self.gpsSaysFasterThanWalking,
                                    !automotiveRecently || self.handlingShowsDismount {
                                     self.lastStepIncrementTime = now
                                     // Counted steps at a walking cadence are direct evidence of
