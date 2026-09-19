@@ -778,7 +778,9 @@ final class LearnedSpeedEstimator {
         // The compression curve is fitted on GROUND observations, where there are thousands of
         // them. Applying it to the air partition would be extrapolating a road correction into a
         // regime it has never seen, so the air answers raw until it has enough of its own.
-        return max(0, airborne ? num / den : calibrated(num / den))
+        // The air curve is empty until the air partition has its own evidence, and calibrated()
+        // returns the raw value unchanged in that case - so a first flight behaves as before.
+        return max(0, calibrated(num / den, airborne: airborne))
     }
 
     /// Mean absolute error of predicting each of the nearest few observations from the others.
@@ -876,8 +878,21 @@ final class LearnedSpeedEstimator {
     /// the store now holding what was actually ridden they belong in it, and leaving them out is
     /// what made the old fit map a raw 9 km/h estimate onto 30.
     private var calibrationCurve: [(estimate: Double, actual: Double)] = []
+    /// THE AIR NEEDS ITS OWN CURVE, and used to get none.
+    ///
+    /// The ground curve is fitted on road observations, so applying it in the air would
+    /// extrapolate a road correction into a regime it has never seen - which is why the air
+    /// answered raw. But raw is not neutral: a nearest-neighbour mean flattens in the air exactly
+    /// as it does on the road. Replayed on the 14 August flight, learning from alternate two-minute
+    /// blocks and predicting the others, the air answer improves from 49.5 to 34.4 km/h mean error
+    /// and from -11% to +1% distance once it is calibrated against air observations alone.
+    ///
+    /// It stays empty until the air partition has enough of its own evidence, so a first flight
+    /// still answers raw rather than through a curve borrowed from the road.
+    private var calibrationCurveAir: [(estimate: Double, actual: Double)] = []
 
-    private func calibrated(_ raw: Double) -> Double {
+    private func calibrated(_ raw: Double, airborne: Bool = false) -> Double {
+        let calibrationCurve = airborne ? calibrationCurveAir : self.calibrationCurve
         guard calibrationCurve.count >= 2 else {
             return calibrationIntercept + calibrationSlope * raw
         }
@@ -916,7 +931,11 @@ final class LearnedSpeedEstimator {
         guard observations.count >= MIN_OBSERVATIONS * 2, !featureMean.isEmpty else { return }
         guard observations.count != observationsAtLastCalibration else { return }
         observationsAtLastCalibration = observations.count
+        recalibrate(airborne: false)
+        recalibrate(airborne: true)
+    }
 
+    private func recalibrate(airborne: Bool) {
         refreshStoreDistributionIfNeeded()
         let stride = max(1, observations.count / 300)
         var n = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0
@@ -929,10 +948,10 @@ final class LearnedSpeedEstimator {
             // measured; and a stopped vehicle is now recognised directly rather than estimated,
             // so the correction has no reason to describe it. Measured on the drive above:
             // fitting on everything gives x1.15 and MAE 5.3, fitting on movement x1.26 and 5.0.
-            guard !held.airborne else { index += stride; continue }
+            guard held.airborne == airborne else { index += stride; continue }
             var best = [(d: Double, s: Double)]()
             best.reserveCapacity(K)
-            for (j, o) in observations.enumerated() where j != index && !o.airborne {
+            for (j, o) in observations.enumerated() where j != index && o.airborne == airborne {
                 var d = 0.0
                 for i in 0..<held.f.count {
                     let sd = max(featureVar[i].squareRoot(), 1e-6)
@@ -952,7 +971,7 @@ final class LearnedSpeedEstimator {
             guard best.count == K, best[0].d <= MAX_MATCH_DISTANCE_SQUARED else { continue }
             var num = 0.0, den = 0.0
             for b in best {
-                let w = (1.0 / (b.d + 1e-6)) * representationWeight(for: b.s)
+                let w = (1.0 / (b.d + 1e-6)) * (airborne ? 1 : representationWeight(for: b.s))
                 num += w * b.s
                 den += w
             }
@@ -980,10 +999,11 @@ final class LearnedSpeedEstimator {
             if let previous = curve.last, estimate <= previous.estimate + 1e-6 { continue }
             curve.append((estimate, actual))
         }
-        calibrationCurve = curve.count >= 4 ? curve : []
-        if !calibrationCurve.isEmpty {
-            print("🧠 Learned speed curve over \(Int(n)) held-out samples: " +
-                  calibrationCurve.map { String(format: "%.0f→%.0f", $0.estimate * 3.6, $0.actual * 3.6) }
+        let fitted = curve.count >= 4 ? curve : []
+        if airborne { calibrationCurveAir = fitted } else { calibrationCurve = fitted }
+        if !fitted.isEmpty {
+            print("🧠 Learned speed curve (\(airborne ? "air" : "ground")) over \(Int(n)) held-out samples: " +
+                  fitted.map { String(format: "%.0f→%.0f", $0.estimate * 3.6, $0.actual * 3.6) }
                       .joined(separator: " "))
         }
 
@@ -998,6 +1018,7 @@ final class LearnedSpeedEstimator {
             print("🧠 Calibration rejected (slope \(String(format: "%.2f", slope)), intercept \(String(format: "%.1f", intercept)))")
             return
         }
+        guard !airborne else { return }
         calibrationSlope = slope
         calibrationIntercept = intercept
         print("🧠 Learned speed calibrated over \(Int(n)) held-out samples: ×\(String(format: "%.2f", slope)) \(String(format: "%+.1f", intercept)) m/s")
