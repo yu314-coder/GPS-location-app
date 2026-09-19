@@ -119,6 +119,12 @@ class LocationManager: NSObject, ObservableObject {
 
     // WiFi/Cellular fallback settings
     private(set) var isFallbackModeActive = false
+    /// What the app is currently asking iOS for: the desired accuracy constant (-2 best for
+    /// navigation, -1 best, 10 nearest ten metres) and the distance filter in metres, or 0 for
+    /// none. Recorded per tick because a setting left behind by an earlier workout is invisible
+    /// otherwise.
+    var requestedAccuracy: Double { locationManager.desiredAccuracy }
+    var requestedDistanceFilter: Double { locationManager.distanceFilter }
     /// Whether iOS is currently restricting this app to approximate location.
     var accuracyIsReduced: Bool {
         if #available(iOS 14.0, *) { return locationManager.accuracyAuthorization == .reducedAccuracy }
@@ -249,6 +255,23 @@ class LocationManager: NSObject, ObservableObject {
         locationManager.allowsBackgroundLocationUpdates = canRunInBackground
         locationManager.showsBackgroundLocationIndicator = canRunInBackground
 
+        // START FROM A KNOWN CONFIGURATION, BECAUSE THE LAST WORKOUT MAY HAVE LEFT ONE BEHIND.
+        //
+        // applyThermalAccuracy(reduced:) coarsens accuracy AND sets a 5 m distance filter when the
+        // phone runs hot. Restoring it needs a cooling notification while a workout is active, and
+        // stopTracking restored the accuracy but never the filter - so one hot ride could leave a
+        // 5 m filter in place for every later ride in the same app session. iOS then withholds
+        // updates until the phone has moved 5 m, which lets it run the receiver at lower duty:
+        // fixes on a quarter of the ticks, 30-45 m accuracy, and no Doppler speed at all, which is
+        // exactly the pattern four rides showed after a hot one. Nothing in the log could have
+        // shown it, so the requested settings are now recorded too.
+        if #available(iOS 15.0, *) {
+            locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        } else {
+            locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        }
+        locationManager.distanceFilter = kCLDistanceFilterNone
+
         // ASK FOR PRECISE LOCATION AT THE START, NOT AFTER A MINUTE OF NOTHING.
         //
         // This check previously lived only in recovery mode, which fires after 60 s without a
@@ -340,12 +363,14 @@ class LocationManager: NSObject, ObservableObject {
         // Stop motion tracking
         stopMotionTracking()
 
-        // Restore high accuracy mode for next session
+        // Restore high accuracy mode for next session - the FILTER too, which was missed and is
+        // the half that survives a workout; see startTracking.
         if #available(iOS 15.0, *) {
             locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         } else {
             locationManager.desiredAccuracy = kCLLocationAccuracyBest
         }
+        locationManager.distanceFilter = kCLDistanceFilterNone
 
         print("✅ Stopped GPS tracking")
         print("   isTracking: \(isTracking)")

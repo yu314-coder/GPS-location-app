@@ -1190,7 +1190,9 @@ class WorkoutSession: ObservableObject {
         }
         print("🌡️ Thermal state: \(stateName) — \(hot ? "throttling to cool down" : "full performance")")
 
-        // Only throttle GPS/motion while a workout is active.
+        // THROTTLING waits for a workout; RESTORING must not. Cooling down between rides used to
+        // return here, leaving the coarse accuracy and 5 m filter in place for the next one.
+        if !hot { locationManager.applyThermalAccuracy(reduced: false) }
         guard isActive else { return }
         locationManager.applyThermalAccuracy(reduced: hot)
         // NOT THE MOTION RATE. This used to drop device motion to 1 Hz whenever the phone ran hot.
@@ -4035,6 +4037,8 @@ class WorkoutSession: ObservableObject {
                 ? sessionDiagnostics.latestGPSSpeedAccuracy : nil,
             accuracyReduced: locationManager.accuracyIsReduced,
             inBackground: appIsInBackground,
+            requestedAccuracy: locationManager.requestedAccuracy,
+            requestedDistanceFilter: locationManager.requestedDistanceFilter,
             regimeObservations: learnedSpeed.regimeObservationsCached,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,

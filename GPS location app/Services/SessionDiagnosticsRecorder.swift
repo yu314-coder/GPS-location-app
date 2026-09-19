@@ -127,6 +127,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// silently - and 1 while the app is in the background, where iOS may also throttle.
         let accuracyReduced: Bool
         let inBackground: Bool
+        /// What the app asked iOS for at this tick: accuracy constant and distance filter in
+        /// metres. A filter of 5 or an accuracy of 10 means the thermal throttle is in force -
+        /// possibly left over from an earlier workout, which is how four rides lost their Doppler
+        /// speed entirely.
+        let requestedAccuracy: Double
+        let requestedDistanceFilter: Double
         /// Observations this workout's fingerprint rests on. regime_distance means little on a
         /// young fingerprint - one ride read 4.27 at sixty-four observations and 1.2 by two
         /// hundred - so the gate ignores it below 150; without this a log cannot show which case
@@ -505,7 +511,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background\n"
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -536,7 +542,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + "\n"
         }
         return out
     }
