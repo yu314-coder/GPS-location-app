@@ -287,6 +287,8 @@ class WorkoutSession: ObservableObject {
     }
     /// What the model that is NOT driving said this tick, for the log.
     private var shadowSpeed: Double?
+    /// Which model actually produced this tick's answer, as opposed to which one is selected.
+    private var drivingModelThisTick = "store"
     private var neuralCostThisTick = InferenceCost()
     private var storeCostThisTick = InferenceCost()
     private let vibrationSpeed = VibrationSpeedEstimator()
@@ -1103,9 +1105,13 @@ class WorkoutSession: ObservableObject {
         let neuralAnswer = neuralSpeed.estimate(airborne: airborne)
         neuralCostThisTick = neuralSpeed.lastCost
 
+        // The net declines for its first 40 s and whenever airborne, and then the store drives
+        // no matter what the setting says. Record who ACTUALLY answered, not what was selected -
+        // otherwise every warm-up tick is filed against the model that did not produce it.
         let neuralDrives = velocityEngine == .neural && neuralAnswer != nil
         let driving = neuralDrives ? neuralAnswer : storeAnswer
         shadowSpeed = neuralDrives ? storeAnswer : neuralAnswer
+        drivingModelThisTick = neuralDrives ? "neural" : "store"
         lastChosenModelAnswer = driving
         return driving
     }
@@ -3251,6 +3257,14 @@ class WorkoutSession: ObservableObject {
         // latch the flag for every path that does not take that branch, permanently disabling
         // the always-on datum for vehicles and aircraft.
         compassCorrectionAppliedThisTick = false
+        // Same reasoning for the head-to-head record. chosenModelSpeed() is only reached on the
+        // vehicle branch; on a walking tick neither model is consulted, and without this the log
+        // would carry the previous tick's shadow answer and cost as though they were measured
+        // now. A stale number that looks fresh is worse than a blank one.
+        shadowSpeed = nil
+        drivingModelThisTick = velocityEngine.rawValue
+        storeCostThisTick = InferenceCost()
+        neuralCostThisTick = InferenceCost()
 
         // The velocity VECTOR is integrated at sensor rate in integrateWorldAccelSample,
         // which also owns drift correction via ZUPT. There is deliberately NO velocity leak
@@ -4216,7 +4230,7 @@ class WorkoutSession: ObservableObject {
             requestedAccuracy: locationManager.requestedAccuracy,
             requestedDistanceFilter: locationManager.requestedDistanceFilter,
             regimeObservations: learnedSpeed.regimeObservationsCached,
-            engine: velocityEngine.rawValue,
+            engine: drivingModelThisTick,
             shadowSpeed: shadowSpeed,
             storeWallMicros: storeCostThisTick.wallMicros,
             storeCPUMicros: storeCostThisTick.cpuMicros,
