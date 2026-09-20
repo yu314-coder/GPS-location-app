@@ -15,6 +15,8 @@ struct DeveloperView: View {
     @State private var showingDeleteConfirm = false
     @State private var showingForgetConfirm = false
     @State private var modelSummary = ""
+    @State private var neuralSummary = ""
+    @AppStorage("velocityEngine") private var velocityEngine = "store"
 
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -78,6 +80,32 @@ struct DeveloperView: View {
                 Text("Learned speed model")
             } footer: {
                 Text("Signatures paired with GPS-measured speeds, used when GPS is unavailable. Forgetting means it must be taught again from scratch.")
+            }
+
+            // WHICH MODEL DRIVES VELOCITY MODE.
+            //
+            // Both run on every window either way — the log always carries both answers, so a
+            // ride scores both models whichever is selected here. This chooses only whose answer
+            // becomes the recorded speed and the drawn route.
+            Section {
+                Picker(selection: $velocityEngine) {
+                    Text("Nearest neighbour").tag("store")
+                    Text("Neural network").tag("neural")
+                } label: {
+                    SettingsRow(symbol: "brain", tint: .purple, title: "Speed model",
+                                subtitle: "Which one drives the route")
+                }
+                .pickerStyle(.menu)
+                if neuralSummary.isEmpty {
+                    Text("Start a workout once to load it.")
+                        .foregroundColor(.secondary).font(.callout)
+                } else {
+                    Text(neuralSummary).font(.system(.footnote, design: .monospaced))
+                }
+            } header: {
+                Text("Velocity mode engine")
+            } footer: {
+                Text("Measured on rides held out of training: on the ground the network reads 40 seconds of vibration and averages 8.9 km/h error against the store's 10.6, with distance within a percent either way. In the air it is far worse — 57 km/h against 34 — so it declines when airborne and the store answers regardless of this setting. It also needs 40 seconds before its first answer, and it does not learn from the ride the way the store does.")
             }
 
             Section {
@@ -195,6 +223,7 @@ struct DeveloperView: View {
         correction     ×\(String(format: "%.2f", calibration.slope)) \(String(format: "%+.1f", calibration.intercept)) m/s
         usable         \(model.isUsable ? "yes" : "not yet")
         """
+        neuralSummary = WorkoutSession.shared.neuralSpeed.summary
     }
 }
 

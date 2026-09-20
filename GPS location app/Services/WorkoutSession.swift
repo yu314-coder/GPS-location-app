@@ -273,6 +273,22 @@ class WorkoutSession: ObservableObject {
     /// showing why a learned lookup finds what five hand-built features could not.
     /// Not private: the developer screen reports what it holds and can clear it.
     let learnedSpeed = LearnedSpeedEstimator()
+    /// The neural estimator. Runs on EVERY window regardless of which model is driving, so one
+    /// ride produces a head-to-head rather than half of one. See velocityEngine.
+    let neuralSpeed = NeuralSpeedEstimator()
+
+    /// Which model's answer is recorded as the speed and integrated into the route. Both run
+    /// either way; this only chooses whose answer counts. Settable from the developer screen so
+    /// a single ride can be repeated on each without reinstalling.
+    enum VelocityEngine: String { case store, neural }
+    var velocityEngine: VelocityEngine {
+        VelocityEngine(rawValue: UserDefaults.standard.string(forKey: "velocityEngine") ?? "")
+            ?? .store
+    }
+    /// What the model that is NOT driving said this tick, for the log.
+    private var shadowSpeed: Double?
+    private var neuralCostThisTick = InferenceCost()
+    private var storeCostThisTick = InferenceCost()
     private let vibrationSpeed = VibrationSpeedEstimator()
     /// Per-tick record of what the speed model saw and decided, for export and live inspection.
     let sessionDiagnostics = SessionDiagnosticsRecorder()
@@ -1052,6 +1068,47 @@ class WorkoutSession: ObservableObject {
     private var lastLearnedAnswer: Double?
     private var lastLearnedAnswerTime: Date?
     private let LEARNED_HOLD_MAX_AGE: TimeInterval = 120.0
+
+    /// What the driving model said this tick, so the branch below does not have to ask twice.
+    private var lastChosenModelAnswer: Double?
+
+    /// BOTH MODELS, EVERY WINDOW, ONE SET OF FEATURES.
+    ///
+    /// The nearest-neighbour store and the neural net are being compared on real rides, and the
+    /// only way to do that honestly is to run them together: same 4 s window, same 11 features,
+    /// same gates, same tick. Run one per ride instead and every comparison is confounded by
+    /// the ride — and these rides cannot be repeated (traffic, weather, lights), which is
+    /// exactly the problem that made the earlier offline comparisons so hard to trust.
+    ///
+    /// One of them drives the recorded speed and the route; the other is written to the log as
+    /// a shadow. Which one drives is a developer setting, because the two disagree in ways that
+    /// matter and the shipped default should change only on evidence:
+    ///
+    ///     ground (46 rides, held out)   store 10.6 km/h +1%    net 8.9 km/h  0%
+    ///     flight (one flight)           store 34.4 km/h +1%    net 57.1 km/h +10%
+    ///
+    /// Airborne the net declines and the store drives whatever the setting says, because a model
+    /// trained only on roads has nothing to say about cruise.
+    private func chosenModelSpeed() -> Double? {
+        guard !deviceIsBeingHandled else {
+            lastChosenModelAnswer = nil
+            shadowSpeed = nil
+            return nil
+        }
+        let airborne = isAirborneForEstimation
+        let (storeAnswer, storeCost) = PowerMeter.measure {
+            learnedSpeed.estimate(airborne: airborne)
+        }
+        storeCostThisTick = storeCost
+        let neuralAnswer = neuralSpeed.estimate(airborne: airborne)
+        neuralCostThisTick = neuralSpeed.lastCost
+
+        let neuralDrives = velocityEngine == .neural && neuralAnswer != nil
+        let driving = neuralDrives ? neuralAnswer : storeAnswer
+        shadowSpeed = neuralDrives ? storeAnswer : neuralAnswer
+        lastChosenModelAnswer = driving
+        return driving
+    }
     private var recentLearnedAnswer: Double? {
         guard let v = lastLearnedAnswer, let t = lastLearnedAnswerTime else { return nil }
         // A WALK IS PROOF THIS IS NO LONGER A VEHICLE.
@@ -1734,6 +1791,12 @@ class WorkoutSession: ObservableObject {
         learnedSpeed.load()
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
+        neuralSpeed.beginSession()
+        // The neural estimator is fed by the old model's extractor, every 25 samples. Set here
+        // rather than at init so it follows the session rather than the app's lifetime.
+        learnedSpeed.featureSink = { [weak self] features in
+            self?.neuralSpeed.ingest(features: features)
+        }
         // The standstill test compares against THIS vehicle's moving level, so the level is learned
         // fresh each workout - a different bike, or the same phone in a different pocket, must not
         // inherit the last one's.
@@ -3737,9 +3800,7 @@ class WorkoutSession: ObservableObject {
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
         } else if vehicleContextIsCurrent,
-                  let learned = (deviceIsBeingHandled ? nil
-                                 : learnedSpeed.estimate(airborne: isAirborneForEstimation))
-                                ?? recentLearnedAnswer {
+                  let learned = chosenModelSpeed() ?? recentLearnedAnswer {
             // NOT AIRBORNE. The learned model is a GROUND-VEHICLE model — every observation in
             // it was labelled by GPS on a road — and in the air it does not decline, it answers
             // confidently and wrongly. Replayed through the real estimator with a synthetic
@@ -3793,8 +3854,7 @@ class WorkoutSession: ObservableObject {
             // The honest answer while the signature is unreadable is the last one that was
             // measured, which is what recentLearnedAnswer holds and what the flight case
             // already relies on. A car does not stop because someone reached for their phone.
-            let modelAnswered = !deviceIsBeingHandled
-                && learnedSpeed.estimate(airborne: isAirborneForEstimation) != nil
+            let modelAnswered = !deviceIsBeingHandled && lastChosenModelAnswer != nil
             let warmup = modelAnswered && learnedSpeed.lastEstimateUsedWarmup
             if modelAnswered {
                 lastLearnedAnswer = learned
@@ -4099,7 +4159,10 @@ class WorkoutSession: ObservableObject {
                   ? "🤷 Speed model out of its depth (regime distance \(learnedSpeed.regimeDistanceCached.map { String(format: "%.2f", $0) } ?? "?")) — holding last GPS speed"
                   : "✅ Speed model back within a learned regime")
         }
-        sessionDiagnostics.record(.init(
+        let storeNJ = Double(storeCostThisTick.energyNanojoules)
+        let aiNJ = Double(neuralCostThisTick.energyNanojoules)
+        let aiGPUMicros = Double(neuralCostThisTick.gpuNanos) / 1000.0
+        let row = SessionDiagnosticsRecorder.Row(
             t: now,
             source: sourceTag,
             activity: activityTag.trimmingCharacters(in: .whitespaces),
@@ -4153,6 +4216,16 @@ class WorkoutSession: ObservableObject {
             requestedAccuracy: locationManager.requestedAccuracy,
             requestedDistanceFilter: locationManager.requestedDistanceFilter,
             regimeObservations: learnedSpeed.regimeObservationsCached,
+            engine: velocityEngine.rawValue,
+            shadowSpeed: shadowSpeed,
+            storeWallMicros: storeCostThisTick.wallMicros,
+            storeCPUMicros: storeCostThisTick.cpuMicros,
+            storeEnergyNJ: storeNJ,
+            neuralWallMicros: neuralCostThisTick.wallMicros,
+            neuralCPUMicros: neuralCostThisTick.cpuMicros,
+            neuralEnergyNJ: aiNJ,
+            neuralGPUMicros: aiGPUMicros,
+            neuralContext: neuralSpeed.windowsSeen,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
             truthLatitude: sessionDiagnostics.latestGPSLatitude,
@@ -4162,7 +4235,8 @@ class WorkoutSession: ObservableObject {
             pitch: locationManager.currentPitch,
             roll: locationManager.currentRoll,
             yaw: locationManager.currentYaw,
-            altitude: locationManager.currentRelativeAltitude))
+            altitude: locationManager.currentRelativeAltitude)
+        sessionDiagnostics.record(row)
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist

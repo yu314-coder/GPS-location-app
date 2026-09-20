@@ -138,6 +138,27 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// hundred - so the gate ignores it below 150; without this a log cannot show which case
         /// it is.
         let regimeObservations: Int
+        /// THE HEAD-TO-HEAD. Both speed models answer from the same window on every tick; one
+        /// drives, the other is recorded here. `engine` says which was driving, so a ride can be
+        /// scored either way after the fact and the two can be compared on a ride that was only
+        /// taken once.
+        let engine: String
+        /// The model that was NOT driving, m/s, or nil if it declined (still warming up, or
+        /// airborne, where the net has no business answering).
+        let shadowSpeed: Double?
+        /// What each one cost to run, this tick. Wall and CPU microseconds are attributable to
+        /// the call. Energy is whole-process over the call in nanojoules and GPU time in
+        /// microseconds — not strictly attributable, but the models run microseconds apart on an
+        /// otherwise quiet tick, and a zero means the counter is coarser than the call.
+        let storeWallMicros: Double
+        let storeCPUMicros: Double
+        let storeEnergyNJ: Double
+        let neuralWallMicros: Double
+        let neuralCPUMicros: Double
+        let neuralEnergyNJ: Double
+        let neuralGPUMicros: Double
+        /// Windows of context the net has, out of the 80 it needs. Below 80 it declines.
+        let neuralContext: Int
         let latitude: Double?
         let longitude: Double?
         /// Where GPS says we ACTUALLY are, recorded even in Force Velocity where GPS is
@@ -511,7 +532,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter\n"
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter,engine,shadow_speed_ms,store_wall_us,store_cpu_us,store_nj,ai_wall_us,ai_cpu_us,ai_nj,ai_gpu_us,ai_ctx\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -542,7 +563,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + "\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + ",\(r.engine)," + Self.fmt(r.shadowSpeed, 3) + "," + Self.fmt(r.storeWallMicros, 1) + "," + Self.fmt(r.storeCPUMicros, 1) + "," + Self.fmt(r.storeEnergyNJ, 0) + "," + Self.fmt(r.neuralWallMicros, 1) + "," + Self.fmt(r.neuralCPUMicros, 1) + "," + Self.fmt(r.neuralEnergyNJ, 0) + "," + Self.fmt(r.neuralGPUMicros, 1) + ",\(r.neuralContext)\n"
         }
         return out
     }
