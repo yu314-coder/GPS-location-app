@@ -897,6 +897,57 @@ class WorkoutSession: ObservableObject {
     ///
     /// Never available airborne: a smooth cruise is quiet, the classifier reports nothing
     /// useful, and calling that "stopped" is the one mistake this mode cannot make.
+    /// QUIET FOR THIS VEHICLE, JUDGED AGAINST ITSELF.
+    ///
+    /// A motorcycle at a red light shakes hard enough that no absolute threshold separates it from
+    /// a crawl - accelerometer magnitude is 0.22 m/s^2 median stopped against 0.65 at 4-12 km/h,
+    /// heavily overlapped - which is why the first attempt at this was rejected: every threshold
+    /// that caught the idle also zeroed real slow riding, about 2000 m of it against 1142 m of
+    /// phantom.
+    ///
+    /// What does separate them is the same vehicle's OWN moving level. Vibration amplitude below a
+    /// quarter of what this bike in this pocket produces while riding removes 1255 m of distance
+    /// recorded while GPS said under 2 km/h, across 59 recordings, at a cost of 210 m recorded
+    /// while it said otherwise - and it fires on 19 of 14407 riding ticks, which is why it is
+    /// allowed to conclude a stop at all.
+    ///
+    /// Measured alternatives, all worse: an absolute threshold (839 m removed for 211 m lost at
+    /// best), latching the stop until movement resumes (every setting lost more than it removed,
+    /// because a latch outlives the stop), and requiring several consecutive quiet ticks (fewer
+    /// metres removed at the same cost). Also tested and rejected: vibration STATIONARITY, on the
+    /// theory that a constant idle varies less than a road - it does not, 0.21 against 0.24 over
+    /// ten seconds.
+    ///
+    /// The baseline is a geometric mean, learned within the session from ticks where the model
+    /// itself reported real movement, so it adapts to the vehicle, the carry and the phone rather
+    /// than assuming any of them.
+    private var movingAmplitudeLog: Double = 0
+    private var movingAmplitudeSamples = 0
+    private let QUIET_STOP_FRACTION = 0.25
+    private let QUIET_STOP_MIN_SAMPLES = 30
+    /// Never conclude a stop from quiet above this speed, whatever the amplitude says. The measured
+    /// rule needs no such cap (it never fired above 25 km/h), and one costs nothing.
+    private let QUIET_STOP_MAX_SPEED: Double = 8.3
+
+    private var vibrationSaysParked: Bool {
+        guard movingAmplitudeSamples >= QUIET_STOP_MIN_SAMPLES,
+              let amplitude = learnedSpeed.lastWindowAmplitude, amplitude > 0 else { return false }
+        return amplitude < QUIET_STOP_FRACTION * exp(movingAmplitudeLog)
+    }
+
+    /// Learn what moving sounds like, from ticks the model itself called movement. Never in the
+    /// air: a cabin at cruise is QUIETER than one taxiing, so an air-trained baseline would invite
+    /// exactly the reading the stop detector exists to prevent.
+    private func noteMovingAmplitude() {
+        guard !isAirborneForEstimation, estimatedFallbackSpeed > 5.5,
+              let amplitude = learnedSpeed.lastWindowAmplitude, amplitude > 1e-6 else { return }
+        let l = log(amplitude)
+        if movingAmplitudeSamples == 0 { movingAmplitudeLog = l } else {
+            movingAmplitudeLog += (l - movingAmplitudeLog) * 0.05
+        }
+        movingAmplitudeSamples += 1
+    }
+
     private func vehicleIsStoppedOnGround(correctedSpeed: Double) -> Bool {
         // NOTHING THAT IS CLIMBING OR DESCENDING IS STOPPED.
         //
@@ -923,6 +974,9 @@ class WorkoutSession: ObservableObject {
         guard !isAirborneForEstimation else { return false }
         guard pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW else { return false }
         if correctedSpeed < VEHICLE_STOP_CONFIRM_SPEED { return true }
+        // Quiet for this vehicle, measured against its own moving level; see vibrationSaysParked.
+        // Everything above still applies - nothing climbing, fast, airborne or stepping reaches here.
+        if vibrationSaysParked, correctedSpeed < QUIET_STOP_MAX_SPEED { return true }
         // THE CLASSIFIER DESCRIBES THE PERSON, NOT THE VEHICLE.
         //
         // A passenger sitting still in a cruising aircraft is genuinely stationary, and Apple's
@@ -1680,6 +1734,11 @@ class WorkoutSession: ObservableObject {
         learnedSpeed.load()
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
+        // The standstill test compares against THIS vehicle's moving level, so the level is learned
+        // fresh each workout - a different bike, or the same phone in a different pocket, must not
+        // inherit the last one's.
+        movingAmplitudeLog = 0
+        movingAmplitudeSamples = 0
         workoutStartTime = Date()
         sessionDiagnostics.reset()
         flightPhase.reset()
@@ -4018,6 +4077,10 @@ class WorkoutSession: ObservableObject {
         // Capture the model's inputs and coefficients alongside the number it produced. Offline
         // simulation has repeatedly agreed with itself and disagreed with the road, so the
         // decisive evidence has to come from the device.
+        // Learn this vehicle's moving vibration level from the tick just decided, so the standstill
+        // test above always judges against evidence that predates the tick it is judging.
+        noteMovingAmplitude()
+
         let vd = vibrationSpeed.diagnostics
         let lastFix = flight.locations.last(where: { !$0.isEstimated && $0.isValid })
         // On a ramp the vibration says 40 km/h and the car is doing 8. Add nothing rather than

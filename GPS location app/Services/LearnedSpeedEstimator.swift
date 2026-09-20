@@ -56,6 +56,9 @@ final class LearnedSpeedEstimator {
         if ringFilled < windowSize { ringFilled += 1 }
     }
 
+    /// Vibration amplitude of the most recent window, m/s^2. The caller compares it against this
+    /// vehicle's own moving level to recognise a standstill; see WorkoutSession.vibrationSaysParked.
+    private(set) var lastWindowAmplitude: Double?
     /// Log band energies plus two time-domain terms, or nil until the window is full.
     func currentFeatures() -> [Double]? {
         guard ringFilled >= windowSize else { return nil }
@@ -69,6 +72,7 @@ final class LearnedSpeedEstimator {
             if i > 0 { absDiff += abs(x[i] - x[i - 1]) }
         }
         sd = (sd / Double(windowSize)).squareRoot()
+        lastWindowAmplitude = sd
         absDiff /= Double(windowSize - 1)
 
         // Hann window, then a real FFT. Removing the mean first keeps any DC offset out of the
