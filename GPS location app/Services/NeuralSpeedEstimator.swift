@@ -30,35 +30,6 @@ final class NeuralSpeedEstimator {
     private static let log = OSLog(subsystem: Bundle.main.bundleIdentifier ?? "euleryu.gps",
                                    category: "NeuralSpeed")
 
-    /// WHICH NETWORK. Two are bundled because they answer different questions.
-    ///
-    /// `gru` is the accurate one: a recurrent net, 3.6 km/h on held-out rides. It cannot run on
-    /// the Neural Engine — the ANE does not accept recurrent layers — so Core ML places all of
-    /// it on the CPU.
-    ///
-    /// `tcn` is a dilated causal convolution reading the same 40 s with no recurrence, in
-    /// float16, which is what the ANE requires. It scores 4.7 km/h on the same split: 31% worse.
-    /// It exists so the accelerator question can be settled by measurement on a real device
-    /// rather than argued about, and the log records which one answered.
-    enum Variant: String {
-        case gru, tcn
-        var modelResource: String { self == .gru ? "SpeedGRU" : "SpeedNet" }
-        var metaResource: String { self == .gru ? "speed_gru_meta" : "speed_net_meta" }
-    }
-    private(set) var variant: Variant = .gru
-
-    /// Swap networks. Takes effect on the next session; the context is cleared either way
-    /// because the two do not produce interchangeable answers.
-    func use(_ v: Variant) {
-        guard v != variant || !isLoaded else { return }
-        variant = v
-        model = nil
-        isLoaded = false
-        loadStatus = "loading \(v.rawValue)"
-        computePlacement = "not loaded"
-        DispatchQueue.global(qos: .utility).async { [weak self] in self?.load() }
-    }
-
     // MARK: - Shape, fixed at export time
 
     private let contextWindows = 80      // 80 windows x 0.5 s = 40 s of context
@@ -109,19 +80,13 @@ final class NeuralSpeedEstimator {
 
     init() {
         ring = [Float](repeating: 0, count: contextWindows * featureCount)
-        // Load the network that is actually selected, rather than always loading the recurrent
-        // one and swapping at the first workout: the developer screen should describe the model
-        // that will run, and loading the wrong one first wastes a compile and reports a
-        // placement for a model nobody asked for.
-        if UserDefaults.standard.string(forKey: "velocityEngine") == "neuralANE" { variant = .tcn }
         DispatchQueue.global(qos: .utility).async { [weak self] in self?.load() }
     }
 
     // MARK: - Loading
 
     private func load() {
-        let variant = self.variant
-        guard let metaURL = Bundle.main.url(forResource: variant.metaResource, withExtension: "json"),
+        guard let metaURL = Bundle.main.url(forResource: "speed_gru_meta", withExtension: "json"),
               let metaData = try? Data(contentsOf: metaURL),
               let meta = try? JSONSerialization.jsonObject(with: metaData) as? [String: Any] else {
             loadStatus = "meta json missing"
@@ -138,7 +103,7 @@ final class NeuralSpeedEstimator {
 
         let loaded: MLModel
         do {
-            loaded = try Self.loadModel(named: variant.modelResource, configuration: config)
+            loaded = try Self.loadModel(configuration: config)
         } catch {
             loadStatus = "load failed: \(error.localizedDescription)"
             os_log("neural speed model: %{public}@", log: Self.log, type: .error, loadStatus)
@@ -154,7 +119,7 @@ final class NeuralSpeedEstimator {
             if let got = Self.rawPredict(model: loaded, flatFeatures: check.map { Float($0) },
                                          shape: [1, contextWindows, featureCount]) {
                 let delta = abs(got - expected)
-                guard delta < 1.0 else {
+                guard delta < 0.5 else {
                     loadStatus = String(format: "self-check FAILED: %.4f vs %.4f", got, expected)
                     os_log("neural speed model: %{public}@", log: Self.log, type: .fault, loadStatus)
                     return
@@ -172,16 +137,15 @@ final class NeuralSpeedEstimator {
                                                NSNumber(value: featureCount)], dataType: .float32)
         model = loaded
         isLoaded = true
-        os_log("neural speed model (%{public}@): %{public}@", log: Self.log, type: .info,
-               variant.rawValue, loadStatus)
+        os_log("neural speed model: %{public}@", log: Self.log, type: .info, loadStatus)
         readComputePlacement(configuration: config)
     }
 
     /// Xcode's Core ML build rule turns the .mlpackage into a compiled .mlmodelc in the bundle.
     /// If for any reason it did not, fall back to compiling the package at first run and caching
     /// the result, so the model ships either way.
-    private static func loadModel(named name: String,
-                                  configuration: MLModelConfiguration) throws -> MLModel {
+    private static func loadModel(configuration: MLModelConfiguration) throws -> MLModel {
+        let name = "SpeedGRU"
         if let compiled = Bundle.main.url(forResource: name, withExtension: "mlmodelc") {
             return try MLModel(contentsOf: compiled, configuration: configuration)
         }
@@ -212,7 +176,7 @@ final class NeuralSpeedEstimator {
             computePlacement = "placement unavailable before iOS 17.4"
             return
         }
-        let name = variant.modelResource
+        let name = "SpeedGRU"
         guard let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc")
                 ?? Bundle.main.url(forResource: name, withExtension: "mlpackage") else { return }
         Task { [weak self] in
@@ -362,8 +326,7 @@ final class NeuralSpeedEstimator {
 
     /// For the developer screen.
     var summary: String {
-        var lines = ["network: \(variant.rawValue)", "status: \(loadStatus)",
-                     "placement: \(computePlacement)"]
+        var lines = ["status: \(loadStatus)", "placement: \(computePlacement)"]
         lines.append("context: \(ringWindows)/\(contextWindows) windows"
                      + (warmupWindowsRemaining > 0
                         ? " (\(Int(Double(warmupWindowsRemaining) * 0.5)) s to go)" : " (ready)"))

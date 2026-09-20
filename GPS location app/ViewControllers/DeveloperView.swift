@@ -90,8 +90,7 @@ struct DeveloperView: View {
             Section {
                 Picker(selection: $velocityEngine) {
                     Text("Nearest neighbour").tag("store")
-                    Text("Neural — recurrent (CPU)").tag("neural")
-                    Text("Neural — conv (Neural Engine)").tag("neuralANE")
+                    Text("Neural network").tag("neural")
                 } label: {
                     SettingsRow(symbol: "brain", tint: .purple, title: "Speed model",
                                 subtitle: "Which one drives the route")
@@ -106,7 +105,7 @@ struct DeveloperView: View {
             } header: {
                 Text("Velocity mode engine")
             } footer: {
-                Text("Both networks read 40 seconds of vibration; the store reads four. On rides held out of training the recurrent net averaged 3.6 km/h error and the convolutional one 4.7, against the store's 10.6 pooled over a wider set. The recurrent net is the accurate one but cannot run on the Neural Engine, which does not accept recurrent layers, so Core ML puts it on the CPU. The convolutional net is float16 and is what the Neural Engine will take — 31% less accurate for a few tenths of a joule per ride. Whichever is chosen, both models answer every window and the log records both. In the air the networks decline and the store answers regardless of this setting.")
+                Text("The network reads 40 seconds of vibration; the store reads four. On a car, scored on ticks where both answered, the network averaged 2.8 km/h error against the store's 3.2 — and it answered 95% of the ride where the store, built mostly from motorcycle signatures, had nothing to say for a third of it. Whichever drives, both answer every window and the log records both. It runs on the CPU: a convolutional version that the Neural Engine would accept was measured 31% less accurate, to save two tenths of a joule on a ride that costs three. In the air the network declines and the store answers regardless of this setting.")
             }
 
             Section {

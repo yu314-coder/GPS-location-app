@@ -280,13 +280,7 @@ class WorkoutSession: ObservableObject {
     /// Which model's answer is recorded as the speed and integrated into the route. Both run
     /// either way; this only chooses whose answer counts. Settable from the developer screen so
     /// a single ride can be repeated on each without reinstalling.
-    /// store = nearest-neighbour lookup; neural = the recurrent net (CPU, more accurate);
-    /// neuralANE = the convolutional net, which is what the Neural Engine will accept.
-    enum VelocityEngine: String {
-        case store, neural, neuralANE
-        var isNeural: Bool { self != .store }
-        var variant: NeuralSpeedEstimator.Variant { self == .neuralANE ? .tcn : .gru }
-    }
+    enum VelocityEngine: String { case store, neural }
     var velocityEngine: VelocityEngine {
         VelocityEngine(rawValue: UserDefaults.standard.string(forKey: "velocityEngine") ?? "")
             ?? .store
@@ -1119,10 +1113,10 @@ class WorkoutSession: ObservableObject {
         // The net declines for its first 40 s and whenever airborne, and then the store drives
         // no matter what the setting says. Record who ACTUALLY answered, not what was selected -
         // otherwise every warm-up tick is filed against the model that did not produce it.
-        let neuralDrives = velocityEngine.isNeural && neuralAnswer != nil
+        let neuralDrives = velocityEngine == .neural && neuralAnswer != nil
         let driving = neuralDrives ? neuralAnswer : storeAnswer
         shadowSpeed = neuralDrives ? storeAnswer : neuralAnswer
-        drivingModelThisTick = neuralDrives ? "neural-\(neuralSpeed.variant.rawValue)" : "store"
+        drivingModelThisTick = neuralDrives ? "neural" : "store"
         lastChosenModelAnswer = driving
         return driving
     }
@@ -1809,7 +1803,6 @@ class WorkoutSession: ObservableObject {
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
         neuralSpeed.beginSession()
-        neuralSpeed.use(velocityEngine.variant)
         // The neural estimator is fed by the old model's extractor, every 25 samples. Set here
         // rather than at init so it follows the session rather than the app's lifetime.
         learnedSpeed.featureSink = { [weak self] features in
