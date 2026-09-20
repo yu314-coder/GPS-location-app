@@ -287,6 +287,24 @@ class WorkoutSession: ObservableObject {
     }
     /// What the model that is NOT driving said this tick, for the log.
     private var shadowSpeed: Double?
+    /// The nearest-neighbour store's own answer this tick, whatever is driving.
+    private var storeAnswerThisTick: Double?
+
+    /// THE SPEED THE ROUTE IS STEERED BY, which is deliberately NOT the speed being recorded.
+    ///
+    /// Heading comes from the direction of the integrated velocity vector, and that vector is
+    /// pegged to a speed every tick. Turning is lateral acceleration divided by speed, so the
+    /// magnitude it is pegged to decides how fast the heading rotates for a given corner: peg it
+    /// low and the route over-turns. That made the drawn route depend on which speed model was
+    /// selected, which is wrong - choosing a speed model should change the speed and nothing
+    /// else. The network under-reads by 18% at 50-80 km/h, and a route steered at 18% under
+    /// swings correspondingly wide.
+    ///
+    /// So the vector is always pegged to what the store would have produced, whichever model is
+    /// driving the recorded speed. With the store selected the two are identical by
+    /// construction; with the network selected the heading is bit-for-bit the heading the store
+    /// would have drawn, and only the speed and distance differ.
+    private var headingPegSpeed: Double = 0
     /// Which model actually produced this tick's answer, as opposed to which one is selected.
     private var drivingModelThisTick = "store"
     private var neuralCostThisTick = InferenceCost()
@@ -1107,6 +1125,7 @@ class WorkoutSession: ObservableObject {
             learnedSpeed.estimate(airborne: airborne)
         }
         storeCostThisTick = storeCost
+        storeAnswerThisTick = storeAnswer
         let neuralAnswer = neuralSpeed.estimate(airborne: airborne)
         neuralCostThisTick = neuralSpeed.lastCost
 
@@ -1803,6 +1822,8 @@ class WorkoutSession: ObservableObject {
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
         neuralSpeed.beginSession()
+        headingPegSpeed = 0
+        storeAnswerThisTick = nil
         // The neural estimator is fed by the old model's extractor, every 25 samples. Set here
         // rather than at init so it follows the session rather than the app's lifetime.
         learnedSpeed.featureSink = { [weak self] features in
@@ -3200,8 +3221,44 @@ class WorkoutSession: ObservableObject {
         }
     }
 
+    /// Run both speed models and write what they said, whether or not anything is using them.
+    ///
+    /// Deliberately the first thing the tick does, before every early return: with healthy GPS
+    /// the rest of this function does nothing at all, and that is precisely the case worth
+    /// recording, because GPS is there to mark the answer. Neither call can affect the recording
+    /// - the results go straight to the log and nowhere else.
+    private func scoreModelsForLog() {
+        guard UserDefaults.standard.bool(forKey: "alwaysScoreModels") else { return }
+        let airborne = isAirborneForEstimation
+        let handled = deviceIsBeingHandled
+        var storeAnswer: Double?
+        var storeCPU = 0.0
+        if !handled {
+            let (a, cost) = PowerMeter.measure { learnedSpeed.estimate(airborne: airborne) }
+            storeAnswer = a
+            storeCPU = cost.cpuMicros
+        }
+        let neuralAnswer = handled ? nil : neuralSpeed.estimate(airborne: airborne)
+        sessionDiagnostics.recordModel(.init(
+            t: Date(),
+            gpsSpeed: sessionDiagnostics.latestGPSSpeed >= 0 ? sessionDiagnostics.latestGPSSpeed : nil,
+            gpsAccuracy: sessionDiagnostics.latestGPSAccuracy >= 0 ? sessionDiagnostics.latestGPSAccuracy : nil,
+            gpsAge: sessionDiagnostics.latestGPSFixTime.map { Date().timeIntervalSince($0) },
+            gpsCourse: latestGPSCourse,
+            storeSpeed: storeAnswer,
+            neuralSpeed: neuralAnswer,
+            neuralContext: neuralSpeed.windowsSeen,
+            storeCPUMicros: storeCPU,
+            neuralCPUMicros: neuralSpeed.lastCost.cpuMicros,
+            neuralEnergyNJ: Double(neuralSpeed.lastCost.energyNanojoules),
+            airborne: airborne,
+            handled: handled,
+            velocityModeOn: forceMotionFallback))
+    }
+
     private func checkEstimatedLocationFallback() {
         guard isActive && !isPaused else { return }
+        scoreModelsForLog()
         // THE AUTOMATIC SWITCH MUST RUN AT THE SAME RATE AS THE FORCED ONE.
         //
         // This enabled 50 Hz only while Velocity Mode was forced, and 2 Hz otherwise. The
@@ -3282,6 +3339,7 @@ class WorkoutSession: ObservableObject {
         // would carry the previous tick's shadow answer and cost as though they were measured
         // now. A stale number that looks fresh is worse than a blank one.
         shadowSpeed = nil
+        storeAnswerThisTick = nil
         drivingModelThisTick = velocityEngine.rawValue
         storeCostThisTick = InferenceCost()
         neuralCostThisTick = InferenceCost()
@@ -3871,11 +3929,20 @@ class WorkoutSession: ObservableObject {
             // Apple's classifier confidently saying stationary. Never available airborne,
             // where a smooth cruise is quiet too.
             let stoppedOnGround = vehicleIsStoppedOnGround(correctedSpeed: estimatedFallbackSpeed)
+            let blend = min(dt / (1.5 + dt), 1.0)
             if stoppedOnGround {
                 estimatedFallbackSpeed = 0
+                headingPegSpeed = 0
             } else {
-                let blend = min(dt / (1.5 + dt), 1.0)
                 estimatedFallbackSpeed += (learned - estimatedFallbackSpeed) * blend
+                // The steering speed follows the store on exactly the same terms — same blend,
+                // same stop, holding its last answer when the store declines.
+                if velocityEngine == .store {
+                    headingPegSpeed = estimatedFallbackSpeed
+                } else {
+                    let storeSays = storeAnswerThisTick ?? headingPegSpeed
+                    headingPegSpeed += (storeSays - headingPegSpeed) * blend
+                }
             }
             distance = estimatedFallbackSpeed * dt
             // A HAND ON THE PHONE IS NOT A STOP.
@@ -3899,8 +3966,8 @@ class WorkoutSession: ObservableObject {
                 : (modelAnswered ? (warmup ? "LEARN(warmup)" : "LEARN")
                    : (deviceIsBeingHandled ? "LEARN(held in hand)" : "LEARN(held)"))
             let hr = motionHeadingDegrees * .pi / 180
-            motionVelNorth = estimatedFallbackSpeed * cos(hr)
-            motionVelEast = estimatedFallbackSpeed * sin(hr)
+            motionVelNorth = headingPegSpeed * cos(hr)
+            motionVelEast = headingPegSpeed * sin(hr)
         } else if let stated = manualSpeedKmh, stated > 0 {
             // USER-STATED SPEED. Highest priority: a number the traveller knows beats anything
             // inferable from a sensor that does not carry the signal.

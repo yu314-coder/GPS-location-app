@@ -451,12 +451,16 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         // Close the stream first: the raw trace has been written as it went, so this only has to
         // flush the tail. Nothing here re-serialises hours of samples.
         let streamed = finishRawStream()
-        guard !rows.isEmpty || streamed != nil else { return }
+        guard !rows.isEmpty || streamed != nil || !modelRows.isEmpty else { return }
         let s = Self.stamp(for: workoutStart)
         let dir = Self.logDirectory
         if !rows.isEmpty {
             try? csv().write(to: dir.appendingPathComponent("velocity_debug_\(s).csv"),
                              atomically: true, encoding: .utf8)
+        }
+        if !modelRows.isEmpty {
+            try? modelCSV().write(to: dir.appendingPathComponent("velocity_models_\(s).csv"),
+                                  atomically: true, encoding: .utf8)
         }
         // The stream names itself from the first sample's clock; rename it to the workout's own
         // stamp so both files for a session share one name.
@@ -472,11 +476,61 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         Self.pruneOldLogs()
     }
 
+    // MARK: - Model scoring, independent of Velocity Mode
+
+    /// One tick of "what would each speed model have said", written whether or not Velocity
+    /// Mode is driving anything.
+    ///
+    /// The debug log only exists on ticks where GPS has already failed, which is the one
+    /// circumstance in which there is no truth to score against. Every ordinary ride is a
+    /// wasted experiment: GPS is healthy, so the answer is known, and both models are sitting
+    /// right there being ignored. This log runs them anyway and writes their answers beside the
+    /// fix, so a normal commute produces exactly the paired data the comparison needs, at no
+    /// cost to the recording - nothing here can touch the speed or the route.
+    struct ModelRow {
+        let t: Date
+        let gpsSpeed: Double?
+        let gpsAccuracy: Double?
+        let gpsAge: Double?
+        let gpsCourse: Double
+        let storeSpeed: Double?
+        let neuralSpeed: Double?
+        let neuralContext: Int
+        let storeCPUMicros: Double
+        let neuralCPUMicros: Double
+        let neuralEnergyNJ: Double
+        let airborne: Bool
+        let handled: Bool
+        let velocityModeOn: Bool
+    }
+    private var modelRows: [ModelRow] = []
+    func recordModel(_ row: ModelRow) {
+        modelRows.append(row)
+        if modelRows.count > 200_000 { modelRows.removeFirst(50_000) }
+    }
+    var hasModelRows: Bool { !modelRows.isEmpty }
+    func modelCSV() -> String {
+        var out = "time,gps_speed_ms,gps_accuracy_m,gps_age_s,gps_course,"
+        out += "store_ms,ai_ms,ai_ctx,store_cpu_us,ai_cpu_us,ai_nj,airborne,handled,velocity_mode\n"
+        let f = ISO8601DateFormatter()
+        for r in modelRows {
+            out += f.string(from: r.t) + ","
+            out += Self.fmt(r.gpsSpeed, 3) + "," + Self.fmt(r.gpsAccuracy, 1) + ","
+            out += Self.fmt(r.gpsAge, 2) + "," + Self.fmt(r.gpsCourse, 0) + ","
+            out += Self.fmt(r.storeSpeed, 3) + "," + Self.fmt(r.neuralSpeed, 3) + ",\(r.neuralContext),"
+            out += Self.fmt(r.storeCPUMicros, 1) + "," + Self.fmt(r.neuralCPUMicros, 1) + ","
+            out += Self.fmt(r.neuralEnergyNJ, 0) + ",\(r.airborne ? 1 : 0),\(r.handled ? 1 : 0),"
+            out += "\(r.velocityModeOn ? 1 : 0)\n"
+        }
+        return out
+    }
+
     /// Files already saved for a given workout, newest formats first. Empty if none.
     static func savedLogs(forWorkoutStart start: Date) -> [URL] {
         let s = stamp(for: start)
         let dir = logDirectory
-        return ["velocity_raw50hz_\(s).csv", "velocity_debug_\(s).csv"]
+        return ["velocity_raw50hz_\(s).csv", "velocity_debug_\(s).csv",
+                "velocity_models_\(s).csv"]
             .map { dir.appendingPathComponent($0) }
             .filter { FileManager.default.fileExists(atPath: $0.path) }
     }

@@ -17,6 +17,7 @@ struct DeveloperView: View {
     @State private var modelSummary = ""
     @State private var neuralSummary = ""
     @AppStorage("velocityEngine") private var velocityEngine = "store"
+    @AppStorage("alwaysScoreModels") private var alwaysScoreModels = false
 
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -96,6 +97,11 @@ struct DeveloperView: View {
                                 subtitle: "Which one drives the route")
                 }
                 .pickerStyle(.menu)
+                Toggle(isOn: $alwaysScoreModels) {
+                    SettingsRow(symbol: "chart.bar.doc.horizontal", tint: .teal,
+                                title: "Always score both models",
+                                subtitle: "Even when Velocity Mode is off")
+                }
                 if neuralSummary.isEmpty {
                     Text("Start a workout once to load it.")
                         .foregroundColor(.secondary).font(.callout)
@@ -105,7 +111,7 @@ struct DeveloperView: View {
             } header: {
                 Text("Velocity mode engine")
             } footer: {
-                Text("The network reads 40 seconds of vibration; the store reads four. On a car, scored on ticks where both answered, the network averaged 2.8 km/h error against the store's 3.2 — and it answered 95% of the ride where the store, built mostly from motorcycle signatures, had nothing to say for a third of it. Whichever drives, both answer every window and the log records both. It runs on the CPU: a convolutional version that the Neural Engine would accept was measured 31% less accurate, to save two tenths of a joule on a ride that costs three. In the air the network declines and the store answers regardless of this setting.")
+                Text("Scoring writes a third file, velocity_models_<date>.csv, holding what each model said beside the GPS fix that marks the answer. It runs on every ride, not just the ones where GPS has failed — which matters, because a ride where GPS failed is the one ride with no truth to check against. Neither model can touch the recording while it is only being scored.\n\nThe network reads 40 seconds of vibration; the store reads four. On a car, scored on ticks where both answered, the network averaged 2.8 km/h error against the store's 3.2 — and it answered 95% of the ride where the store, built mostly from motorcycle signatures, had nothing to say for a third of it. Whichever drives, both answer every window and the log records both. It runs on the CPU: a convolutional version that the Neural Engine would accept was measured 31% less accurate, to save two tenths of a joule on a ride that costs three. In the air the network declines and the store answers regardless of this setting.")
             }
 
             Section {
