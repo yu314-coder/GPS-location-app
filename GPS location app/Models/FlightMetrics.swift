@@ -171,6 +171,8 @@ struct FlightMetrics: Codable, Hashable {
     var totalPoints: Int = 0
     var validPoints: Int = 0
     var averageAccuracy: Double = 0.0
+    /// How many REAL fixes averageAccuracy is built from; estimated points are excluded.
+    var accuracySampleCount: Int = 0
     var signalCoverage: Double = 0.0  // percentage
     var currentGPSQualityScore: Double? = nil
     var averageGPSQualityScore: Double? = nil
@@ -477,8 +479,19 @@ struct FlightMetrics: Codable, Hashable {
             minAltitude = location.altitude
         }
 
-        // Update average accuracy
-        averageAccuracy = (averageAccuracy * Double(totalPoints - 1) + location.horizontalAccuracy) / Double(totalPoints)
+        // AVERAGE THE ACCURACY OF FIXES, NOT OF GUESSES.
+        //
+        // An estimated point carries a synthetic horizontal accuracy - a placeholder standing
+        // for how far dead reckoning may have drifted, not a measurement of anything. Averaging
+        // those in makes the figure describe how much of the ride was estimated rather than how
+        // good the reception was. On a 60-minute drive whose real fixes averaged 12 m, 6% of
+        // points carrying a 250 m placeholder reported 26 m, and I read that as a GPS fault and
+        // said so. The receiver was fine; it was the arithmetic.
+        if !location.isEstimated {
+            accuracySampleCount += 1
+            averageAccuracy = (averageAccuracy * Double(accuracySampleCount - 1)
+                               + location.horizontalAccuracy) / Double(accuracySampleCount)
+        }
 
         // Update signal coverage
         if location.isValid {
@@ -595,6 +608,10 @@ struct FlightMetrics: Codable, Hashable {
     }
 
     private mutating func updateGPSQuality(with location: FlightLocation) {
+        // Same reasoning as averageAccuracy: an estimated point has no reception to score.
+        // Including them reports how much of the ride was dead-reckoned, under a name that
+        // says how well the receiver was working.
+        guard !location.isEstimated else { return }
         let history = gpsQualityHistory ?? []
         let previousTimestamp = history.last?.timestamp
         let score = gpsQualityScore(for: location, previousTimestamp: previousTimestamp)
