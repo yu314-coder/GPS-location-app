@@ -91,7 +91,7 @@ struct DeveloperView: View {
             Section {
                 Picker(selection: $velocityEngine) {
                     Text("Nearest neighbour").tag("store")
-                    Text("Neural network").tag("neural")
+                    Text("Blended (store + network)").tag("neural")
                 } label: {
                     SettingsRow(symbol: "brain", tint: .purple, title: "Speed model",
                                 subtitle: "Which one drives the route")
@@ -111,7 +111,7 @@ struct DeveloperView: View {
             } header: {
                 Text("Velocity mode engine")
             } footer: {
-                Text("Scoring writes a third file, velocity_models_<date>.csv, holding what each model said beside the GPS fix that marks the answer. It runs on every ride, not just the ones where GPS has failed — which matters, because a ride where GPS failed is the one ride with no truth to check against. Neither model can touch the recording while it is only being scored.\n\nThe network reads 40 seconds of vibration; the store reads four. On a car, scored on ticks where both answered, the network averaged 2.8 km/h error against the store's 3.2 — and it answered 95% of the ride where the store, built mostly from motorcycle signatures, had nothing to say for a third of it. Whichever drives, both answer every window and the log records both. It runs on the CPU: a convolutional version that the Neural Engine would accept was measured 31% less accurate, to save two tenths of a joule on a ride that costs three. In the air the network declines and the store answers regardless of this setting.")
+                Text("Scoring writes a third file, velocity_models_<date>.csv, holding what each model said beside the GPS fix that marks the answer. It runs on every ride, not just the ones where GPS has failed — which matters, because a ride where GPS failed is the one ride with no truth to check against. Neither model can touch the recording while it is only being scored.\n\nBlended runs both and averages them, 40% network and 60% store. Neither model is better everywhere — but on four rides scored against healthy GPS the blend beat both of them on every one, because they are wrong about different windows and averaging cancels part of each. Where the store has no close match, roughly a third of a car ride, the network answers alone. The network reads 40 seconds of vibration; the store reads four. On a car, scored on ticks where both answered, the network averaged 2.8 km/h error against the store's 3.2 — and it answered 95% of the ride where the store, built mostly from motorcycle signatures, had nothing to say for a third of it. Whichever drives, both answer every window and the log records both. It runs on the CPU: a convolutional version that the Neural Engine would accept was measured 31% less accurate, to save two tenths of a joule on a ride that costs three. In the air the network declines and the store answers regardless of this setting.")
             }
 
             Section {

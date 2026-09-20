@@ -281,6 +281,10 @@ class WorkoutSession: ObservableObject {
     /// either way; this only chooses whose answer counts. Settable from the developer screen so
     /// a single ride can be repeated on each without reinstalling.
     enum VelocityEngine: String { case store, neural }
+
+    /// How much of the blended answer comes from the network. Fitted on three rides and
+    /// confirmed on a fourth it had never seen; the curve is flat from 0.35 to 0.5.
+    private let NEURAL_BLEND_WEIGHT = 0.4
     var velocityEngine: VelocityEngine {
         VelocityEngine(rawValue: UserDefaults.standard.string(forKey: "velocityEngine") ?? "")
             ?? .store
@@ -1132,10 +1136,42 @@ class WorkoutSession: ObservableObject {
         // The net declines for its first 40 s and whenever airborne, and then the store drives
         // no matter what the setting says. Record who ACTUALLY answered, not what was selected -
         // otherwise every warm-up tick is filed against the model that did not produce it.
+        // BLEND, RATHER THAN CHOOSE.
+        //
+        // Neither model is better than the other everywhere, and on four rides scored against
+        // healthy GPS a weighted average beat BOTH of them on every single one:
+        //
+        //     ride            store   net   blended
+        //     motorway         6.44  9.25    5.86
+        //     16:19            7.71  7.53    6.95
+        //     16:09            9.32  7.71    7.41
+        //     car (held out)   7.16  7.29    5.73
+        //
+        // The reason is in the error correlation between them, which runs from 0.09 to 0.57:
+        // they are wrong about different windows, so averaging cancels part of each. That is
+        // also why picking one by speed cannot work - measured on the motorway the store was
+        // the better answer at every level of the network's own output, so there is no
+        // threshold to hand over at.
+        //
+        // The weight is flat between 0.35 and 0.5 on every ride, so it is not a knife-edge fit.
+        // If the store declines - roughly a third of a car ride, where a signature built from
+        // motorcycles has no near neighbour - the network answers alone, which is the coverage
+        // it was brought in for.
         let neuralDrives = velocityEngine == .neural && neuralAnswer != nil
-        let driving = neuralDrives ? neuralAnswer : storeAnswer
+        let driving: Double?
+        if neuralDrives, let store = storeAnswer, let net = neuralAnswer {
+            driving = NEURAL_BLEND_WEIGHT * net + (1 - NEURAL_BLEND_WEIGHT) * store
+            drivingModelThisTick = "blend"
+        } else if neuralDrives {
+            driving = neuralAnswer
+            drivingModelThisTick = "neural"
+        } else {
+            driving = storeAnswer
+            drivingModelThisTick = "store"
+        }
+        // The log keeps whichever raw answer is not the headline; velocity_models_*.csv keeps
+        // both regardless, which is what the comparison is actually scored from.
         shadowSpeed = neuralDrives ? storeAnswer : neuralAnswer
-        drivingModelThisTick = neuralDrives ? "neural" : "store"
         lastChosenModelAnswer = driving
         return driving
     }
