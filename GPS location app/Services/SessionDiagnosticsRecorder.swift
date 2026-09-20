@@ -159,6 +159,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let neuralGPUMicros: Double
         /// Windows of context the net has, out of the 80 it needs. Below 80 it declines.
         let neuralContext: Int
+        /// The course iOS reported for the fix, degrees, or -1 when it declined to give one,
+        /// and which measurement last taught the compass offset. A route drawn at a constant
+        /// wrong angle is a heading fault, and these two say whether the datum was never
+        /// learned, learned from a poor source, or learned and then applied wrongly.
+        let gpsCourse: Double
+        let misalignmentSource: String
         let latitude: Double?
         let longitude: Double?
         /// Where GPS says we ACTUALLY are, recorded even in Force Velocity where GPS is
@@ -532,7 +538,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter,engine,shadow_speed_ms,store_wall_us,store_cpu_us,store_nj,ai_wall_us,ai_cpu_us,ai_nj,ai_gpu_us,ai_ctx\n"
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter,engine,shadow_speed_ms,store_wall_us,store_cpu_us,store_nj,ai_wall_us,ai_cpu_us,ai_nj,ai_gpu_us,ai_ctx,gps_course,offset_src\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -563,7 +569,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + ",\(r.engine)," + Self.fmt(r.shadowSpeed, 3) + "," + Self.fmt(r.storeWallMicros, 1) + "," + Self.fmt(r.storeCPUMicros, 1) + "," + Self.fmt(r.storeEnergyNJ, 0) + "," + Self.fmt(r.neuralWallMicros, 1) + "," + Self.fmt(r.neuralCPUMicros, 1) + "," + Self.fmt(r.neuralEnergyNJ, 0) + "," + Self.fmt(r.neuralGPUMicros, 1) + ",\(r.neuralContext)\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + ",\(r.engine)," + Self.fmt(r.shadowSpeed, 3) + "," + Self.fmt(r.storeWallMicros, 1) + "," + Self.fmt(r.storeCPUMicros, 1) + "," + Self.fmt(r.storeEnergyNJ, 0) + "," + Self.fmt(r.neuralWallMicros, 1) + "," + Self.fmt(r.neuralCPUMicros, 1) + "," + Self.fmt(r.neuralEnergyNJ, 0) + "," + Self.fmt(r.neuralGPUMicros, 1) + ",\(r.neuralContext)," + Self.fmt(r.gpsCourse, 0) + ",\(r.misalignmentSource)\n"
         }
         return out
     }

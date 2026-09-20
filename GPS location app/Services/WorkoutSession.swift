@@ -280,7 +280,13 @@ class WorkoutSession: ObservableObject {
     /// Which model's answer is recorded as the speed and integrated into the route. Both run
     /// either way; this only chooses whose answer counts. Settable from the developer screen so
     /// a single ride can be repeated on each without reinstalling.
-    enum VelocityEngine: String { case store, neural }
+    /// store = nearest-neighbour lookup; neural = the recurrent net (CPU, more accurate);
+    /// neuralANE = the convolutional net, which is what the Neural Engine will accept.
+    enum VelocityEngine: String {
+        case store, neural, neuralANE
+        var isNeural: Bool { self != .store }
+        var variant: NeuralSpeedEstimator.Variant { self == .neuralANE ? .tcn : .gru }
+    }
     var velocityEngine: VelocityEngine {
         VelocityEngine(rawValue: UserDefaults.standard.string(forKey: "velocityEngine") ?? "")
             ?? .store
@@ -333,6 +339,11 @@ class WorkoutSession: ObservableObject {
     /// the PCA walking axis. The compass alone measures device orientation, so this offset is
     /// what turns it into a usable absolute datum for travel direction.
     private var compassMisalignment: Double?
+    /// Which measurement last taught the compass offset, and the raw course iOS reported.
+    /// Without these a ride that draws its route at a fixed wrong angle gives no way to tell
+    /// whether the datum was never learned or was learned wrongly.
+    private var misalignmentSource = "none"
+    private var latestGPSCourse: Double = -1
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
     /// Previous GPS fix used for the misalignment bearing, so travel direction can be measured
     /// from position change when the course field is unusable (i.e. at walking pace).
@@ -1108,10 +1119,10 @@ class WorkoutSession: ObservableObject {
         // The net declines for its first 40 s and whenever airborne, and then the store drives
         // no matter what the setting says. Record who ACTUALLY answered, not what was selected -
         // otherwise every warm-up tick is filed against the model that did not produce it.
-        let neuralDrives = velocityEngine == .neural && neuralAnswer != nil
+        let neuralDrives = velocityEngine.isNeural && neuralAnswer != nil
         let driving = neuralDrives ? neuralAnswer : storeAnswer
         shadowSpeed = neuralDrives ? storeAnswer : neuralAnswer
-        drivingModelThisTick = neuralDrives ? "neural" : "store"
+        drivingModelThisTick = neuralDrives ? "neural-\(neuralSpeed.variant.rawValue)" : "store"
         lastChosenModelAnswer = driving
         return driving
     }
@@ -1798,6 +1809,7 @@ class WorkoutSession: ObservableObject {
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
         neuralSpeed.beginSession()
+        neuralSpeed.use(velocityEngine.variant)
         // The neural estimator is fed by the old model's extractor, every 25 samples. Set here
         // rather than at init so it follows the session rather than the app's lifetime.
         learnedSpeed.featureSink = { [weak self] features in
@@ -2939,7 +2951,9 @@ class WorkoutSession: ObservableObject {
         // baseline it is a direct measurement of where the body actually travelled, and at
         // 10 m separation with fixes good to a few metres it is far more trustworthy at walking
         // pace than the course field, which iOS often reports as −1 or noise below a few km/h.
+        latestGPSCourse = location.course
         var travelDirection: Double? = validCourse(location.course).flatMap { location.speed > 2.0 ? $0 : nil }
+        if travelDirection != nil { misalignmentSource = "course" }
         if travelDirection == nil, let previous = lastMisalignmentFix {
             let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
             let to = CLLocation(latitude: location.latitude, longitude: location.longitude)
@@ -2963,9 +2977,21 @@ class WorkoutSession: ObservableObject {
             let neededBaseline = max(10, 3 * uncertainty)
             let elapsed = location.timestamp.timeIntervalSince(previous.timestamp)
             let impliedSpeed = elapsed > 0 ? separation / elapsed : .infinity
-            // Compare against what the app itself believes, not a constant: the same test has to
-            // hold for a walk and for a motorway.
-            let believedSpeed = max(currentMetrics.currentSpeed, 0.5)
+            // JUDGE GPS AGAINST GPS, NOT AGAINST OURSELVES.
+            //
+            // This used to compare the implied speed with currentMetrics.currentSpeed - the
+            // app's own displayed speed, which comes from whichever speed model is driving. A
+            // heading measurement then depended on the speed estimate, so a model reading low
+            // made real movement look like noise and the compass offset was never learned. The
+            // recorded route is then drawn at a fixed wrong angle while the speed looks fine,
+            // which is precisely the symptom that sent me looking.
+            //
+            // The Doppler speed in the fix is a measurement, it is independent of every model
+            // here, and it is already trusted enough to be the truth column in the logs. Use it
+            // when it is available, and fall back to our own belief only when it is not.
+            let believedSpeed = location.speed >= 0
+                ? max(location.speed, 0.5)
+                : max(currentMetrics.currentSpeed, 0.5)
             let speedIsConsistent = impliedSpeed <= believedSpeed * 2.5 + 1.0
             if separation >= neededBaseline, separation <= 120, speedIsConsistent {
                 let φ1 = previous.latitude * .pi / 180, φ2 = location.latitude * .pi / 180
@@ -2973,6 +2999,7 @@ class WorkoutSession: ObservableObject {
                 let y = sin(Δλ) * cos(φ2)
                 let x = cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(Δλ)
                 travelDirection = normalizedHeading(atan2(y, x) * 180 / .pi)
+                misalignmentSource = "bearing"
             }
         }
         if lastMisalignmentFix == nil {
@@ -3542,6 +3569,7 @@ class WorkoutSession: ObservableObject {
                         // fixed offset, correctable in principle, that the clamp made
                         // permanently uncorrectable. Pocket carry is also the BEST case for dead
                         // reckoning, since the phone finally moves with the body.
+                        misalignmentSource = "walk"
                         compassMisalignment = normalizedSignedAngle(existing + 0.1 * delta)
                     } else {
                         compassMisalignment = offset
@@ -4240,6 +4268,8 @@ class WorkoutSession: ObservableObject {
             neuralEnergyNJ: aiNJ,
             neuralGPUMicros: aiGPUMicros,
             neuralContext: neuralSpeed.windowsSeen,
+            gpsCourse: latestGPSCourse,
+            misalignmentSource: misalignmentSource,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
             truthLatitude: sessionDiagnostics.latestGPSLatitude,
