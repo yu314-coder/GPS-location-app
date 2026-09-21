@@ -54,26 +54,7 @@ final class LearnedSpeedEstimator {
         ring[ringIndex] = vertical
         ringIndex = (ringIndex + 1) % windowSize
         if ringFilled < windowSize { ringFilled += 1 }
-        // Hand the same window to whoever else wants it, every 25 samples — 0.5 s at 50 Hz.
-        //
-        // The neural estimator has to see EXACTLY these features on EXACTLY this cadence: it
-        // was trained on sequences cut every 25 samples from this same extractor, and it is
-        // being compared against this model on the same ride. Recomputing the features in a
-        // second place would put a second implementation between the two answers, and then any
-        // difference between the models could as easily be a difference in the front end.
-        // One extractor, one cadence, one feature vector, handed to both.
-        strideCounter += 1
-        if strideCounter >= featureStride {
-            strideCounter = 0
-            if let sink = featureSink, let f = currentFeatures() { sink(f) }
-        }
     }
-
-    /// Fed the window features every `featureStride` samples. Optional: nothing in this model
-    /// depends on it.
-    var featureSink: (([Double]) -> Void)?
-    private var strideCounter = 0
-    private let featureStride = 25
 
     /// Vibration amplitude of the most recent window, m/s^2. The caller compares it against this
     /// vehicle's own moving level to recognise a standstill; see WorkoutSession.vibrationSaysParked.

@@ -273,46 +273,6 @@ class WorkoutSession: ObservableObject {
     /// showing why a learned lookup finds what five hand-built features could not.
     /// Not private: the developer screen reports what it holds and can clear it.
     let learnedSpeed = LearnedSpeedEstimator()
-    /// The neural estimator. Runs on EVERY window regardless of which model is driving, so one
-    /// ride produces a head-to-head rather than half of one. See velocityEngine.
-    let neuralSpeed = NeuralSpeedEstimator()
-
-    /// Which model's answer is recorded as the speed and integrated into the route. Both run
-    /// either way; this only chooses whose answer counts. Settable from the developer screen so
-    /// a single ride can be repeated on each without reinstalling.
-    enum VelocityEngine: String { case store, neural }
-
-    /// How much of the blended answer comes from the network. Fitted on three rides and
-    /// confirmed on a fourth it had never seen; the curve is flat from 0.35 to 0.5.
-    private let NEURAL_BLEND_WEIGHT = 0.4
-    var velocityEngine: VelocityEngine {
-        VelocityEngine(rawValue: UserDefaults.standard.string(forKey: "velocityEngine") ?? "")
-            ?? .store
-    }
-    /// What the model that is NOT driving said this tick, for the log.
-    private var shadowSpeed: Double?
-    /// The nearest-neighbour store's own answer this tick, whatever is driving.
-    private var storeAnswerThisTick: Double?
-
-    /// THE SPEED THE ROUTE IS STEERED BY, which is deliberately NOT the speed being recorded.
-    ///
-    /// Heading comes from the direction of the integrated velocity vector, and that vector is
-    /// pegged to a speed every tick. Turning is lateral acceleration divided by speed, so the
-    /// magnitude it is pegged to decides how fast the heading rotates for a given corner: peg it
-    /// low and the route over-turns. That made the drawn route depend on which speed model was
-    /// selected, which is wrong - choosing a speed model should change the speed and nothing
-    /// else. The network under-reads by 18% at 50-80 km/h, and a route steered at 18% under
-    /// swings correspondingly wide.
-    ///
-    /// So the vector is always pegged to what the store would have produced, whichever model is
-    /// driving the recorded speed. With the store selected the two are identical by
-    /// construction; with the network selected the heading is bit-for-bit the heading the store
-    /// would have drawn, and only the speed and distance differ.
-    private var headingPegSpeed: Double = 0
-    /// Which model actually produced this tick's answer, as opposed to which one is selected.
-    private var drivingModelThisTick = "store"
-    private var neuralCostThisTick = InferenceCost()
-    private var storeCostThisTick = InferenceCost()
     private let vibrationSpeed = VibrationSpeedEstimator()
     /// Per-tick record of what the speed model saw and decided, for export and live inspection.
     let sessionDiagnostics = SessionDiagnosticsRecorder()
@@ -355,11 +315,6 @@ class WorkoutSession: ObservableObject {
     /// the PCA walking axis. The compass alone measures device orientation, so this offset is
     /// what turns it into a usable absolute datum for travel direction.
     private var compassMisalignment: Double?
-    /// Which measurement last taught the compass offset, and the raw course iOS reported.
-    /// Without these a ride that draws its route at a fixed wrong angle gives no way to tell
-    /// whether the datum was never learned or was learned wrongly.
-    private var misalignmentSource = "none"
-    private var latestGPSCourse: Double = -1
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
     /// Previous GPS fix used for the misalignment bearing, so travel direction can be measured
     /// from position change when the course field is unusable (i.e. at walking pace).
@@ -1097,84 +1052,6 @@ class WorkoutSession: ObservableObject {
     private var lastLearnedAnswer: Double?
     private var lastLearnedAnswerTime: Date?
     private let LEARNED_HOLD_MAX_AGE: TimeInterval = 120.0
-
-    /// What the driving model said this tick, so the branch below does not have to ask twice.
-    private var lastChosenModelAnswer: Double?
-
-    /// BOTH MODELS, EVERY WINDOW, ONE SET OF FEATURES.
-    ///
-    /// The nearest-neighbour store and the neural net are being compared on real rides, and the
-    /// only way to do that honestly is to run them together: same 4 s window, same 11 features,
-    /// same gates, same tick. Run one per ride instead and every comparison is confounded by
-    /// the ride — and these rides cannot be repeated (traffic, weather, lights), which is
-    /// exactly the problem that made the earlier offline comparisons so hard to trust.
-    ///
-    /// One of them drives the recorded speed and the route; the other is written to the log as
-    /// a shadow. Which one drives is a developer setting, because the two disagree in ways that
-    /// matter and the shipped default should change only on evidence:
-    ///
-    ///     ground (46 rides, held out)   store 10.6 km/h +1%    net 8.9 km/h  0%
-    ///     flight (one flight)           store 34.4 km/h +1%    net 57.1 km/h +10%
-    ///
-    /// Airborne the net declines and the store drives whatever the setting says, because a model
-    /// trained only on roads has nothing to say about cruise.
-    private func chosenModelSpeed() -> Double? {
-        guard !deviceIsBeingHandled else {
-            lastChosenModelAnswer = nil
-            shadowSpeed = nil
-            return nil
-        }
-        let airborne = isAirborneForEstimation
-        let (storeAnswer, storeCost) = PowerMeter.measure {
-            learnedSpeed.estimate(airborne: airborne)
-        }
-        storeCostThisTick = storeCost
-        storeAnswerThisTick = storeAnswer
-        let neuralAnswer = neuralSpeed.estimate(airborne: airborne)
-        neuralCostThisTick = neuralSpeed.lastCost
-
-        // The net declines for its first 40 s and whenever airborne, and then the store drives
-        // no matter what the setting says. Record who ACTUALLY answered, not what was selected -
-        // otherwise every warm-up tick is filed against the model that did not produce it.
-        // BLEND, RATHER THAN CHOOSE.
-        //
-        // Neither model is better than the other everywhere, and on four rides scored against
-        // healthy GPS a weighted average beat BOTH of them on every single one:
-        //
-        //     ride            store   net   blended
-        //     motorway         6.44  9.25    5.86
-        //     16:19            7.71  7.53    6.95
-        //     16:09            9.32  7.71    7.41
-        //     car (held out)   7.16  7.29    5.73
-        //
-        // The reason is in the error correlation between them, which runs from 0.09 to 0.57:
-        // they are wrong about different windows, so averaging cancels part of each. That is
-        // also why picking one by speed cannot work - measured on the motorway the store was
-        // the better answer at every level of the network's own output, so there is no
-        // threshold to hand over at.
-        //
-        // The weight is flat between 0.35 and 0.5 on every ride, so it is not a knife-edge fit.
-        // If the store declines - roughly a third of a car ride, where a signature built from
-        // motorcycles has no near neighbour - the network answers alone, which is the coverage
-        // it was brought in for.
-        let neuralDrives = velocityEngine == .neural && neuralAnswer != nil
-        let driving: Double?
-        if neuralDrives, let store = storeAnswer, let net = neuralAnswer {
-            driving = NEURAL_BLEND_WEIGHT * net + (1 - NEURAL_BLEND_WEIGHT) * store
-            drivingModelThisTick = "blend"
-        } else if neuralDrives {
-            driving = neuralAnswer
-            drivingModelThisTick = "neural"
-        } else {
-            driving = storeAnswer
-            drivingModelThisTick = "store"
-        }
-        // The log keeps whichever raw answer is not the headline; velocity_models_*.csv keeps
-        // both regardless, which is what the comparison is actually scored from.
-        shadowSpeed = neuralDrives ? storeAnswer : neuralAnswer
-        lastChosenModelAnswer = driving
-        return driving
-    }
     private var recentLearnedAnswer: Double? {
         guard let v = lastLearnedAnswer, let t = lastLearnedAnswerTime else { return nil }
         // A WALK IS PROOF THIS IS NO LONGER A VEHICLE.
@@ -1857,14 +1734,6 @@ class WorkoutSession: ObservableObject {
         learnedSpeed.load()
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
-        neuralSpeed.beginSession()
-        headingPegSpeed = 0
-        storeAnswerThisTick = nil
-        // The neural estimator is fed by the old model's extractor, every 25 samples. Set here
-        // rather than at init so it follows the session rather than the app's lifetime.
-        learnedSpeed.featureSink = { [weak self] features in
-            self?.neuralSpeed.ingest(features: features)
-        }
         // The standstill test compares against THIS vehicle's moving level, so the level is learned
         // fresh each workout - a different bike, or the same phone in a different pocket, must not
         // inherit the last one's.
@@ -3001,9 +2870,7 @@ class WorkoutSession: ObservableObject {
         // baseline it is a direct measurement of where the body actually travelled, and at
         // 10 m separation with fixes good to a few metres it is far more trustworthy at walking
         // pace than the course field, which iOS often reports as −1 or noise below a few km/h.
-        latestGPSCourse = location.course
         var travelDirection: Double? = validCourse(location.course).flatMap { location.speed > 2.0 ? $0 : nil }
-        if travelDirection != nil { misalignmentSource = "course" }
         if travelDirection == nil, let previous = lastMisalignmentFix {
             let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
             let to = CLLocation(latitude: location.latitude, longitude: location.longitude)
@@ -3027,21 +2894,9 @@ class WorkoutSession: ObservableObject {
             let neededBaseline = max(10, 3 * uncertainty)
             let elapsed = location.timestamp.timeIntervalSince(previous.timestamp)
             let impliedSpeed = elapsed > 0 ? separation / elapsed : .infinity
-            // JUDGE GPS AGAINST GPS, NOT AGAINST OURSELVES.
-            //
-            // This used to compare the implied speed with currentMetrics.currentSpeed - the
-            // app's own displayed speed, which comes from whichever speed model is driving. A
-            // heading measurement then depended on the speed estimate, so a model reading low
-            // made real movement look like noise and the compass offset was never learned. The
-            // recorded route is then drawn at a fixed wrong angle while the speed looks fine,
-            // which is precisely the symptom that sent me looking.
-            //
-            // The Doppler speed in the fix is a measurement, it is independent of every model
-            // here, and it is already trusted enough to be the truth column in the logs. Use it
-            // when it is available, and fall back to our own belief only when it is not.
-            let believedSpeed = location.speed >= 0
-                ? max(location.speed, 0.5)
-                : max(currentMetrics.currentSpeed, 0.5)
+            // Compare against what the app itself believes, not a constant: the same test has to
+            // hold for a walk and for a motorway.
+            let believedSpeed = max(currentMetrics.currentSpeed, 0.5)
             let speedIsConsistent = impliedSpeed <= believedSpeed * 2.5 + 1.0
             if separation >= neededBaseline, separation <= 120, speedIsConsistent {
                 let φ1 = previous.latitude * .pi / 180, φ2 = location.latitude * .pi / 180
@@ -3049,7 +2904,6 @@ class WorkoutSession: ObservableObject {
                 let y = sin(Δλ) * cos(φ2)
                 let x = cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(Δλ)
                 travelDirection = normalizedHeading(atan2(y, x) * 180 / .pi)
-                misalignmentSource = "bearing"
             }
         }
         if lastMisalignmentFix == nil {
@@ -3257,44 +3111,8 @@ class WorkoutSession: ObservableObject {
         }
     }
 
-    /// Run both speed models and write what they said, whether or not anything is using them.
-    ///
-    /// Deliberately the first thing the tick does, before every early return: with healthy GPS
-    /// the rest of this function does nothing at all, and that is precisely the case worth
-    /// recording, because GPS is there to mark the answer. Neither call can affect the recording
-    /// - the results go straight to the log and nowhere else.
-    private func scoreModelsForLog() {
-        guard UserDefaults.standard.bool(forKey: "alwaysScoreModels") else { return }
-        let airborne = isAirborneForEstimation
-        let handled = deviceIsBeingHandled
-        var storeAnswer: Double?
-        var storeCPU = 0.0
-        if !handled {
-            let (a, cost) = PowerMeter.measure { learnedSpeed.estimate(airborne: airborne) }
-            storeAnswer = a
-            storeCPU = cost.cpuMicros
-        }
-        let neuralAnswer = handled ? nil : neuralSpeed.estimate(airborne: airborne)
-        sessionDiagnostics.recordModel(.init(
-            t: Date(),
-            gpsSpeed: sessionDiagnostics.latestGPSSpeed >= 0 ? sessionDiagnostics.latestGPSSpeed : nil,
-            gpsAccuracy: sessionDiagnostics.latestGPSAccuracy >= 0 ? sessionDiagnostics.latestGPSAccuracy : nil,
-            gpsAge: sessionDiagnostics.latestGPSFixTime.map { Date().timeIntervalSince($0) },
-            gpsCourse: latestGPSCourse,
-            storeSpeed: storeAnswer,
-            neuralSpeed: neuralAnswer,
-            neuralContext: neuralSpeed.windowsSeen,
-            storeCPUMicros: storeCPU,
-            neuralCPUMicros: neuralSpeed.lastCost.cpuMicros,
-            neuralEnergyNJ: Double(neuralSpeed.lastCost.energyNanojoules),
-            airborne: airborne,
-            handled: handled,
-            velocityModeOn: forceMotionFallback))
-    }
-
     private func checkEstimatedLocationFallback() {
         guard isActive && !isPaused else { return }
-        scoreModelsForLog()
         // THE AUTOMATIC SWITCH MUST RUN AT THE SAME RATE AS THE FORCED ONE.
         //
         // This enabled 50 Hz only while Velocity Mode was forced, and 2 Hz otherwise. The
@@ -3370,15 +3188,6 @@ class WorkoutSession: ObservableObject {
         // latch the flag for every path that does not take that branch, permanently disabling
         // the always-on datum for vehicles and aircraft.
         compassCorrectionAppliedThisTick = false
-        // Same reasoning for the head-to-head record. chosenModelSpeed() is only reached on the
-        // vehicle branch; on a walking tick neither model is consulted, and without this the log
-        // would carry the previous tick's shadow answer and cost as though they were measured
-        // now. A stale number that looks fresh is worse than a blank one.
-        shadowSpeed = nil
-        storeAnswerThisTick = nil
-        drivingModelThisTick = velocityEngine.rawValue
-        storeCostThisTick = InferenceCost()
-        neuralCostThisTick = InferenceCost()
 
         // The velocity VECTOR is integrated at sensor rate in integrateWorldAccelSample,
         // which also owns drift correction via ZUPT. There is deliberately NO velocity leak
@@ -3656,7 +3465,6 @@ class WorkoutSession: ObservableObject {
                         // fixed offset, correctable in principle, that the clamp made
                         // permanently uncorrectable. Pocket carry is also the BEST case for dead
                         // reckoning, since the phone finally moves with the body.
-                        misalignmentSource = "walk"
                         compassMisalignment = normalizedSignedAngle(existing + 0.1 * delta)
                     } else {
                         compassMisalignment = offset
@@ -3929,7 +3737,9 @@ class WorkoutSession: ObservableObject {
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
         } else if vehicleContextIsCurrent,
-                  let learned = chosenModelSpeed() ?? recentLearnedAnswer {
+                  let learned = (deviceIsBeingHandled ? nil
+                                 : learnedSpeed.estimate(airborne: isAirborneForEstimation))
+                                ?? recentLearnedAnswer {
             // NOT AIRBORNE. The learned model is a GROUND-VEHICLE model — every observation in
             // it was labelled by GPS on a road — and in the air it does not decline, it answers
             // confidently and wrongly. Replayed through the real estimator with a synthetic
@@ -3965,20 +3775,11 @@ class WorkoutSession: ObservableObject {
             // Apple's classifier confidently saying stationary. Never available airborne,
             // where a smooth cruise is quiet too.
             let stoppedOnGround = vehicleIsStoppedOnGround(correctedSpeed: estimatedFallbackSpeed)
-            let blend = min(dt / (1.5 + dt), 1.0)
             if stoppedOnGround {
                 estimatedFallbackSpeed = 0
-                headingPegSpeed = 0
             } else {
+                let blend = min(dt / (1.5 + dt), 1.0)
                 estimatedFallbackSpeed += (learned - estimatedFallbackSpeed) * blend
-                // The steering speed follows the store on exactly the same terms — same blend,
-                // same stop, holding its last answer when the store declines.
-                if velocityEngine == .store {
-                    headingPegSpeed = estimatedFallbackSpeed
-                } else {
-                    let storeSays = storeAnswerThisTick ?? headingPegSpeed
-                    headingPegSpeed += (storeSays - headingPegSpeed) * blend
-                }
             }
             distance = estimatedFallbackSpeed * dt
             // A HAND ON THE PHONE IS NOT A STOP.
@@ -3992,7 +3793,8 @@ class WorkoutSession: ObservableObject {
             // The honest answer while the signature is unreadable is the last one that was
             // measured, which is what recentLearnedAnswer holds and what the flight case
             // already relies on. A car does not stop because someone reached for their phone.
-            let modelAnswered = !deviceIsBeingHandled && lastChosenModelAnswer != nil
+            let modelAnswered = !deviceIsBeingHandled
+                && learnedSpeed.estimate(airborne: isAirborneForEstimation) != nil
             let warmup = modelAnswered && learnedSpeed.lastEstimateUsedWarmup
             if modelAnswered {
                 lastLearnedAnswer = learned
@@ -4002,8 +3804,8 @@ class WorkoutSession: ObservableObject {
                 : (modelAnswered ? (warmup ? "LEARN(warmup)" : "LEARN")
                    : (deviceIsBeingHandled ? "LEARN(held in hand)" : "LEARN(held)"))
             let hr = motionHeadingDegrees * .pi / 180
-            motionVelNorth = headingPegSpeed * cos(hr)
-            motionVelEast = headingPegSpeed * sin(hr)
+            motionVelNorth = estimatedFallbackSpeed * cos(hr)
+            motionVelEast = estimatedFallbackSpeed * sin(hr)
         } else if let stated = manualSpeedKmh, stated > 0 {
             // USER-STATED SPEED. Highest priority: a number the traveller knows beats anything
             // inferable from a sensor that does not carry the signal.
@@ -4297,10 +4099,7 @@ class WorkoutSession: ObservableObject {
                   ? "🤷 Speed model out of its depth (regime distance \(learnedSpeed.regimeDistanceCached.map { String(format: "%.2f", $0) } ?? "?")) — holding last GPS speed"
                   : "✅ Speed model back within a learned regime")
         }
-        let storeNJ = Double(storeCostThisTick.energyNanojoules)
-        let aiNJ = Double(neuralCostThisTick.energyNanojoules)
-        let aiGPUMicros = Double(neuralCostThisTick.gpuNanos) / 1000.0
-        let row = SessionDiagnosticsRecorder.Row(
+        sessionDiagnostics.record(.init(
             t: now,
             source: sourceTag,
             activity: activityTag.trimmingCharacters(in: .whitespaces),
@@ -4354,18 +4153,6 @@ class WorkoutSession: ObservableObject {
             requestedAccuracy: locationManager.requestedAccuracy,
             requestedDistanceFilter: locationManager.requestedDistanceFilter,
             regimeObservations: learnedSpeed.regimeObservationsCached,
-            engine: drivingModelThisTick,
-            shadowSpeed: shadowSpeed,
-            storeWallMicros: storeCostThisTick.wallMicros,
-            storeCPUMicros: storeCostThisTick.cpuMicros,
-            storeEnergyNJ: storeNJ,
-            neuralWallMicros: neuralCostThisTick.wallMicros,
-            neuralCPUMicros: neuralCostThisTick.cpuMicros,
-            neuralEnergyNJ: aiNJ,
-            neuralGPUMicros: aiGPUMicros,
-            neuralContext: neuralSpeed.windowsSeen,
-            gpsCourse: latestGPSCourse,
-            misalignmentSource: misalignmentSource,
             latitude: lastFix?.latitude,
             longitude: lastFix?.longitude,
             truthLatitude: sessionDiagnostics.latestGPSLatitude,
@@ -4375,8 +4162,7 @@ class WorkoutSession: ObservableObject {
             pitch: locationManager.currentPitch,
             roll: locationManager.currentRoll,
             yaw: locationManager.currentYaw,
-            altitude: locationManager.currentRelativeAltitude)
-        sessionDiagnostics.record(row)
+            altitude: locationManager.currentRelativeAltitude))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist
@@ -4965,31 +4751,9 @@ class WorkoutSession: ObservableObject {
             currentMetrics.totalDistance = restoreDistance
             previousLocation = flight.locations.last ?? previousLocation
         }
-        // A DEAD-RECKONED STEP CANNOT TELEPORT.
-        //
-        // One recorded drive ended with a single estimated point 2,052 m from the GPS fix
-        // beside it in time, reached and left again within a second or two. The other 131
-        // estimated points on that ride sat a median of 79 m from truth, so the dead reckoning
-        // was working - but the drawn route ran out to that point and back, adding 5.4 km of
-        // distance that was never travelled to a 49 km recording, and put a visible spike
-        // across the map.
-        //
-        // The step is bounded by what the vehicle could actually have covered since the last
-        // point. MAX_GROUND_STOP_SPEED is the same 60 m/s ceiling used elsewhere to refuse an
-        // inferred stop, doubled here for headroom and floored so a long gap between points
-        // does not license an arbitrarily large jump. Clamping rather than dropping keeps the
-        // route continuous: the direction is still the best estimate available, only the
-        // magnitude is impossible.
-        let sincePrevious = max(timestamp.timeIntervalSince(previousLocation.timestamp), 0)
-        let plausibleLimit = max(120.0 * min(sincePrevious, 10.0), 200.0)
-        let steppedDistance = min(distanceMeters, plausibleLimit)
-        if steppedDistance < distanceMeters {
-            print("📍 ⚠️ estimated step clamped: \(Int(distanceMeters)) m in "
-                  + "\(String(format: "%.1f", sincePrevious)) s -> \(Int(steppedDistance)) m")
-        }
         let coordinate = projectedCoordinate(
             from: CLLocationCoordinate2D(latitude: previousLocation.latitude, longitude: previousLocation.longitude),
-            distanceMeters: steppedDistance,
+            distanceMeters: distanceMeters,
             bearingDegrees: headingDegrees
         )
         // HONEST, GROWING UNCERTAINTY — not a flat 250 m.
@@ -5017,7 +4781,7 @@ class WorkoutSession: ObservableObject {
             horizontalAccuracy: drift,
             verticalAccuracy: max(drift, ESTIMATED_LOCATION_VERTICAL_ACCURACY / 10),
             course: headingDegrees,
-            speed: max(steppedDistance / max(sincePrevious, 0.5), 0.0),
+            speed: max(distanceMeters / max(timestamp.timeIntervalSince(previousLocation.timestamp), 0.5), 0.0),
             timestamp: timestamp
         )
         let estimatedLocation = FlightLocation(

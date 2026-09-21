@@ -138,33 +138,6 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// hundred - so the gate ignores it below 150; without this a log cannot show which case
         /// it is.
         let regimeObservations: Int
-        /// THE HEAD-TO-HEAD. Both speed models answer from the same window on every tick; one
-        /// drives, the other is recorded here. `engine` says which was driving, so a ride can be
-        /// scored either way after the fact and the two can be compared on a ride that was only
-        /// taken once.
-        let engine: String
-        /// The model that was NOT driving, m/s, or nil if it declined (still warming up, or
-        /// airborne, where the net has no business answering).
-        let shadowSpeed: Double?
-        /// What each one cost to run, this tick. Wall and CPU microseconds are attributable to
-        /// the call. Energy is whole-process over the call in nanojoules and GPU time in
-        /// microseconds — not strictly attributable, but the models run microseconds apart on an
-        /// otherwise quiet tick, and a zero means the counter is coarser than the call.
-        let storeWallMicros: Double
-        let storeCPUMicros: Double
-        let storeEnergyNJ: Double
-        let neuralWallMicros: Double
-        let neuralCPUMicros: Double
-        let neuralEnergyNJ: Double
-        let neuralGPUMicros: Double
-        /// Windows of context the net has, out of the 80 it needs. Below 80 it declines.
-        let neuralContext: Int
-        /// The course iOS reported for the fix, degrees, or -1 when it declined to give one,
-        /// and which measurement last taught the compass offset. A route drawn at a constant
-        /// wrong angle is a heading fault, and these two say whether the datum was never
-        /// learned, learned from a poor source, or learned and then applied wrongly.
-        let gpsCourse: Double
-        let misalignmentSource: String
         let latitude: Double?
         let longitude: Double?
         /// Where GPS says we ACTUALLY are, recorded even in Force Velocity where GPS is
@@ -451,16 +424,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         // Close the stream first: the raw trace has been written as it went, so this only has to
         // flush the tail. Nothing here re-serialises hours of samples.
         let streamed = finishRawStream()
-        guard !rows.isEmpty || streamed != nil || !modelRows.isEmpty else { return }
+        guard !rows.isEmpty || streamed != nil else { return }
         let s = Self.stamp(for: workoutStart)
         let dir = Self.logDirectory
         if !rows.isEmpty {
             try? csv().write(to: dir.appendingPathComponent("velocity_debug_\(s).csv"),
                              atomically: true, encoding: .utf8)
-        }
-        if !modelRows.isEmpty {
-            try? modelCSV().write(to: dir.appendingPathComponent("velocity_models_\(s).csv"),
-                                  atomically: true, encoding: .utf8)
         }
         // The stream names itself from the first sample's clock; rename it to the workout's own
         // stamp so both files for a session share one name.
@@ -476,61 +445,11 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         Self.pruneOldLogs()
     }
 
-    // MARK: - Model scoring, independent of Velocity Mode
-
-    /// One tick of "what would each speed model have said", written whether or not Velocity
-    /// Mode is driving anything.
-    ///
-    /// The debug log only exists on ticks where GPS has already failed, which is the one
-    /// circumstance in which there is no truth to score against. Every ordinary ride is a
-    /// wasted experiment: GPS is healthy, so the answer is known, and both models are sitting
-    /// right there being ignored. This log runs them anyway and writes their answers beside the
-    /// fix, so a normal commute produces exactly the paired data the comparison needs, at no
-    /// cost to the recording - nothing here can touch the speed or the route.
-    struct ModelRow {
-        let t: Date
-        let gpsSpeed: Double?
-        let gpsAccuracy: Double?
-        let gpsAge: Double?
-        let gpsCourse: Double
-        let storeSpeed: Double?
-        let neuralSpeed: Double?
-        let neuralContext: Int
-        let storeCPUMicros: Double
-        let neuralCPUMicros: Double
-        let neuralEnergyNJ: Double
-        let airborne: Bool
-        let handled: Bool
-        let velocityModeOn: Bool
-    }
-    private var modelRows: [ModelRow] = []
-    func recordModel(_ row: ModelRow) {
-        modelRows.append(row)
-        if modelRows.count > 200_000 { modelRows.removeFirst(50_000) }
-    }
-    var hasModelRows: Bool { !modelRows.isEmpty }
-    func modelCSV() -> String {
-        var out = "time,gps_speed_ms,gps_accuracy_m,gps_age_s,gps_course,"
-        out += "store_ms,ai_ms,ai_ctx,store_cpu_us,ai_cpu_us,ai_nj,airborne,handled,velocity_mode\n"
-        let f = ISO8601DateFormatter()
-        for r in modelRows {
-            out += f.string(from: r.t) + ","
-            out += Self.fmt(r.gpsSpeed, 3) + "," + Self.fmt(r.gpsAccuracy, 1) + ","
-            out += Self.fmt(r.gpsAge, 2) + "," + Self.fmt(r.gpsCourse, 0) + ","
-            out += Self.fmt(r.storeSpeed, 3) + "," + Self.fmt(r.neuralSpeed, 3) + ",\(r.neuralContext),"
-            out += Self.fmt(r.storeCPUMicros, 1) + "," + Self.fmt(r.neuralCPUMicros, 1) + ","
-            out += Self.fmt(r.neuralEnergyNJ, 0) + ",\(r.airborne ? 1 : 0),\(r.handled ? 1 : 0),"
-            out += "\(r.velocityModeOn ? 1 : 0)\n"
-        }
-        return out
-    }
-
     /// Files already saved for a given workout, newest formats first. Empty if none.
     static func savedLogs(forWorkoutStart start: Date) -> [URL] {
         let s = stamp(for: start)
         let dir = logDirectory
-        return ["velocity_raw50hz_\(s).csv", "velocity_debug_\(s).csv",
-                "velocity_models_\(s).csv"]
+        return ["velocity_raw50hz_\(s).csv", "velocity_debug_\(s).csv"]
             .map { dir.appendingPathComponent($0) }
             .filter { FileManager.default.fileExists(atPath: $0.path) }
     }
@@ -592,7 +511,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter,engine,shadow_speed_ms,store_wall_us,store_cpu_us,store_nj,ai_wall_us,ai_cpu_us,ai_nj,ai_gpu_us,ai_ctx,gps_course,offset_src\n"
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -623,7 +542,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + ",\(r.engine)," + Self.fmt(r.shadowSpeed, 3) + "," + Self.fmt(r.storeWallMicros, 1) + "," + Self.fmt(r.storeCPUMicros, 1) + "," + Self.fmt(r.storeEnergyNJ, 0) + "," + Self.fmt(r.neuralWallMicros, 1) + "," + Self.fmt(r.neuralCPUMicros, 1) + "," + Self.fmt(r.neuralEnergyNJ, 0) + "," + Self.fmt(r.neuralGPUMicros, 1) + ",\(r.neuralContext)," + Self.fmt(r.gpsCourse, 0) + ",\(r.misalignmentSource)\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + "\n"
         }
         return out
     }

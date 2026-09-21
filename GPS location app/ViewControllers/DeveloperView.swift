@@ -15,9 +15,6 @@ struct DeveloperView: View {
     @State private var showingDeleteConfirm = false
     @State private var showingForgetConfirm = false
     @State private var modelSummary = ""
-    @State private var neuralSummary = ""
-    @AppStorage("velocityEngine") private var velocityEngine = "store"
-    @AppStorage("alwaysScoreModels") private var alwaysScoreModels = false
 
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -81,37 +78,6 @@ struct DeveloperView: View {
                 Text("Learned speed model")
             } footer: {
                 Text("Signatures paired with GPS-measured speeds, used when GPS is unavailable. Forgetting means it must be taught again from scratch.")
-            }
-
-            // WHICH MODEL DRIVES VELOCITY MODE.
-            //
-            // Both run on every window either way — the log always carries both answers, so a
-            // ride scores both models whichever is selected here. This chooses only whose answer
-            // becomes the recorded speed and the drawn route.
-            Section {
-                Picker(selection: $velocityEngine) {
-                    Text("Nearest neighbour").tag("store")
-                    Text("Blended (store + network)").tag("neural")
-                } label: {
-                    SettingsRow(symbol: "brain", tint: .purple, title: "Speed model",
-                                subtitle: "Which one drives the route")
-                }
-                .pickerStyle(.menu)
-                Toggle(isOn: $alwaysScoreModels) {
-                    SettingsRow(symbol: "chart.bar.doc.horizontal", tint: .teal,
-                                title: "Always score both models",
-                                subtitle: "Even when Velocity Mode is off")
-                }
-                if neuralSummary.isEmpty {
-                    Text("Start a workout once to load it.")
-                        .foregroundColor(.secondary).font(.callout)
-                } else {
-                    Text(neuralSummary).font(.system(.footnote, design: .monospaced))
-                }
-            } header: {
-                Text("Velocity mode engine")
-            } footer: {
-                Text("Scoring writes a third file, velocity_models_<date>.csv, holding what each model said beside the GPS fix that marks the answer. It runs on every ride, not just the ones where GPS has failed — which matters, because a ride where GPS failed is the one ride with no truth to check against. Neither model can touch the recording while it is only being scored.\n\nBlended runs both and averages them, 40% network and 60% store. Neither model is better everywhere — but on four rides scored against healthy GPS the blend beat both of them on every one, because they are wrong about different windows and averaging cancels part of each. Where the store has no close match, roughly a third of a car ride, the network answers alone. The network reads 40 seconds of vibration; the store reads four. On a car, scored on ticks where both answered, the network averaged 2.8 km/h error against the store's 3.2 — and it answered 95% of the ride where the store, built mostly from motorcycle signatures, had nothing to say for a third of it. Whichever drives, both answer every window and the log records both. It runs on the CPU: a convolutional version that the Neural Engine would accept was measured 31% less accurate, to save two tenths of a joule on a ride that costs three. In the air the network declines and the store answers regardless of this setting.")
             }
 
             Section {
@@ -229,7 +195,6 @@ struct DeveloperView: View {
         correction     ×\(String(format: "%.2f", calibration.slope)) \(String(format: "%+.1f", calibration.intercept)) m/s
         usable         \(model.isUsable ? "yes" : "not yet")
         """
-        neuralSummary = WorkoutSession.shared.neuralSpeed.summary
     }
 }
 
