@@ -315,6 +315,31 @@ class WorkoutSession: ObservableObject {
     /// the PCA walking axis. The compass alone measures device orientation, so this offset is
     /// what turns it into a usable absolute datum for travel direction.
     private var compassMisalignment: Double?
+    /// Offsets measured while riding (at least OFFSET_SAMPLE_MIN_SPEED), most recent last.
+    private var ridingOffsetSamples: [Double] = []
+    /// How many riding samples must agree before they replace the starting value.
+    private let OFFSET_MIN_SAMPLES = 5
+    /// How many recent riding samples the median is taken over.
+    private let OFFSET_SAMPLE_KEEP = 30
+    /// Slower than this a sample is walking, or a crawl whose direction is mostly noise.
+    private let OFFSET_SAMPLE_MIN_SPEED: Double = 3.0          // m/s, ~11 km/h
+
+    /// The circular median: the sample with the least summed angular distance to all the others.
+    /// Unlike an average it ignores a minority of wild values entirely, and unlike a plain median
+    /// it treats +179 and -179 as neighbours. Quadratic, but over thirty values that is nothing.
+    private static func circularMedian(_ values: [Double]) -> Double {
+        var best = values[0], bestCost = Double.greatestFiniteMagnitude
+        for candidate in values {
+            var cost = 0.0
+            for v in values {
+                var d = v - candidate
+                if d > 180 { d -= 360 } else if d < -180 { d += 360 }
+                cost += abs(d)
+            }
+            if cost < bestCost { bestCost = cost; best = candidate }
+        }
+        return best
+    }
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
     /// Previous GPS fix used for the misalignment bearing, so travel direction can be measured
     /// from position change when the course field is unusable (i.e. at walking pace).
@@ -2900,6 +2925,7 @@ class WorkoutSession: ObservableObject {
         // 10 m separation with fixes good to a few metres it is far more trustworthy at walking
         // pace than the course field, which iOS often reports as −1 or noise below a few km/h.
         var travelDirection: Double? = validCourse(location.course).flatMap { location.speed > 2.0 ? $0 : nil }
+        var bearingImpliedSpeed: Double?
         if travelDirection == nil, let previous = lastMisalignmentFix {
             let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
             let to = CLLocation(latitude: location.latitude, longitude: location.longitude)
@@ -2933,6 +2959,7 @@ class WorkoutSession: ObservableObject {
                 let y = sin(Δλ) * cos(φ2)
                 let x = cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(Δλ)
                 travelDirection = normalizedHeading(atan2(y, x) * 180 / .pi)
+                bearingImpliedSpeed = impliedSpeed
             }
         }
         if lastMisalignmentFix == nil {
@@ -2945,6 +2972,43 @@ class WorkoutSession: ObservableObject {
         guard let course = travelDirection else { return }
         var offset = course - compass
         if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
+
+        // A SAMPLE TAKEN WHILE RIDING IS VOTED, NOT BLENDED.
+        //
+        // The true offset while riding barely moves: across twelve forced rides its spread was
+        // 1-4 degrees and the two halves of a ride agreed to about 1 degree. So nothing about
+        // the offset needs tracking - what goes wrong is that it starts from a bad value and a
+        // 10% nudge per sample cannot get rid of it. The value held when riding began was +128,
+        // -122, +37 and +29 degrees on rides whose riding offset was about 0 - left over from
+        // walking to the bike or from GPS drift while standing - and blending toward the truth
+        // at 10% leaves that error in the route for dozens of samples.
+        //
+        // A median of the recent riding samples discards a bad starting value outright the
+        // moment five real ones agree, and a stray sample cannot move it. Replayed on the same
+        // twelve rides, starting each from the value the app actually held:
+        //
+        //                              10% nudge   median of 5
+        //     worst error when frozen      6.3        1.5 degrees
+        //     typical error when frozen    1.7        0.3
+        //     riding spent >15 deg out     6.2%       2.2%
+        //
+        // Below riding pace the old behaviour stands untouched: a walk-only workout learns its
+        // offset from slow GPS and the walking axis exactly as before. Once riding has a
+        // consensus, a slow sample can nudge it but the next riding sample restores the median,
+        // so walking to and from the bike can no longer drag the riding offset.
+        let sampleSpeed = location.speed >= 0 ? location.speed : (bearingImpliedSpeed ?? 0)
+        if sampleSpeed >= OFFSET_SAMPLE_MIN_SPEED {
+            ridingOffsetSamples.append(offset)
+            if ridingOffsetSamples.count > OFFSET_SAMPLE_KEEP {
+                ridingOffsetSamples.removeFirst(ridingOffsetSamples.count - OFFSET_SAMPLE_KEEP)
+            }
+            // Until there is a consensus, hold whatever was there: one sample is not evidence.
+            guard ridingOffsetSamples.count >= OFFSET_MIN_SAMPLES else { return }
+            let hadNone = compassMisalignment == nil
+            compassMisalignment = Self.circularMedian(ridingOffsetSamples)
+            if hadNone { rotateUntrustedPrefixIfOffsetSettled() }
+            return
+        }
         if let existing = compassMisalignment {
             var delta = offset - existing
             if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
@@ -3473,7 +3537,21 @@ class WorkoutSession: ObservableObject {
                 // device-orientation error this mode had to avoid. The PCA walking axis is a
                 // true measurement of body travel, so their difference IS the misalignment,
                 // and it is what makes the compass usable as an absolute datum.
-                if let compass = absoluteHeadingDatum {
+                // NOBODY WALKS AT RIDING SPEED.
+                //
+                // This learner runs every tick, before the tick decides whether it is walking or
+                // riding, so it fires whenever the pedometer counts - and a pocketed phone on a
+                // motorcycle counts engine vibration as steps. On one ride it moved the frozen
+                // offset by 17 degrees while the app had the bike at 113 km/h, long after the
+                // warm-up had closed and with nothing left to put it back. Across every forced
+                // ride on record, once the warm-up had closed, it changed the offset 43 times at
+                // walking pace (all under 7 km/h) and 3 times at 24-113 km/h.
+                //
+                // So once riding has a consensus, only an update made at walking pace counts.
+                // Before that - a walk-only workout, or the walk to the bike - it is unchanged.
+                if let compass = absoluteHeadingDatum,
+                   ridingOffsetSamples.count < OFFSET_MIN_SAMPLES
+                       || estimatedFallbackSpeed < OFFSET_SAMPLE_MIN_SPEED {
                     var offset = target - compass
                     if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
                     if let existing = compassMisalignment {
@@ -4484,6 +4562,7 @@ class WorkoutSession: ObservableObject {
         estimatedFallbackDistanceAdded = 0.0
         yawHeadingOffset = nil
         compassMisalignment = nil
+        ridingOffsetSamples = []
         launchMeanNorth = 0; launchMeanEast = 0; launchWindowElapsed = 0
         vehicleLaunchDetected = false; vehicleConfirmedByGPSSpeed = false
         if fallbackPedometerActive {
