@@ -510,11 +510,38 @@ class WorkoutSession: ObservableObject {
     /// Most of a storey. Less than this is a kerb, a speed bump or barometer drift.
     private let RAMP_MIN_RISE = 2.5
     private let OFFSET_WARMUP_WINDOW: TimeInterval = 180
-    /// True while the window is open, so a log can never mistake a warmed offset for one the
-    /// mode derived without GPS.
+    /// Slower than this, a fix's course and the bearing between two fixes are noise.
+    private let OFFSET_WARMUP_MIN_SPEED: Double = 3.0          // m/s, ~11 km/h
+    /// Seconds of GENUINE MOVEMENT with a sharp fix spent inside the warm-up so far.
+    private var offsetWarmupMovingSeconds: TimeInterval = 0
+    private var lastWarmupFixTime: Date?
+
+    /// THE WARM-UP IS COUNTED IN SECONDS OF MOVEMENT, NOT SECONDS SINCE START.
+    ///
+    /// Forced velocity mode learns the compass offset from GPS for a short window and then
+    /// freezes it, which is the point - it is meant to behave as if GPS were lost after the start.
+    /// But the window used to run on the wall clock from pressing Start, and a rider who sits
+    /// still for those three minutes spends the whole calibration on nothing. Across every
+    /// forced ride on record the split was total:
+    ///
+    ///     ride        heading error   seconds moving inside the window
+    ///     17 Sep          -147 deg      0 of 180
+    ///     20 Sep           -33 deg      0 of 180
+    ///     22 Sep          +130 deg      0 of 180
+    ///     15 Sep            -1 deg     46
+    ///     20 Sep            -3 deg     89
+    ///     18 Sep            +2 deg    131
+    ///
+    /// On 22 Sep the offset was set in the last second of the window from one fix at 7 km/h and
+    /// 29 m accuracy - GPS drift while standing, read as a direction of travel - and then frozen
+    /// at +128 degrees for 29 minutes. The raw compass alone was within about 15 degrees of the
+    /// road the whole time; the frozen offset is what turned the route round.
+    ///
+    /// So the window stays open until it has seen three minutes of actual riding, and only a fix
+    /// taken while genuinely moving may teach it anything.
     private var offsetWarmupActive: Bool {
-        guard forceMotionFallback, let start = workoutStartTime else { return false }
-        return Date().timeIntervalSince(start) < OFFSET_WARMUP_WINDOW
+        guard forceMotionFallback, workoutStartTime != nil else { return false }
+        return offsetWarmupMovingSeconds < OFFSET_WARMUP_WINDOW
     }
     private var lastMisalignmentFix: FlightLocation?
     private var lastCompassReadingForCheck: Double?
@@ -1734,6 +1761,8 @@ class WorkoutSession: ObservableObject {
         learnedSpeed.load()
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
+        offsetWarmupMovingSeconds = 0
+        lastWarmupFixTime = nil
         // The standstill test compares against THIS vehicle's moving level, so the level is learned
         // fresh each workout - a different bike, or the same phone in a different pocket, must not
         // inherit the last one's.
@@ -4948,8 +4977,20 @@ class WorkoutSession: ObservableObject {
             // comment this replaces was written there was none, and the heading really did
             // free-run.
             // Bounded: the window closes and the offset is frozen for the rest of the workout.
-            if offsetWarmupActive {
+            if offsetWarmupActive,
+               location.speed >= OFFSET_WARMUP_MIN_SPEED,
+               location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20 {
+                // Credit the window only for time actually spent moving, capped so one long gap
+                // between fixes cannot close it in a single step.
+                if let last = lastWarmupFixTime {
+                    offsetWarmupMovingSeconds += min(max(location.timestamp.timeIntervalSince(last), 0), 5)
+                }
+                lastWarmupFixTime = location.timestamp
                 learnCompassMisalignment(from: location)
+            } else if location.speed < OFFSET_WARMUP_MIN_SPEED {
+                // A stop breaks the run: the next moving fix starts a fresh interval rather than
+                // being credited with the time spent standing.
+                lastWarmupFixTime = nil
             }
 
             // THE FIRST POINT, AND ONLY THE FIRST, MAY COME FROM GPS.
