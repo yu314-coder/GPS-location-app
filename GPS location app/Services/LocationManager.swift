@@ -93,6 +93,11 @@ class LocationManager: NSObject, ObservableObject {
     private var turnAccelSumNorth: Double = 0
     private var turnAccelSumEast: Double = 0
     private var turnAccelSamples: Int = 0
+    /// The last WALK_WINDOW_SECONDS of the same physical acceleration, with the device's gravity
+    /// z (how flat it lies), for the walking direction. Trimmed by time, not by count: the motion
+    /// rate switches between 2 and 50 Hz, and four seconds of steps is what was tested.
+    private(set) var walkPhysicalWindow: [(t: TimeInterval, north: Double, east: Double, gravityZ: Double)] = []
+    private let WALK_WINDOW_SECONDS: TimeInterval = 4.0
     /// Slow mean of the vertical gyro rate = gyro bias. Subtracted before integrating so bias
     /// does not accumulate into heading (0.01 rad/s ≈ 34°/min of drift).
     private var verticalGyroBias: Double = 0
@@ -754,6 +759,7 @@ class LocationManager: NSObject, ObservableObject {
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
         turnAccelSumNorth = 0; turnAccelSumEast = 0; turnAccelSamples = 0
+        walkPhysicalWindow = []
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
@@ -852,6 +858,12 @@ class LocationManager: NSObject, ObservableObject {
                 self.turnAccelSumNorth += turnAccel.north
                 self.turnAccelSumEast += turnAccel.east
                 self.turnAccelSamples += 1
+                self.walkPhysicalWindow.append((motion.timestamp, turnAccel.north, turnAccel.east,
+                                                motion.gravity.z))
+                let cutoff = motion.timestamp - self.WALK_WINDOW_SECONDS
+                if let first = self.walkPhysicalWindow.first, first.t < cutoff {
+                    self.walkPhysicalWindow.removeAll { $0.t < cutoff }
+                }
             }
             let horizontalAcceleration = sqrt(
                 referenceAcceleration.north * referenceAcceleration.north +
@@ -943,6 +955,7 @@ class LocationManager: NSObject, ObservableObject {
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
         turnAccelSumNorth = 0; turnAccelSumEast = 0; turnAccelSamples = 0
+        walkPhysicalWindow = []
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         DispatchQueue.main.async { [weak self] in
@@ -971,8 +984,9 @@ class LocationManager: NSObject, ObservableObject {
         return (turnAccelSumNorth / n, turnAccelSumEast / n)
     }
 
-    /// Horizontal acceleration for the cornering offset learner: PHYSICAL, TRUE NORTH, and
-    /// rebuilt from the attitude's Euler angles rather than taken from referenceFrameAcceleration.
+    /// Horizontal acceleration for the cornering offset learner and the walking direction:
+    /// PHYSICAL, TRUE NORTH, and rebuilt from the attitude's Euler angles rather than taken from
+    /// referenceFrameAcceleration.
     ///
     /// Three things differ from the world acceleration the rest of the app uses, and each was
     /// measured on the logged 50 Hz raw files before it was trusted here:

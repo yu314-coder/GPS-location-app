@@ -352,13 +352,18 @@ class WorkoutSession: ObservableObject {
     private var turnOffsetTicks = 0
     /// The learned value while it is in charge, for the diagnostics column.
     private var turnOffset: Double?
-    private let TURN_OFFSET_MIN_TICKS = 60
+    /// Thirty riding seconds: replayed on 27 rides the first estimate was 11.0 degrees off at 30,
+    /// 11.2 at 60, and a short hop - 37 riding seconds on 23 Sep - never reached 60 at all.
+    private let TURN_OFFSET_MIN_TICKS = 30
     private let TURN_OFFSET_MIN_EVIDENCE = 20.0
     /// A tick counts as riding at or above this (the app's own speed, not GPS).
     private let TURN_OFFSET_MIN_SPEED = 4.0   // m/s, ~14 km/h
     /// Handled this long, the phone has been out of the pocket and will not go back at the same
     /// angle, so what was learned no longer applies.
     private let TURN_OFFSET_RESET_HANDLING: TimeInterval = 10
+    /// When the last riding tick was accepted; a gap longer than RIDE_RESTART_GAP starts a ride.
+    private var lastRidingTickTime: Date?
+    private let RIDE_RESTART_GAP: TimeInterval = 20
     /// Gyro turn over the most recent heading tick, degrees clockwise.
     private var lastTickGyroTurn: Double?
 
@@ -408,6 +413,51 @@ class WorkoutSession: ObservableObject {
               let compass = locationManager.currentMotionHeading,
               estimatedFallbackSpeed >= TURN_OFFSET_MIN_SPEED,
               !source.hasPrefix("PDR"), !deviceIsBeingHandled else { return }
+        // A GPS-measured riding offset, when there is one (GPS lost mid-ride outside Velocity
+        // Mode), is several times tighter than anything below; it goes back in charge on every
+        // riding tick, since walking may have replaced it in between.
+        let gpsRidingConsensus = ridingOffsetSamples.count >= OFFSET_MIN_SAMPLES
+        if gpsRidingConsensus, offsetSource != .ridingSharp {
+            compassMisalignment = Self.circularMedian(ridingOffsetSamples)
+            offsetSource = .ridingSharp
+        }
+        // THE WALKING OFFSET DOES NOT RIDE. Seated, the phone sits in the pocket at another
+        // angle: on 23 Sep the walk needed +140 degrees and the ride about 0. On three other rides
+        // with both, the two were 0-30 degrees apart, so neither prior is safe; the difference is
+        // that the rotation below repairs a constant error whichever it was, once cornering has
+        // an answer. Until then, ride on the zero prior and mark where this stretch began.
+        if turnOffset == nil, !gpsRidingConsensus {
+            if offsetSource == .walking {
+                compassMisalignment = nil
+                offsetSource = .none
+            }
+            if untrustedHeadingPrefixStart == nil {
+                untrustedHeadingPrefixStart = flight.locations.count
+                prefixOffsetSum = 0
+                prefixOffsetCount = 0
+                prefixWalkingTicks = 0
+                offsetHistory = []
+            }
+        } else if let learned = turnOffset, !gpsRidingConsensus, offsetSource != .ridingTurns {
+            var value = learned
+            if let datum = absoluteHeadingDatum { value += normalizedSignedAngle(compass - datum) }
+            compassMisalignment = normalizedSignedAngle(value)
+            offsetSource = .ridingTurns
+        }
+        // A RIDE STARTS ON THE COMPASS, NOT WHERE THE WALK LEFT OFF.
+        //
+        // Sitting down turns the phone in the pocket about a horizontal axis, which the gyro's
+        // vertical rate does not see but the compass does: on 23 Sep it jumped from 43 to 170
+        // degrees on mounting while the heading, eased toward it at an eighth per second, drew
+        // the first 15 s of a southbound ride heading east. Take the riding value at once. It
+        // also keeps the stretch before the offset is learned off by one constant angle, which
+        // is the only kind of error the rotation below can undo.
+        let now = Date()
+        let rideStarting = lastRidingTickTime.map { now.timeIntervalSince($0) > RIDE_RESTART_GAP } ?? true
+        lastRidingTickTime = now
+        if rideStarting, let datum = absoluteHeadingDatum {
+            motionHeadingDegrees = normalizedHeading(datum + (compassMisalignment ?? 0))
+        }
         let h = compass * .pi / 180
         let forward = accel.north * cos(h) + accel.east * sin(h)
         let right = -accel.north * sin(h) + accel.east * cos(h)
@@ -422,19 +472,26 @@ class WorkoutSession: ObservableObject {
         guard turnOffsetTicks >= TURN_OFFSET_MIN_TICKS,
               turnOffsetEvidence >= TURN_OFFSET_MIN_EVIDENCE else { return }
         let learned = atan2(turnOffsetIm, turnOffsetRe) * 180 / .pi
+        let firstEstimate = turnOffset == nil
         turnOffset = learned
-        // A GPS-measured riding offset, when there is one (GPS lost mid-ride outside Velocity
-        // Mode), is several times tighter than this; leave it in charge.
-        guard offsetSource != .ridingSharp else { return }
+        guard !gpsRidingConsensus else { return }
         // Expressed against the datum the heading is steered by this tick.
         var value = learned
         if let datum = absoluteHeadingDatum {
             value += normalizedSignedAngle(compass - datum)
         }
-        let hadNone = compassMisalignment == nil
-        compassMisalignment = normalizedSignedAngle(value)
+        let settled = normalizedSignedAngle(value)
+        compassMisalignment = settled
         offsetSource = .ridingTurns
-        if hadNone { rotateUntrustedPrefixIfOffsetSettled() }
+        // The riding drawn so far used the zero prior; turn it onto the value just learned, now.
+        // Waiting for the value to settle (the general prefix rule) would let the stretch grow
+        // past this point, and a single rotation cannot then fit both halves. Little is gained
+        // by the wait: replayed on 27 rides, the first estimate (30 s) was 11.0 degrees off (median)
+        // and the end-of-ride value 9.4.
+        if firstEstimate, untrustedHeadingPrefixStart != nil {
+            let applied = prefixOffsetCount > 0 ? prefixOffsetSum / prefixOffsetCount : 0
+            rotateUntrustedPrefix(by: normalizedSignedAngle(settled - applied))
+        }
     }
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
     /// Previous GPS fix used for the misalignment bearing, so travel direction can be measured
@@ -677,12 +734,40 @@ class WorkoutSession: ObservableObject {
     private var offsetHistory: [(t: Date, value: Double)] = []
     private let OFFSET_SETTLE_WINDOW: TimeInterval = 60.0
     private let OFFSET_SETTLE_TOLERANCE: Double = 20.0
-    /// Rolling ~3 s of world-frame horizontal acceleration, for PCA of the walking axis.
-    private var walkAccelWindow: [(north: Double, east: Double)] = []
-    private let WALK_WINDOW_SAMPLES = 80   // ~1.6 s: several steps, without smearing turns
-    /// EMA of the gait-skewness forward/back vote, so a single noisy ~1.6 s window (2-3 steps)
-    /// cannot flip the resolved travel direction 180° on its own. See walkingAxisHeading().
-    private var walkingSkewEMA: Double = 0
+    // WALKING DIRECTION FROM THE STEPS, NOT FROM COMPASS + OFFSET.
+    //
+    // A pocketed phone's compass says where the phone points, and walking it is typically 50-140
+    // degrees from where the body goes. The steps themselves say where the body goes: over four
+    // seconds the horizontal acceleration lines up with the direction of travel (the principal
+    // axis), and it is lopsided toward FORWARD - push-off is sharper than heel-strike, so its
+    // third moment along the axis is positive in the direction of travel.
+    //
+    // The old version of this had the right idea and three faults, each measured on the 23 Sep
+    // walk it drew 136 degrees wrong: it used the REACTION acceleration, which reverses the
+    // forward/back vote; it judged 1.6 s of steps, too few to vote; and pocket walking swings the
+    // phone at ~2.9 rad/s, which it took for "in the hand" and refused every axis for the whole
+    // walk. The axis it found was 6 degrees from the truth throughout.
+    //
+    // Now: physical acceleration, four seconds, no handling gate. Each window's forward/back vote
+    // goes into a running median of (direction - compass), so one bad vote cannot flip the
+    // walk; the window's own axis supplies the direction, the median only picks its end. A phone
+    // lying FLAT (in the hand, screen up) is the one carry where the vote came out reversed, so
+    // there the end nearer the compass is taken - a phone is not held pointing backwards.
+    //
+    // Scored against GPS, heading simulated with the gyro between ticks (GPS for grading only):
+    //
+    //                                  median error   within 30 deg
+    //     as drawn by build 39              102 deg         18%
+    //     compass alone                      80 deg         25%
+    //     this, 7 walks with attitude        13 deg         86%
+    //     this, 6 older walks (target)       16 deg         70%
+    private var walkOffsetSamples: [Double] = []
+    private let WALK_OFFSET_KEEP = 20
+    private let WALK_HEADING_GAIN = 0.5
+    /// |gravity z| above this is a phone lying flat rather than upright in a pocket.
+    private let WALK_FLAT_GRAVITY_Z = 0.7
+    /// Third moment of the last walking window along its axis, for the log.
+    private var lastWalkSkew: Double?
     /// Last resolved walking axis, recorded per tick purely so the 180° decision is inspectable
     /// afterwards: an offset pinned near ±180° in a log is the signature of it choosing wrong.
     private var lastResolvedWalkAxis: Double?
@@ -691,61 +776,7 @@ class WorkoutSession: ObservableObject {
     private var axisWasGated = false
     private var lastWalkAxisTime: Date?
 
-    /// THE WALKING AXIS MAY REFINE THE COMPASS, NEVER OVERRULE IT.
-    ///
-    /// I built the opposite of this first, reasoning that the axis is far steadier per tick
-    /// (0.0° median vs the compass's 11.1°) and orientation-independent, so it should be the
-    /// datum. Scoring both against the GPS track on the same walk says otherwise
-    /// (velocity_debug_20260811_181810, 115 ten-second windows):
-    ///
-    ///     source                      median   within 45°
-    ///     compass alone                 55°       43%
-    ///     compass + learned offset     120°        3%
-    ///     recorded heading             126°        3%
-    ///     axis, skew-resolved          156°        1%
-    ///
-    /// The axis was steady and consistently WRONG — 156° off, and still 90° off after resolving
-    /// its forward end against the compass, so the axis LINE itself was wrong, not just which
-    /// end of it. PCA had locked onto lateral body sway rather than fore-aft travel, which a
-    /// hand-held phone makes easy: the eigenvalue test only asks that one direction dominates,
-    /// and sway dominates just as cleanly as stride.
-    ///
-    /// The damage came through the learned misalignment: heading = compass + offset, the offset
-    /// is learned as axis − compass, so a 90° axis error becomes a 90° heading error and turned
-    /// the best available signal (55°) into the worst (126°). Bounding what the axis may assert
-    /// bounds that: a disagreement beyond this is evidence the axis is not measuring gait, not
-    /// evidence that the body is travelling sideways.
-    ///
-    /// This limits pocket carry, where a large offset is genuine — that case needs its own
-    /// measurement before the bound is widened for it.
-    /// Swept against three hand-held walks with GPS truth, simulating the heading as
-    /// compass + offset with the axis gated and the offset clamped at each bar:
-    ///
-    ///     bar     13 Aug (recorded 146°)   12 Aug (20°)   11 Aug (41°)
-    ///      60°            43°                   28°           49°
-    ///      90°            43°                   23°           48°
-    ///     180° (unbounded) 124°                  28°          102°
-    ///
-    /// 90° repairs the broken walk without costing the good one. It is also the physically
-    /// meaningful line: a phone can point sideways from the direction of travel — hand at the
-    /// side, pocket, across the chest — but "behind you" is not a way to carry a phone, it is
-    /// the 180° ambiguity resolving backwards.
-    private let MAX_AXIS_COMPASS_DISAGREEMENT: Double = 90.0
-    /// How long, and how tightly, axis − compass must hold steady before the axis may teach the
-    /// misalignment. A pocketed phone holds one angle for a whole walk; a wrong axis does not.
-    private let AXIS_STABILITY_WINDOW: TimeInterval = 12.0
-    private let AXIS_STABILITY_TOLERANCE: Double = 30.0
-    private var axisOffsetHistory: [(t: Date, value: Double)] = []
-    /// When the walking axis was last accepted. Used only to notice that it has not been
-    /// accepted for a long time, which is a state the logs previously could not express.
-    private var lastAxisAcceptedTime: Date?
-    private var axisStarvationSince: Date?
-    /// Sustained free rotation of the device, smoothed. A phone swinging in a hand rotates at
-    /// ~1.5 rad/s continuously while walking; one held or pocketed does not.
-    private var handlingRotationEMA: Double = 0
-    /// True when there is no source left that can say which way the body is going: the axis has
-    /// been refused throughout, and the device is turning freely enough that neither the compass
-    /// nor the axis window can track the body through it.
+    /// True on a stepping tick that produced no walking direction, so heading ran on the compass.
     private var headingIsUnreliable = false
 
     /// Wrap to (−180, 180]. The accumulator needs this; nothing else was doing it.
@@ -755,9 +786,6 @@ class WorkoutSession: ObservableObject {
         return d
     }
 
-
-    private var walkingSkewEMAValid = false
-    private var wasPedometerCountingForSkewReset = false
     private var isStepBasedWorkout: Bool {
         workoutType == .walking || workoutType == .running || workoutType == .hiking
     }
@@ -2593,10 +2621,6 @@ class WorkoutSession: ObservableObject {
         let rN = worldAccelNorth - accelBiasNorth
         let rE = worldAccelEast - accelBiasEast
 
-        // Feed the walking-axis PCA window (world frame ⇒ independent of device orientation).
-        walkAccelWindow.append((north: rN, east: rE))
-        if walkAccelWindow.count > WALK_WINDOW_SAMPLES { walkAccelWindow.removeFirst() }
-
         // --- Stationarity detection over a sliding window ---------------------------------
         // Use the FULL 3-axis residual plus the gyro: a device at rest is quiet on every
         // axis and is not rotating. Judging by horizontal magnitude alone would call a
@@ -3172,79 +3196,46 @@ class WorkoutSession: ObservableObject {
         return d
     }
 
-    /// Walking axis (degrees from north, modulo 180) from the principal component of recent
-    /// WORLD-frame horizontal acceleration. World-frame acceleration has device orientation
-    /// already removed, so this measures how the BODY is moving, not how the device is held.
-    ///
-    /// Returns nil unless the principal axis is clearly dominant: when lateral sway rivals
-    /// the forward push the axis is meaningless, and on a wrist (arm swing dominant) it comes
-    /// out roughly perpendicular to the true direction. Better to return nothing than a
-    /// confident right angle.
-    private func walkingAxisHeading() -> Double? {
-        guard walkAccelWindow.count >= 40 else { return nil }
-        let n = Double(walkAccelWindow.count)
-        let meanN = walkAccelWindow.reduce(0.0) { $0 + $1.north } / n
-        let meanE = walkAccelWindow.reduce(0.0) { $0 + $1.east } / n
+    /// Direction of walking from the last four seconds of steps, or nil. See walkOffsetSamples.
+    /// `raw` is the window's own forward/back vote, `direction` the end actually chosen.
+    private func walkingDirection(coreMotionHeading compass: Double)
+        -> (direction: Double, raw: Double, skew: Double, flat: Bool)? {
+        let window = locationManager.walkPhysicalWindow
+        guard window.count >= 100 else { return nil }      // 50 Hz only; 2 Hz is not a gait
+        let n = Double(window.count)
+        var meanN = 0.0, meanE = 0.0, meanGz = 0.0
+        for s in window { meanN += s.north; meanE += s.east; meanGz += s.gravityZ }
+        meanN /= n; meanE /= n; meanGz /= n
         var cnn = 0.0, cee = 0.0, cne = 0.0
-        for s in walkAccelWindow {
+        for s in window {
             let dn = s.north - meanN, de = s.east - meanE
             cnn += dn * dn; cee += de * de; cne += dn * de
         }
-        // Eigenvalues of the 2x2 covariance matrix.
-        let trace = cnn + cee
-        let det = cnn * cee - cne * cne
-        let disc = max(trace * trace / 4 - det, 0)
-        let lambda1 = trace / 2 + sqrt(disc)
-        let lambda2 = trace / 2 - sqrt(disc)
-        guard lambda1 > 0, lambda2 >= 0 else { return nil }
-        // Require the principal axis to carry clearly more variance than the orthogonal one.
-        guard lambda1 / max(lambda2, 1e-9) >= 4.0 else { return nil }
-        var deg = 0.5 * atan2(2 * cne, cnn - cee) * 180 / .pi
-        if deg < 0 { deg += 360 }
-
-        // RESOLVE WHICH END IS FORWARD, from the gait itself.
-        //
-        // PCA yields an AXIS, and previously the forward end was chosen as whichever was
-        // closer to the heading already believed. That is self-reinforcing: if the belief
-        // starts 180° wrong, the wrong end is chosen, the belief is "confirmed", and the
-        // misalignment locks the inversion in for the whole workout — the reported symptom
-        // that the route needs turning 180° to be right.
-        //
-        // Human gait is ASYMMETRIC along the direction of travel: push-off is a sharper, larger
-        // acceleration than the gentler braking of heel-strike, so acceleration projected onto
-        // the travel axis is positively SKEWED toward forward. The sign of the third moment
-        // therefore identifies forward independently of any prior belief.
-        let axisRad = deg * .pi / 180
-        let ux = cos(axisRad), uy = sin(axisRad)
+        guard cnn + cee > 1e-9 else { return nil }
+        let axis = 0.5 * atan2(2 * cne, cnn - cee) * 180 / .pi
+        let ux = cos(axis * .pi / 180), uy = sin(axis * .pi / 180)
         var m2 = 0.0, m3 = 0.0
-        for sample in walkAccelWindow {
-            let projection = (sample.north - meanN) * ux + (sample.east - meanE) * uy
-            m2 += projection * projection
-            m3 += projection * projection * projection
+        for s in window {
+            let p = (s.north - meanN) * ux + (s.east - meanE) * uy
+            m2 += p * p; m3 += p * p * p
         }
         let variance = m2 / n
-        guard variance > 1e-6 else { return nil }
-        let skewness = (m3 / n) / pow(variance, 1.5)
-
-        // SMOOTH the forward/back vote across calls instead of deciding from one window alone.
-        // walkAccelWindow spans ~1.6 s — only 2-3 steps — so its skewness is noisy, and this
-        // function is re-evaluated roughly once a tick. Trusting the raw instantaneous sign let
-        // the resolved axis flip 180° for a tick or two whenever noise pushed it past the bar,
-        // which is exactly what turned a straight walked line into the tangled, doubling-back
-        // loop seen live: the drawn path is correct in total DISTANCE but keeps reversing which
-        // end is "forward" for a few ticks at a time. An EMA needs sustained, one-sided evidence
-        // before the belief moves, so an isolated noisy window can no longer flip it alone.
-        if walkingSkewEMAValid {
-            walkingSkewEMA += (skewness - walkingSkewEMA) * 0.12
+        guard variance > 1e-9 else { return nil }
+        let skew = (m3 / n) / pow(variance, 1.5)
+        let voted = normalizedHeading(skew >= 0 ? axis : axis + 180)
+        let flat = abs(meanGz) > WALK_FLAT_GRAVITY_Z
+        let reference: Double
+        if flat {
+            reference = compass
         } else {
-            walkingSkewEMA = skewness
-            walkingSkewEMAValid = true
+            walkOffsetSamples.append(normalizedSignedAngle(voted - compass))
+            if walkOffsetSamples.count > WALK_OFFSET_KEEP {
+                walkOffsetSamples.removeFirst(walkOffsetSamples.count - WALK_OFFSET_KEEP)
+            }
+            reference = compass + Self.circularMedian(walkOffsetSamples)
         }
-        // Only trust a clear, SUSTAINED asymmetry; ambiguous gait leaves the axis unresolved
-        // rather than guessing, so a wrong 180° choice is never forced.
-        guard abs(walkingSkewEMA) > 0.15 else { return nil }
-        if walkingSkewEMA < 0 { deg = (deg + 180).truncatingRemainder(dividingBy: 360) }
-        return deg
+        let direction = angularDistance(axis, reference) <= 90 ? axis : axis + 180
+        return (normalizedHeading(direction), voted, skew, flat)
     }
 
     private func resetInertialState(seedSpeed: Double, courseDegrees: Double) {
@@ -3397,13 +3388,6 @@ class WorkoutSession: ObservableObject {
         }
 
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false
-        // A fresh bout of walking (after standing still, turning around, sitting down, etc.)
-        // gets a fresh forward/back vote instead of carrying over a belief that may no longer
-        // apply — the body could easily now be walking the opposite way relative to the axis.
-        if pedometerIsCounting, !wasPedometerCountingForSkewReset {
-            walkingSkewEMAValid = false
-        }
-        wasPedometerCountingForSkewReset = pedometerIsCounting
         let velHeading = nextSpeed > 0.1
             ? normalizedHeading(atan2(motionVelEast, motionVelNorth) * 180 / .pi)
             : nil
@@ -3521,158 +3505,39 @@ class WorkoutSession: ObservableObject {
                 compassDisturbedSince = nil
                 compassStarved = false
             }
-            // 2) Pull slowly toward the PCA walking axis, which is absolute and orientation-
-            //    independent. This removes the drift the gyro accumulates, without letting a
-            //    slow window dictate fast turn dynamics. The axis's 180° ambiguity resolves
-            //    against the now gyro-propagated heading, so reversals are still detected.
-            // The PCA pull is SUSPENDED while actively turning: the axis is computed over a
-            // trailing window, so mid-turn it still points at the pre-turn direction and the
-            // pull dragged the heading BACKWARDS against the gyro — the visible turn lag.
-            // Drift correction only needs the straight stretches, where the axis is honest.
-            // AGAINST THE RAW COMPASS, NOT THE OFFSET COMPASS.
-            //
-            // This gate was comparing the axis to compass + learned misalignment — and the
-            // misalignment is learned FROM the axis. So the reference moved to meet whatever
-            // the axis claimed, the gate could never fire, and the pair walked off together:
-            // measured on one walk the offset grew +96° → +154° → +192° → +232° while the axis
-            // sat a median of 143° from the compass and exceeded the 60° bar on 92% of ticks.
-            // The recorded heading ended 146° from the GPS track where the raw compass was 40°.
-            // That is exactly the self-reinforcement the original code warned about, which I
-            // reintroduced while trying to bound it.
-            //
-            // The compass is not accurate, but it does not drift and it cannot be talked into
-            // agreeing. Judging the axis against it caps the total error at the bar rather than
-            // letting it run to a half-turn.
-            // ONCE per tick: walkingAxisHeading() advances the smoothed forward/back vote as a
-            // side effect, so calling it twice moved that vote at double the intended rate.
-            let axisThisTick = walkingAxisHeading()
-            // STABILITY, NOT PROXIMITY TO THE COMPASS.
-            //
-            // Gating on "the axis must lie within X° of the compass" cannot work, because the
-            // case it must support — a phone upside down in a pocket — is precisely the case
-            // where the true difference is 120–180°. On such a walk the gate admitted only axes
-            // near a compass that was itself 122° wrong, so every axis it accepted was ~173°
-            // from the real track. It was selecting the bad ones.
-            //
-            // What actually separates a usable axis from a wrong one is that a carry offset
-            // HOLDS STILL. A phone sits at a fixed angle in a pocket for a whole walk, so
-            // axis − compass is steady. An axis locked onto lateral sway, or flipped by a bad
-            // forward/back vote, wanders. So require the difference to have been consistent for
-            // a sustained run before it is allowed to teach anything.
-            var axisAgreesWithCompass = false
-            if let axisNow = axisThisTick, let compassNow = absoluteHeadingDatum {
-                let difference = normalizedSignedAngle(axisNow - compassNow)
-                axisOffsetHistory.append((now, difference))
-                axisOffsetHistory.removeAll { now.timeIntervalSince($0.t) > AXIS_STABILITY_WINDOW * 1.5 }
-                if let oldest = axisOffsetHistory.first,
-                   now.timeIntervalSince(oldest.t) >= AXIS_STABILITY_WINDOW {
-                    let spread = axisOffsetHistory.map { angularDistance($0.value, difference) }.max() ?? 180
-                    axisAgreesWithCompass = spread <= AXIS_STABILITY_TOLERANCE
-                }
-            }
-            // LOG THE AXIS THE GATE REJECTED, TOO.
-            //
-            // Build 120 stopped logging a stale axis, which was right, but it also stopped
-            // logging the rejected one — and that is the number needed to decide whether the
-            // gate is protecting the heading or starving it. On a walk where the compass turned
-            // out to carry a fixed −122° carry offset, the gate admitted only axes within 90° of
-            // that wrong compass, so every axis it accepted was itself ~173° from the true
-            // track. Whether the ones it threw away were correct is exactly what is not
-            // recorded.
-            lastRawWalkAxis = axisThisTick
-            axisWasGated = !(axisAgreesWithCompass)
-            if axisAgreesWithCompass {
-                lastAxisAcceptedTime = now
-                axisStarvationSince = nil
-            } else if axisStarvationSince == nil {
-                axisStarvationSince = now
-            }
-            handlingRotationEMA += 0.1 * (handlingRotationLevel - handlingRotationEMA)
-            // 20 s without an accepted axis is already well past any ordinary gap. 45 s was
-            // the first guess and it was wrong: a 53-second walk with the axis refused on every
-            // one of its 53 ticks tripped this once.
-            let axisStarved = now.timeIntervalSince(axisStarvationSince ?? now) > 20
-            headingIsUnreliable = axisStarved && handlingRotationEMA > 0.8 && pedometerIsCounting
+            // 2) WALKING: steer by the steps. See walkOffsetSamples.
+            var walkingSteeredThisTick = false
+            lastRawWalkAxis = nil
             lastResolvedWalkAxis = nil
-            if !turningNow, !compassIsDisturbed, pedometerIsCounting, axisAgreesWithCompass,
-               let axis = axisThisTick {
-                lastResolvedWalkAxis = axis
+            lastWalkSkew = nil
+            axisWasGated = false
+            if imuIsStepping, !vehicleContextIsCurrent,
+               let compassCM = locationManager.currentMotionHeading,
+               let walk = walkingDirection(coreMotionHeading: compassCM) {
+                lastRawWalkAxis = walk.raw
+                lastResolvedWalkAxis = walk.direction
+                lastWalkSkew = walk.skew
+                axisWasGated = walk.flat
                 lastWalkAxisTime = Date()
-                // walkingAxisHeading() now returns a DIRECTED heading (forward end resolved
-                // from gait skewness), so it must NOT be re-resolved against the current
-                // belief — doing that is what allowed a 180° error to persist.
-                let target = axis
-                var err = target - motionHeadingDegrees
-                if err > 180 { err -= 360 } else if err < -180 { err += 360 }
-                motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + 0.25 * err)
-
-                // LEARN THE MISALIGNMENT between the phone's magnetic heading and the actual
-                // direction of travel. The compass measures where the PHONE points, not where
-                // the BODY goes — in a pocket those differ by a large, roughly constant angle,
-                // so correcting straight to the compass (build 37) reintroduced the very
-                // device-orientation error this mode had to avoid. The PCA walking axis is a
-                // true measurement of body travel, so their difference IS the misalignment,
-                // and it is what makes the compass usable as an absolute datum.
-                // NOBODY WALKS AT RIDING SPEED.
-                //
-                // This learner runs every tick, before the tick decides whether it is walking or
-                // riding, so it fires whenever the pedometer counts - and a pocketed phone on a
-                // motorcycle counts engine vibration as steps. On one ride it moved the frozen
-                // offset by 17 degrees while the app had the bike at 113 km/h, long after the
-                // warm-up had closed and with nothing left to put it back. Across every forced
-                // ride on record, once the warm-up had closed, it changed the offset 43 times at
-                // walking pace (all under 7 km/h) and 3 times at 24-113 km/h.
-                //
-                // So once riding has a consensus, only an update made at walking pace counts.
-                // Before that - a walk-only workout, or the walk to the bike - it is unchanged.
-                if let compass = absoluteHeadingDatum,
-                   !hasRidingOffsetConsensus
-                       || estimatedFallbackSpeed < OFFSET_SAMPLE_MIN_SPEED {
-                    offsetSource = .walking
-                    var offset = target - compass
-                    if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
-                    if let existing = compassMisalignment {
-                        var delta = offset - existing
-                        if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
-                        // NORMALISE the accumulator; do not clamp it.
-                        //
-                        // Two different faults got conflated here. The −268° seen in a log was
-                        // never an implausible angle — wrapped, it is +92° — it was a running
-                        // blend that nothing ever normalised, growing a tenth at a time. The fix
-                        // for that is wrapping, and wrapping alone.
-                        //
-                        // Clamping to ±90° on top of it broke the carry position that matters
-                        // most: a phone upside down in a trouser pocket points its top edge at
-                        // the ground and behind the walker, so CLHeading reads roughly backwards
-                        // and the true offset is 120–180°. Measured on one such walk, the
-                        // compass error held a median of −122° with only ±30° of spread — a
-                        // fixed offset, correctable in principle, that the clamp made
-                        // permanently uncorrectable. Pocket carry is also the BEST case for dead
-                        // reckoning, since the phone finally moves with the body.
-                        compassMisalignment = normalizedSignedAngle(existing + 0.1 * delta)
-                    } else {
-                        compassMisalignment = offset
-                        // NOT rotating the prefix here any more — see
-                        // rotateUntrustedPrefixIfOffsetSettled for why the first value learned
-                        // is exactly the wrong one to trust.
-                        // FIX THE STRETCH ALREADY DRAWN FROM A GUESSED HEADING.
-                        //
-                        // Velocity Mode starts before the direction of travel is known, so the
-                        // heading is seeded from the compass — which points where the PHONE
-                        // points, not where the body is going. Hold it across your chest and
-                        // that is a 90° error, applied to every point until the walking axis
-                        // establishes the truth. The correction for it already existed, but it
-                        // was only ever triggered by the GPS-based learner, and GPS is exactly
-                        // what this mode ignores — so in the one mode that needs it, the early
-                        // stretch was never repaired and a whole short walk came out rotated.
-                        //
-                        // The PCA walking axis is a measurement of body travel, so the first
-                        // time it resolves, it is as valid a "true heading now" as a GPS course
-                        // and the prefix can be rotated onto it.
-
+                let err = normalizedSignedAngle(walk.direction - motionHeadingDegrees)
+                motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + WALK_HEADING_GAIN * err)
+                walkingSteeredThisTick = true
+                // Between windows, and while standing, the compass carries the walking offset.
+                // Expressed against the datum the heading is steered by this tick.
+                if !walk.flat, !walkOffsetSamples.isEmpty {
+                    var value = Self.circularMedian(walkOffsetSamples)
+                    if let datum = absoluteHeadingDatum {
+                        value += normalizedSignedAngle(compassCM - datum)
                     }
+                    compassMisalignment = normalizedSignedAngle(value)
+                    offsetSource = .walking
                 }
+                // What is drawn from here follows the steps, so there is no constant rotation
+                // left in the opening stretch for the prefix fix to undo. Rotating it now would
+                // undo the walk instead.
+                untrustedHeadingPrefixStart = nil
             }
+            headingIsUnreliable = imuIsStepping && !vehicleContextIsCurrent && !walkingSteeredThisTick
 
             // ABSOLUTE REFERENCE FROM THE COMPASS.
             //
@@ -3693,7 +3558,11 @@ class WorkoutSession: ObservableObject {
             // own transient — but the gyro cross-check now tests that directly, and far better,
             // by comparing the compass against the rotation actually measured. Keeping both
             // meant a pocketed phone was denied its only absolute reference while walking.
-            if !compassIsDisturbed, let compass = absoluteHeadingDatum {
+            // Not on a tick the steps already steered: one pull per tick is what was scored (see
+            // walkOffsetSamples), and the compass is the weaker of the two while walking.
+            if walkingSteeredThisTick {
+                compassCorrectionAppliedThisTick = true
+            } else if !compassIsDisturbed, let compass = absoluteHeadingDatum {
                 let (misalignment, gain) = effectiveCompassMisalignment
                 // Target = where the phone points PLUS how the body is offset from it.
                 let target = normalizedHeading(compass + misalignment)
@@ -4314,7 +4183,7 @@ class WorkoutSession: ObservableObject {
             handledSeconds: continuousHandlingDuration,
             headingUnreliable: headingIsUnreliable,
             walkAxis: lastResolvedWalkAxis,
-            walkSkew: walkingSkewEMAValid ? walkingSkewEMA : nil,
+            walkSkew: lastWalkSkew,
             walkAxisRaw: lastRawWalkAxis,
             walkAxisGated: axisWasGated ? 1 : 0,
             learnObs: Double(learnedSpeed.observationCount),
@@ -4650,6 +4519,8 @@ class WorkoutSession: ObservableObject {
         turnOffsetRe = 0; turnOffsetIm = 0; turnOffsetEvidence = 0; turnOffsetTicks = 0
         turnOffset = nil
         lastTickGyroTurn = nil
+        lastRidingTickTime = nil
+        walkOffsetSamples = []
         launchMeanNorth = 0; launchMeanEast = 0; launchWindowElapsed = 0
         vehicleLaunchDetected = false; vehicleConfirmedByGPSSpeed = false
         if fallbackPedometerActive {
@@ -5470,13 +5341,8 @@ class WorkoutSession: ObservableObject {
         // the walk continues, so that rotation is not evidence and must be discarded. Re-anchor
         // to where the device is NOW and carry on from the heading held before the pause.
         lastDeviceYawForHeading = locationManager.cumulativeDeviceYawRotation
-        // The walking axis is computed over a trailing window of acceleration that now straddles
-        // the gap, and the forward/back vote it feeds is smoothed across calls. Both describe a
-        // walk that has already ended, so start them fresh rather than letting stale evidence
-        // resolve the direction of a new one.
-        walkAccelWindow.removeAll()
-        walkingSkewEMA = 0
-        walkingSkewEMAValid = false
+        // The walking offsets survive the pause: the phone is still in the same pocket, and each
+        // new window re-votes anyway. Only the axis time goes, since no axis spans the gap.
         lastWalkAxisTime = nil
 
         print("   State updated: isPaused=\(isPaused)")
