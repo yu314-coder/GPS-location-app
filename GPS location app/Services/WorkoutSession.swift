@@ -320,35 +320,52 @@ class WorkoutSession: ObservableObject {
 
     /// Where the offset in use came from. Walking and riding put a phone in a pocket at different
     /// angles, so an offset is only fit to correct the kind of travel it was learned from.
-    private enum OffsetSource { case none, walking, ridingSharp, ridingCoarse }
+    private enum OffsetSource { case none, walking, ridingSharp, ridingTurns }
     private var offsetSource: OffsetSource = .none
 
-    // COARSE RIDING SAMPLES, for rides where GPS is never sharp enough for the ones above.
+    // THE RIDING OFFSET FROM CORNERING, WITHOUT GPS.
     //
-    // Twelve of the forced rides on record never produced five sharp riding samples - positions
-    // at 25-60 m - so the offset stayed empty for the whole ride and the route was drawn on the
-    // raw compass. Fixes that rough still say which way you went if the stretch between them is
-    // long enough: over 150 m, a 60 m error moves the bearing by far less than the offsets being
-    // corrected. Replayed on those twelve rides the typical route error fell from 27 to 6
-    // degrees (mean 44 to 20), better on 8, level on 2 and worse on none once at least 8
-    // samples are required - a single ride with 5 samples disagreeing by 67 degrees went badly
-    // wrong at the looser threshold. Coarse samples are about ten times noisier than sharp ones,
-    // so they need more agreement, and a sharp consensus always outranks them.
-    private var coarseOffsetSamples: [Double] = []
-    private var coarseAnchor: FlightLocation?
-    private var coarseCompassSin = 0.0
-    private var coarseCompassCos = 0.0
-    private var coarseConsensus = false
-    private let COARSE_MIN_SAMPLES = 8
-    private let COARSE_MAX_SPREAD: Double = 60           // median |deviation|, degrees
-    private let COARSE_MIN_BASELINE: Double = 150        // metres
-    private let COARSE_MAX_ACCURACY: Double = 60         // metres
-    private let COARSE_MAX_ELAPSED: TimeInterval = 90
+    // Force Velocity must not read GPS for direction, and builds 36-38 did: they learned the
+    // pocket offset from GPS bearings during a warm-up. This replaces that with physics the phone
+    // can measure on its own. In a turn a vehicle accelerates toward the inside of the turn, so
+    // in the frame of the compass
+    //
+    //     acceleration felt  =  e^(i * offset) * (i * speed * turn rate)
+    //
+    // - the gyro says which way and how hard it is turning, the app's own speed says how fast,
+    // and the direction the acceleration actually points, relative to the compass, is the
+    // offset. Least squares over every riding second gives offset = arg(sum a * conj(i v w)).
+    //
+    // Scored against GPS on all 27 forced rides on record (GPS used only to grade it):
+    //
+    //                              median error   within 30 deg
+    //     raw compass, no offset         48 deg        7 of 27
+    //     after 1 minute riding          13 deg       24 of 27
+    //     after 3 minutes riding          8 deg       24 of 27
+    //     whole ride                     11 deg       24 of 27
+    //
+    // The raw compass is worse than it looks from a desk: a pocketed phone's Core Motion heading
+    // sat anywhere from -150 to +60 degrees off the road across those rides.
+    private var turnOffsetRe = 0.0
+    private var turnOffsetIm = 0.0
+    private var turnOffsetEvidence = 0.0      // sum of |v w|, m/s^2 x ticks
+    private var turnOffsetTicks = 0
+    /// The learned value while it is in charge, for the diagnostics column.
+    private var turnOffset: Double?
+    private let TURN_OFFSET_MIN_TICKS = 60
+    private let TURN_OFFSET_MIN_EVIDENCE = 20.0
+    /// A tick counts as riding at or above this (the app's own speed, not GPS).
+    private let TURN_OFFSET_MIN_SPEED = 4.0   // m/s, ~14 km/h
+    /// Handled this long, the phone has been out of the pocket and will not go back at the same
+    /// angle, so what was learned no longer applies.
+    private let TURN_OFFSET_RESET_HANDLING: TimeInterval = 10
+    /// Gyro turn over the most recent heading tick, degrees clockwise.
+    private var lastTickGyroTurn: Double?
 
     /// Whether riding has settled the offset, by either route. Once it has, walking may no
     /// longer move it at riding speed.
     private var hasRidingOffsetConsensus: Bool {
-        ridingOffsetSamples.count >= OFFSET_MIN_SAMPLES || coarseConsensus
+        ridingOffsetSamples.count >= OFFSET_MIN_SAMPLES || turnOffset != nil
     }
     /// Ticks of the untrusted opening stretch laid down while stepping.
     private var prefixWalkingTicks: Double = 0
@@ -376,66 +393,47 @@ class WorkoutSession: ObservableObject {
         return best
     }
 
-    private static func medianAngularDeviation(_ values: [Double], around centre: Double) -> Double {
-        let devs = values.map { v -> Double in
-            var d = v - centre
-            if d > 180 { d -= 360 } else if d < -180 { d += 360 }
-            return abs(d)
-        }.sorted()
-        return devs[devs.count / 2]
-    }
-
-    /// Learn the riding offset from long stretches of ordinary fixes. See coarseOffsetSamples.
-    private func learnCoarseOffset(from location: FlightLocation) {
-        guard location.horizontalAccuracy >= 0,
-              location.horizontalAccuracy < COARSE_MAX_ACCURACY else { return }
-        let compassNow = absoluteHeadingDatum
-        func restart() {
-            coarseAnchor = location
-            coarseCompassSin = 0; coarseCompassCos = 0
-            if let c = compassNow {
-                coarseCompassSin += sin(c * .pi / 180); coarseCompassCos += cos(c * .pi / 180)
-            }
+    /// Learn the riding offset from cornering. See turnOffsetRe. Runs at the end of every
+    /// fallback tick, once this tick's speed and source are decided; reads no GPS.
+    private func learnOffsetFromTurns(dt: TimeInterval, source: String) {
+        let accel = locationManager.takeTurnAcceleration()
+        if continuousHandlingDuration > TURN_OFFSET_RESET_HANDLING, turnOffsetTicks > 0 {
+            turnOffsetRe = 0; turnOffsetIm = 0; turnOffsetEvidence = 0; turnOffsetTicks = 0
+            turnOffset = nil
         }
-        guard let anchor = coarseAnchor else { restart(); return }
-        if let c = compassNow {
-            coarseCompassSin += sin(c * .pi / 180); coarseCompassCos += cos(c * .pi / 180)
+        // Against Core Motion's heading, not whichever datum is current: CLHeading takes over
+        // whenever the app is in the foreground, and for a tilted phone the two differ by 25-100
+        // degrees on the rides on record. One accumulator must not mix them.
+        guard let accel, let turn = lastTickGyroTurn, dt > 0.2,
+              let compass = locationManager.currentMotionHeading,
+              estimatedFallbackSpeed >= TURN_OFFSET_MIN_SPEED,
+              !source.hasPrefix("PDR"), !deviceIsBeingHandled else { return }
+        let h = compass * .pi / 180
+        let forward = accel.north * cos(h) + accel.east * sin(h)
+        let right = -accel.north * sin(h) + accel.east * cos(h)
+        let magnitude = sqrt(forward * forward + right * right)
+        guard magnitude > 1e-3 else { return }
+        // Direction only: one pothole must not outvote a minute of corners.
+        let m = estimatedFallbackSpeed * (turn * .pi / 180) / dt
+        turnOffsetRe += m * right / magnitude
+        turnOffsetIm -= m * forward / magnitude
+        turnOffsetEvidence += abs(m)
+        turnOffsetTicks += 1
+        guard turnOffsetTicks >= TURN_OFFSET_MIN_TICKS,
+              turnOffsetEvidence >= TURN_OFFSET_MIN_EVIDENCE else { return }
+        let learned = atan2(turnOffsetIm, turnOffsetRe) * 180 / .pi
+        turnOffset = learned
+        // A GPS-measured riding offset, when there is one (GPS lost mid-ride outside Velocity
+        // Mode), is several times tighter than this; leave it in charge.
+        guard offsetSource != .ridingSharp else { return }
+        // Expressed against the datum the heading is steered by this tick.
+        var value = learned
+        if let datum = absoluteHeadingDatum {
+            value += normalizedSignedAngle(compass - datum)
         }
-        let elapsed = location.timestamp.timeIntervalSince(anchor.timestamp)
-        guard elapsed > 0, elapsed <= COARSE_MAX_ELAPSED else { restart(); return }
-        let from = CLLocation(latitude: anchor.latitude, longitude: anchor.longitude)
-        let to = CLLocation(latitude: location.latitude, longitude: location.longitude)
-        let distance = from.distance(from: to)
-        let needed = max(COARSE_MIN_BASELINE,
-                         4 * max(anchor.horizontalAccuracy, location.horizontalAccuracy))
-        guard distance >= needed else { return }
-        // Long enough: this stretch is one sample, whatever it says, and the next starts here.
-        defer { restart() }
-        // Riding pace only - a walk covers 150 m too, at a pocket angle that does not apply.
-        guard distance / elapsed >= OFFSET_SAMPLE_MIN_SPEED,
-              coarseCompassSin != 0 || coarseCompassCos != 0 else { return }
-        let meanCompass = atan2(coarseCompassSin, coarseCompassCos) * 180 / .pi
-        let φ1 = anchor.latitude * .pi / 180, φ2 = location.latitude * .pi / 180
-        let Δλ = (location.longitude - anchor.longitude) * .pi / 180
-        let travel = atan2(sin(Δλ) * cos(φ2),
-                           cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(Δλ)) * 180 / .pi
-        var sample = travel - meanCompass
-        while sample > 180 { sample -= 360 }
-        while sample < -180 { sample += 360 }
-        coarseOffsetSamples.append(sample)
-        if coarseOffsetSamples.count > OFFSET_SAMPLE_KEEP {
-            coarseOffsetSamples.removeFirst(coarseOffsetSamples.count - OFFSET_SAMPLE_KEEP)
-        }
-        // A sharp consensus outranks this entirely.
-        guard ridingOffsetSamples.count < OFFSET_MIN_SAMPLES,
-              coarseOffsetSamples.count >= COARSE_MIN_SAMPLES else { return }
-        let median = Self.circularMedian(coarseOffsetSamples)
-        guard Self.medianAngularDeviation(coarseOffsetSamples, around: median)
-                <= COARSE_MAX_SPREAD else { return }
         let hadNone = compassMisalignment == nil
-        compassMisalignment = median
-        offsetSource = .ridingCoarse
-        coarseConsensus = true
+        compassMisalignment = normalizedSignedAngle(value)
+        offsetSource = .ridingTurns
         if hadNone { rotateUntrustedPrefixIfOffsetSettled() }
     }
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
@@ -632,40 +630,6 @@ class WorkoutSession: ObservableObject {
     private let RAMP_MIN_FIT = 0.80
     /// Most of a storey. Less than this is a kerb, a speed bump or barometer drift.
     private let RAMP_MIN_RISE = 2.5
-    private let OFFSET_WARMUP_WINDOW: TimeInterval = 180
-    /// Slower than this, a fix's course and the bearing between two fixes are noise.
-    private let OFFSET_WARMUP_MIN_SPEED: Double = 3.0          // m/s, ~11 km/h
-    /// Seconds of GENUINE MOVEMENT with a sharp fix spent inside the warm-up so far.
-    private var offsetWarmupMovingSeconds: TimeInterval = 0
-    private var lastWarmupFixTime: Date?
-
-    /// THE WARM-UP IS COUNTED IN SECONDS OF MOVEMENT, NOT SECONDS SINCE START.
-    ///
-    /// Forced velocity mode learns the compass offset from GPS for a short window and then
-    /// freezes it, which is the point - it is meant to behave as if GPS were lost after the start.
-    /// But the window used to run on the wall clock from pressing Start, and a rider who sits
-    /// still for those three minutes spends the whole calibration on nothing. Across every
-    /// forced ride on record the split was total:
-    ///
-    ///     ride        heading error   seconds moving inside the window
-    ///     17 Sep          -147 deg      0 of 180
-    ///     20 Sep           -33 deg      0 of 180
-    ///     22 Sep          +130 deg      0 of 180
-    ///     15 Sep            -1 deg     46
-    ///     20 Sep            -3 deg     89
-    ///     18 Sep            +2 deg    131
-    ///
-    /// On 22 Sep the offset was set in the last second of the window from one fix at 7 km/h and
-    /// 29 m accuracy - GPS drift while standing, read as a direction of travel - and then frozen
-    /// at +128 degrees for 29 minutes. The raw compass alone was within about 15 degrees of the
-    /// road the whole time; the frozen offset is what turned the route round.
-    ///
-    /// So the window stays open until it has seen three minutes of actual riding, and only a fix
-    /// taken while genuinely moving may teach it anything.
-    private var offsetWarmupActive: Bool {
-        guard forceMotionFallback, workoutStartTime != nil else { return false }
-        return offsetWarmupMovingSeconds < OFFSET_WARMUP_WINDOW
-    }
     private var lastMisalignmentFix: FlightLocation?
     private var lastCompassReadingForCheck: Double?
     /// How far the compass may disagree with the gyro over one tick before it is treated as
@@ -1884,8 +1848,6 @@ class WorkoutSession: ObservableObject {
         learnedSpeed.load()
         // Attribute everything this workout teaches to this workout, so regimes stay separable.
         learnedSpeed.beginSession()
-        offsetWarmupMovingSeconds = 0
-        lastWarmupFixTime = nil
         // The standstill test compares against THIS vehicle's moving level, so the level is learned
         // fresh each workout - a different bike, or the same phone in a different pocket, must not
         // inherit the last one's.
@@ -3496,9 +3458,11 @@ class WorkoutSession: ObservableObject {
             let cumulativeYaw = locationManager.cumulativeDeviceYawRotation
             var turningNow = false
             var gyroTurnThisTick: Double? = nil
+            lastTickGyroTurn = nil
             if let previousCumulative = lastDeviceYawForHeading {
                 let dYaw = cumulativeYaw - previousCumulative
                 gyroTurnThisTick = dYaw
+                lastTickGyroTurn = dYaw
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + dYaw)
 
                 // Per TICK, not per sample: cumulative yaw is integrated at sensor rate, so a
@@ -4320,6 +4284,7 @@ class WorkoutSession: ObservableObject {
                   ? "🤷 Speed model out of its depth (regime distance \(learnedSpeed.regimeDistanceCached.map { String(format: "%.2f", $0) } ?? "?")) — holding last GPS speed"
                   : "✅ Speed model back within a learned regime")
         }
+        learnOffsetFromTurns(dt: dt, source: sourceTag)
         sessionDiagnostics.record(.init(
             t: now,
             source: sourceTag,
@@ -4340,7 +4305,8 @@ class WorkoutSession: ObservableObject {
             regimeDeclined: learnedSpeed.lastEstimateDeclinedUnlearnedRegime,
             localError: learnedSpeed.lastLocalError,
             localDeclined: learnedSpeed.lastEstimateDeclinedUnreliableLocally,
-            offsetWarmup: offsetWarmupActive,
+            turnOffset: turnOffset,
+            turnOffsetTicks: turnOffsetTicks,
             velocityMode: forceMotionFallback,
             gpsFixesInRoute: gpsFixesInRoute,
             onRamp: onRampNow,
@@ -4453,6 +4419,8 @@ class WorkoutSession: ObservableObject {
         prefixOffsetCount = 0
         prefixWalkingTicks = 0
         offsetHistory = []
+        // Whatever piled up before now belongs to no tick.
+        _ = locationManager.takeTurnAcceleration()
         // PDR distance source for step activities: pedometer from the start of the gap.
         fallbackPedometerDistance = nil
         lastFallbackPedometerDistance = 0
@@ -4679,10 +4647,9 @@ class WorkoutSession: ObservableObject {
         compassMisalignment = nil
         ridingOffsetSamples = []
         offsetSource = .none
-        coarseOffsetSamples = []
-        coarseAnchor = nil
-        coarseCompassSin = 0; coarseCompassCos = 0
-        coarseConsensus = false
+        turnOffsetRe = 0; turnOffsetIm = 0; turnOffsetEvidence = 0; turnOffsetTicks = 0
+        turnOffset = nil
+        lastTickGyroTurn = nil
         launchMeanNorth = 0; launchMeanEast = 0; launchWindowElapsed = 0
         vehicleLaunchDetected = false; vehicleConfirmedByGPSSpeed = false
         if fallbackPedometerActive {
@@ -5154,47 +5121,13 @@ class WorkoutSession: ObservableObject {
                (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
                 vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)
             }
-            // THE OFFSET IS FROZEN HERE, NOT LEARNED. THIS MODE MUST NOT READ GPS.
+            // NO GPS FOR DIRECTION IN THIS MODE, NOT EVEN AT THE START.
             //
-            // This call used to run, and it derives the carry offset from GPS COURSE - the
-            // bearing between successive fixes. Applied to the live heading every tick, it was
-            // present on 716 of 720 ticks of one drive and 1161 of 1210 of another. Force
-            // Velocity is supposed to behave as though GPS is gone; a heading corrected by a
-            // live GPS course is not that, and every heading figure measured in this mode was
-            // flattered by it. The speed path has been insulated by quarantine since build 121;
-            // heading was not, and that was an inconsistency, not a decision.
-            //
-            // Freezing rather than deleting is what actually happens in the real case: you
-            // drive to the airport with GPS, the offset is learned, then signal is lost and the
-            // offset is whatever it was. Engage the mode from the first second and there is no
-            // offset at all, which is honest - the correction falls back to a zero prior at
-            // half gain against Core Motion's heading datum.
-            //
-            // Cost, measured by replaying three drives with the offset removed: 5 deg -> 6 deg
-            // median, 4 -> 5, and 6 -> 28. The datum carries it on its own most of the time,
-            // which is only knowable now that build 144 supplies a datum at all - when the
-            // comment this replaces was written there was none, and the heading really did
-            // free-run.
-            // Bounded: the window closes and the offset is frozen for the rest of the workout.
-            if offsetWarmupActive {
-                learnCoarseOffset(from: location)
-            }
-            if offsetWarmupActive,
-               location.speed >= OFFSET_WARMUP_MIN_SPEED,
-               location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20 {
-                // Credit the window only for time actually spent moving, capped so one long gap
-                // between fixes cannot close it in a single step.
-                if let last = lastWarmupFixTime {
-                    offsetWarmupMovingSeconds += min(max(location.timestamp.timeIntervalSince(last), 0), 5)
-                }
-                lastWarmupFixTime = location.timestamp
-                learnCompassMisalignment(from: location)
-            } else if location.speed < OFFSET_WARMUP_MIN_SPEED {
-                // A stop breaks the run: the next moving fix starts a fresh interval rather than
-                // being credited with the time spent standing.
-                lastWarmupFixTime = nil
-            }
-
+            // Builds 36-38 learned the pocket offset here from GPS during a warm-up - three minutes
+            // of sharp fixes, or long stretches of rough ones. That made the direction of every
+            // Force Velocity route partly a GPS measurement, which is what this mode exists to
+            // rule out. The riding offset now comes from cornering (learnOffsetFromTurns), the
+            // walking offset from the walking axis, and neither reads a fix.
             // THE FIRST POINT, AND ONLY THE FIRST, MAY COME FROM GPS.
             //
             // In this mode the track must be dead-reckoned end to end — that is the whole point

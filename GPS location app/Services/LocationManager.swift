@@ -88,6 +88,11 @@ class LocationManager: NSObject, ObservableObject {
     /// small and continuous here while true discontinuities remain rejectable.
     private(set) var cumulativeDeviceYawRotation: Double = 0
     private var lastRawYawForAccumulation: Double?
+    /// Running sum of the PHYSICAL horizontal acceleration (true north, east; m/s²) since the
+    /// last takeTurnAcceleration(), for the cornering offset learner. See turnAcceleration(from:).
+    private var turnAccelSumNorth: Double = 0
+    private var turnAccelSumEast: Double = 0
+    private var turnAccelSamples: Int = 0
     /// Slow mean of the vertical gyro rate = gyro bias. Subtracted before integrating so bias
     /// does not accumulate into heading (0.01 rad/s ≈ 34°/min of drift).
     private var verticalGyroBias: Double = 0
@@ -748,6 +753,7 @@ class LocationManager: NSObject, ObservableObject {
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
+        turnAccelSumNorth = 0; turnAccelSumEast = 0; turnAccelSamples = 0
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
@@ -842,6 +848,11 @@ class LocationManager: NSObject, ObservableObject {
                 }
                 self.cumulativeDeviceYawRotation += (verticalRate - self.verticalGyroBias) * dtForRotation * 180.0 / .pi
             }
+            if let turnAccel = self.turnAcceleration(from: motion) {
+                self.turnAccelSumNorth += turnAccel.north
+                self.turnAccelSumEast += turnAccel.east
+                self.turnAccelSamples += 1
+            }
             let horizontalAcceleration = sqrt(
                 referenceAcceleration.north * referenceAcceleration.north +
                 referenceAcceleration.east * referenceAcceleration.east
@@ -931,6 +942,7 @@ class LocationManager: NSObject, ObservableObject {
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
+        turnAccelSumNorth = 0; turnAccelSumEast = 0; turnAccelSamples = 0
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         DispatchQueue.main.async { [weak self] in
@@ -948,6 +960,50 @@ class LocationManager: NSObject, ObservableObject {
             self?.currentMotionDirectionDegrees = nil
         }
         print("📈 Stopped device-motion acceleration recording")
+    }
+
+    /// Mean physical horizontal acceleration (true north, east; m/s²) since the previous call,
+    /// or nil if no usable samples arrived. Resets the running sums.
+    func takeTurnAcceleration() -> (north: Double, east: Double)? {
+        defer { turnAccelSumNorth = 0; turnAccelSumEast = 0; turnAccelSamples = 0 }
+        guard turnAccelSamples >= 10 else { return nil }
+        let n = Double(turnAccelSamples)
+        return (turnAccelSumNorth / n, turnAccelSumEast / n)
+    }
+
+    /// Horizontal acceleration for the cornering offset learner: PHYSICAL, TRUE NORTH, and
+    /// rebuilt from the attitude's Euler angles rather than taken from referenceFrameAcceleration.
+    ///
+    /// Three things differ from the world acceleration the rest of the app uses, and each was
+    /// measured on the logged 50 Hz raw files before it was trusted here:
+    ///
+    ///  - SIGN. userAcceleration is the reaction the phone feels, the opposite of the way the
+    ///    vehicle accelerates: compared against GPS on the pocketed motorcycle rides it pointed
+    ///    139-180 degrees away from the real acceleration. Direction of travel needs the real one.
+    ///  - NO R-OR-TRANSPOSE GUESS. referenceFrameAcceleration picks the matrix orientation that
+    ///    makes gravity vertical. When the phone lies flat both do, and the wrong one mirrors
+    ///    every bearing. R = Rz(yaw) Rx(pitch) Ry(roll) maps device to north-WEST-up for every
+    ///    attitude on record (gravity vertical to 1e-4 on each ride tested) and reproduces the
+    ///    app's own frame, declination aside, so it is used unconditionally.
+    ///  - NO BIAS FILTER. The 90 s device-frame bias removal is right for integrating velocity but
+    ///    it moves the direction of small accelerations; scored on 27 forced rides, the
+    ///    cornering offset came out at 14 degrees median error from the filtered frame against
+    ///    11 from this one.
+    private func turnAcceleration(from motion: CMDeviceMotion) -> (north: Double, east: Double)? {
+        guard motionReferenceFrameIsAbsolute else { return nil }
+        let a = motion.userAcceleration
+        let att = motion.attitude
+        let cr = cos(att.roll), sr = sin(att.roll)
+        let cp = cos(att.pitch), sp = sin(att.pitch)
+        let cy = cos(att.yaw), sy = sin(att.yaw)
+        // Rows of R = Rz(yaw) Rx(pitch) Ry(roll): row 0 is north, row 1 is WEST.
+        let north = (cy * cr - sy * sp * sr) * a.x - sy * cp * a.y + (cy * sr + sy * sp * cr) * a.z
+        let west = (sy * cr + cy * sp * sr) * a.x + cy * cp * a.y + (sy * sr - cy * sp * cr) * a.z
+        // Physical = -userAcceleration; east = -west.
+        let magNorth = -north * standardGravity
+        let magEast = west * standardGravity
+        let d = magneticDeclinationDegrees * .pi / 180
+        return (magNorth * cos(d) - magEast * sin(d), magNorth * sin(d) + magEast * cos(d))
     }
 
     /// World-frame acceleration rotated from Core Motion's MAGNETIC-north reference frame

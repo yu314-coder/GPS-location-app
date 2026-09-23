@@ -51,11 +51,10 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let localError: Double?
         /// 1 when the estimate was refused on that basis.
         let localDeclined: Bool
-        /// 1 while Velocity Mode is still allowed to learn the carry offset from GPS course, 0
-        /// once it is frozen. Without this column a heading corrected by a warmed offset is
-        /// indistinguishable from one the mode produced with no GPS at all - which is the exact
-        /// confusion that made every heading figure before build 148 too flattering.
-        let offsetWarmup: Bool
+        /// Riding offset learned from cornering (no GPS), and the riding seconds behind it. This
+        /// replaces the GPS warm-up flag: Velocity Mode no longer learns direction from GPS at all.
+        let turnOffset: Double?
+        let turnOffsetTicks: Int
         /// Whether Velocity Mode was ON at this tick. Inferring it from side effects was not
         /// good enough: a 17-minute workout the user believed was in Velocity Mode had it on
         /// for 34 seconds, and the only trace was a warm-up flag going quiet early.
@@ -507,7 +506,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "heading_deg,compass_deg,offset_deg,"
         out += "vib_feature_u,fit_p0,fit_p1,fit_p2,cal_min_u,cal_max_u,"
         out += "cal_min_speed_ms,cal_max_speed_ms,cal_samples,extrapolating,"
-        out += "tick_dt_s,regime_distance,regime_declined,local_error_ms,local_declined,offset_warmup,velocity_mode,gps_fixes_in_route,on_ramp,handling_rot_rads,handled_s,heading_unreliable,walk_axis_deg,walk_skew_ema,walk_axis_raw_deg,walk_axis_gated,"
+        out += "tick_dt_s,regime_distance,regime_declined,local_error_ms,local_declined,turn_offset_deg,turn_ticks,velocity_mode,gps_fixes_in_route,on_ramp,handling_rot_rads,handled_s,heading_unreliable,walk_axis_deg,walk_skew_ema,walk_axis_raw_deg,walk_axis_gated,"
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
@@ -533,7 +532,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.minCalU) + "," + Self.fmt(r.maxCalU) + ","
             out += Self.fmt(r.minCalSpeed) + "," + Self.fmt(r.maxCalSpeed) + ","
             out += Self.fmt(r.calSamples) + ",\(r.extrapolating ? 1 : 0),"
-            out += Self.fmt(r.tickInterval) + "," + (r.regimeDistance.map { Self.fmt($0) } ?? "") + ",\(r.regimeDeclined ? 1 : 0)," + (r.localError.map { Self.fmt($0) } ?? "") + ",\(r.localDeclined ? 1 : 0),\(r.offsetWarmup ? 1 : 0),\(r.velocityMode ? 1 : 0),\(r.gpsFixesInRoute),\(r.onRamp ? 1 : 0)," + Self.fmt(r.handlingRotation) + "," + Self.fmt(r.handledSeconds) + ",\(r.headingUnreliable ? 1 : 0),"
+            out += Self.fmt(r.tickInterval) + "," + (r.regimeDistance.map { Self.fmt($0) } ?? "") + ",\(r.regimeDeclined ? 1 : 0)," + (r.localError.map { Self.fmt($0) } ?? "") + ",\(r.localDeclined ? 1 : 0)," + (r.turnOffset.map { Self.fmt($0) } ?? "") + ",\(r.turnOffsetTicks),\(r.velocityMode ? 1 : 0),\(r.gpsFixesInRoute),\(r.onRamp ? 1 : 0)," + Self.fmt(r.handlingRotation) + "," + Self.fmt(r.handledSeconds) + ",\(r.headingUnreliable ? 1 : 0),"
             out += Self.fmt(r.walkAxis) + "," + Self.fmt(r.walkSkew) + ","
             out += Self.fmt(r.walkAxisRaw) + "," + Self.fmt(r.walkAxisGated) + ","
             out += Self.fmt(r.learnObs) + "," + Self.fmt(r.learnMaxKmh) + "," + Self.fmt(r.learnSlope) + ","
