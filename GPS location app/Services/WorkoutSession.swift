@@ -317,6 +317,41 @@ class WorkoutSession: ObservableObject {
     private var compassMisalignment: Double?
     /// Offsets measured while riding (at least OFFSET_SAMPLE_MIN_SPEED), most recent last.
     private var ridingOffsetSamples: [Double] = []
+
+    /// Where the offset in use came from. Walking and riding put a phone in a pocket at different
+    /// angles, so an offset is only fit to correct the kind of travel it was learned from.
+    private enum OffsetSource { case none, walking, ridingSharp, ridingCoarse }
+    private var offsetSource: OffsetSource = .none
+
+    // COARSE RIDING SAMPLES, for rides where GPS is never sharp enough for the ones above.
+    //
+    // Twelve of the forced rides on record never produced five sharp riding samples - positions
+    // at 25-60 m - so the offset stayed empty for the whole ride and the route was drawn on the
+    // raw compass. Fixes that rough still say which way you went if the stretch between them is
+    // long enough: over 150 m, a 60 m error moves the bearing by far less than the offsets being
+    // corrected. Replayed on those twelve rides the typical route error fell from 27 to 6
+    // degrees (mean 44 to 20), better on 8, level on 2 and worse on none once at least 8
+    // samples are required - a single ride with 5 samples disagreeing by 67 degrees went badly
+    // wrong at the looser threshold. Coarse samples are about ten times noisier than sharp ones,
+    // so they need more agreement, and a sharp consensus always outranks them.
+    private var coarseOffsetSamples: [Double] = []
+    private var coarseAnchor: FlightLocation?
+    private var coarseCompassSin = 0.0
+    private var coarseCompassCos = 0.0
+    private var coarseConsensus = false
+    private let COARSE_MIN_SAMPLES = 8
+    private let COARSE_MAX_SPREAD: Double = 60           // median |deviation|, degrees
+    private let COARSE_MIN_BASELINE: Double = 150        // metres
+    private let COARSE_MAX_ACCURACY: Double = 60         // metres
+    private let COARSE_MAX_ELAPSED: TimeInterval = 90
+
+    /// Whether riding has settled the offset, by either route. Once it has, walking may no
+    /// longer move it at riding speed.
+    private var hasRidingOffsetConsensus: Bool {
+        ridingOffsetSamples.count >= OFFSET_MIN_SAMPLES || coarseConsensus
+    }
+    /// Ticks of the untrusted opening stretch laid down while stepping.
+    private var prefixWalkingTicks: Double = 0
     /// How many riding samples must agree before they replace the starting value.
     private let OFFSET_MIN_SAMPLES = 5
     /// How many recent riding samples the median is taken over.
@@ -339,6 +374,69 @@ class WorkoutSession: ObservableObject {
             if cost < bestCost { bestCost = cost; best = candidate }
         }
         return best
+    }
+
+    private static func medianAngularDeviation(_ values: [Double], around centre: Double) -> Double {
+        let devs = values.map { v -> Double in
+            var d = v - centre
+            if d > 180 { d -= 360 } else if d < -180 { d += 360 }
+            return abs(d)
+        }.sorted()
+        return devs[devs.count / 2]
+    }
+
+    /// Learn the riding offset from long stretches of ordinary fixes. See coarseOffsetSamples.
+    private func learnCoarseOffset(from location: FlightLocation) {
+        guard location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy < COARSE_MAX_ACCURACY else { return }
+        let compassNow = absoluteHeadingDatum
+        func restart() {
+            coarseAnchor = location
+            coarseCompassSin = 0; coarseCompassCos = 0
+            if let c = compassNow {
+                coarseCompassSin += sin(c * .pi / 180); coarseCompassCos += cos(c * .pi / 180)
+            }
+        }
+        guard let anchor = coarseAnchor else { restart(); return }
+        if let c = compassNow {
+            coarseCompassSin += sin(c * .pi / 180); coarseCompassCos += cos(c * .pi / 180)
+        }
+        let elapsed = location.timestamp.timeIntervalSince(anchor.timestamp)
+        guard elapsed > 0, elapsed <= COARSE_MAX_ELAPSED else { restart(); return }
+        let from = CLLocation(latitude: anchor.latitude, longitude: anchor.longitude)
+        let to = CLLocation(latitude: location.latitude, longitude: location.longitude)
+        let distance = from.distance(from: to)
+        let needed = max(COARSE_MIN_BASELINE,
+                         4 * max(anchor.horizontalAccuracy, location.horizontalAccuracy))
+        guard distance >= needed else { return }
+        // Long enough: this stretch is one sample, whatever it says, and the next starts here.
+        defer { restart() }
+        // Riding pace only - a walk covers 150 m too, at a pocket angle that does not apply.
+        guard distance / elapsed >= OFFSET_SAMPLE_MIN_SPEED,
+              coarseCompassSin != 0 || coarseCompassCos != 0 else { return }
+        let meanCompass = atan2(coarseCompassSin, coarseCompassCos) * 180 / .pi
+        let φ1 = anchor.latitude * .pi / 180, φ2 = location.latitude * .pi / 180
+        let Δλ = (location.longitude - anchor.longitude) * .pi / 180
+        let travel = atan2(sin(Δλ) * cos(φ2),
+                           cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(Δλ)) * 180 / .pi
+        var sample = travel - meanCompass
+        while sample > 180 { sample -= 360 }
+        while sample < -180 { sample += 360 }
+        coarseOffsetSamples.append(sample)
+        if coarseOffsetSamples.count > OFFSET_SAMPLE_KEEP {
+            coarseOffsetSamples.removeFirst(coarseOffsetSamples.count - OFFSET_SAMPLE_KEEP)
+        }
+        // A sharp consensus outranks this entirely.
+        guard ridingOffsetSamples.count < OFFSET_MIN_SAMPLES,
+              coarseOffsetSamples.count >= COARSE_MIN_SAMPLES else { return }
+        let median = Self.circularMedian(coarseOffsetSamples)
+        guard Self.medianAngularDeviation(coarseOffsetSamples, around: median)
+                <= COARSE_MAX_SPREAD else { return }
+        let hadNone = compassMisalignment == nil
+        compassMisalignment = median
+        offsetSource = .ridingCoarse
+        coarseConsensus = true
+        if hadNone { rotateUntrustedPrefixIfOffsetSettled() }
     }
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
     /// Previous GPS fix used for the misalignment bearing, so travel direction can be measured
@@ -3006,9 +3104,12 @@ class WorkoutSession: ObservableObject {
             guard ridingOffsetSamples.count >= OFFSET_MIN_SAMPLES else { return }
             let hadNone = compassMisalignment == nil
             compassMisalignment = Self.circularMedian(ridingOffsetSamples)
+            offsetSource = .ridingSharp
             if hadNone { rotateUntrustedPrefixIfOffsetSettled() }
             return
         }
+        // Below riding pace: this is a walking-derived value from here on.
+        offsetSource = .walking
         if let existing = compassMisalignment {
             var delta = offset - existing
             if delta > 180 { delta -= 360 } else if delta < -180 { delta += 360 }
@@ -3051,6 +3152,17 @@ class WorkoutSession: ObservableObject {
         guard let oldest = offsetHistory.first,
               now.timeIntervalSince(oldest.t) >= OFFSET_SETTLE_WINDOW else { return }
         guard angularDistance(current, oldest.value) <= OFFSET_SETTLE_TOLERANCE else { return }
+        // AN OFFSET LEARNED WALKING MAY NOT REWRITE A STRETCH LAID DOWN RIDING.
+        //
+        // This rotation exists to fix the opening of a route drawn before the offset was known.
+        // On five forced rides no riding sample was ever good enough, so the first offset to
+        // settle came from walking away from the bike afterwards - and it rotated the entire ride
+        // by +146, +161, +127, +73 and -55 degrees. The phone sits at a different angle in the
+        // pocket walking than seated; three of those turned routes about 55 degrees out into
+        // routes running backwards. It waits instead, and if nothing from riding ever settles,
+        // the ride is left as drawn.
+        let prefixMostlyRiding = prefixOffsetCount > 0 && prefixWalkingTicks * 2 < prefixOffsetCount
+        if offsetSource == .walking && prefixMostlyRiding { return }
         // Each prefix point was drawn with whatever offset was in effect at the time; the
         // correction is the difference between that and the settled value.
         let applied = prefixOffsetCount > 0 ? prefixOffsetSum / prefixOffsetCount : 0
@@ -3550,8 +3662,9 @@ class WorkoutSession: ObservableObject {
                 // So once riding has a consensus, only an update made at walking pace counts.
                 // Before that - a walk-only workout, or the walk to the bike - it is unchanged.
                 if let compass = absoluteHeadingDatum,
-                   ridingOffsetSamples.count < OFFSET_MIN_SAMPLES
+                   !hasRidingOffsetConsensus
                        || estimatedFallbackSpeed < OFFSET_SAMPLE_MIN_SPEED {
+                    offsetSource = .walking
                     var offset = target - compass
                     if offset > 180 { offset -= 360 } else if offset < -180 { offset += 360 }
                     if let existing = compassMisalignment {
@@ -3658,6 +3771,7 @@ class WorkoutSession: ObservableObject {
         if untrustedHeadingPrefixStart != nil {
             prefixOffsetSum += (compassMisalignment ?? 0)
             prefixOffsetCount += 1
+            if pedometerIsCounting { prefixWalkingTicks += 1 }
             rotateUntrustedPrefixIfOffsetSettled()
         }
         // NOTE: the velocity vector no longer snaps the heading either. It is a product of the
@@ -4337,6 +4451,7 @@ class WorkoutSession: ObservableObject {
         untrustedSeedHeading = headingSeedWasMeasured ? nil : course
         prefixOffsetSum = 0
         prefixOffsetCount = 0
+        prefixWalkingTicks = 0
         offsetHistory = []
         // PDR distance source for step activities: pedometer from the start of the gap.
         fallbackPedometerDistance = nil
@@ -4563,6 +4678,11 @@ class WorkoutSession: ObservableObject {
         yawHeadingOffset = nil
         compassMisalignment = nil
         ridingOffsetSamples = []
+        offsetSource = .none
+        coarseOffsetSamples = []
+        coarseAnchor = nil
+        coarseCompassSin = 0; coarseCompassCos = 0
+        coarseConsensus = false
         launchMeanNorth = 0; launchMeanEast = 0; launchWindowElapsed = 0
         vehicleLaunchDetected = false; vehicleConfirmedByGPSSpeed = false
         if fallbackPedometerActive {
@@ -5056,6 +5176,9 @@ class WorkoutSession: ObservableObject {
             // comment this replaces was written there was none, and the heading really did
             // free-run.
             // Bounded: the window closes and the offset is frozen for the rest of the workout.
+            if offsetWarmupActive {
+                learnCoarseOffset(from: location)
+            }
             if offsetWarmupActive,
                location.speed >= OFFSET_WARMUP_MIN_SPEED,
                location.horizontalAccuracy >= 0, location.horizontalAccuracy < 20 {
