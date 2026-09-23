@@ -98,6 +98,14 @@ class LocationManager: NSObject, ObservableObject {
     /// rate switches between 2 and 50 Hz, and four seconds of steps is what was tested.
     private(set) var walkPhysicalWindow: [(t: TimeInterval, north: Double, east: Double, gravityZ: Double)] = []
     private let WALK_WINDOW_SECONDS: TimeInterval = 4.0
+
+    /// Heading of the phone from its full attitude, via whichever device axis lies most nearly
+    /// flat - never singular. See updateAxisHeading(from:).
+    private(set) var currentAxisHeading: Double?
+    private var axisHeadingGravity: (x: Double, y: Double, z: Double)?
+    private var axisHeadingAxis: Int?          // 0 = +X, 1 = +Y, 2 = +Z
+    private var axisHeadingRebase: Double = 0
+    private var lastAxisHeadingTimestamp: TimeInterval?
     /// Slow mean of the vertical gyro rate = gyro bias. Subtracted before integrating so bias
     /// does not accumulate into heading (0.01 rad/s ≈ 34°/min of drift).
     private var verticalGyroBias: Double = 0
@@ -760,6 +768,8 @@ class LocationManager: NSObject, ObservableObject {
         verticalGyroBias = 0
         turnAccelSumNorth = 0; turnAccelSumEast = 0; turnAccelSamples = 0
         walkPhysicalWindow = []
+        currentAxisHeading = nil; axisHeadingGravity = nil; axisHeadingAxis = nil
+        axisHeadingRebase = 0; lastAxisHeadingTimestamp = nil
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
@@ -854,6 +864,7 @@ class LocationManager: NSObject, ObservableObject {
                 }
                 self.cumulativeDeviceYawRotation += (verticalRate - self.verticalGyroBias) * dtForRotation * 180.0 / .pi
             }
+            self.updateAxisHeading(from: motion)
             if let turnAccel = self.turnAcceleration(from: motion) {
                 self.turnAccelSumNorth += turnAccel.north
                 self.turnAccelSumEast += turnAccel.east
@@ -956,6 +967,8 @@ class LocationManager: NSObject, ObservableObject {
         verticalGyroBias = 0
         turnAccelSumNorth = 0; turnAccelSumEast = 0; turnAccelSamples = 0
         walkPhysicalWindow = []
+        currentAxisHeading = nil; axisHeadingGravity = nil; axisHeadingAxis = nil
+        axisHeadingRebase = 0; lastAxisHeadingTimestamp = nil
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         DispatchQueue.main.async { [weak self] in
@@ -982,6 +995,72 @@ class LocationManager: NSObject, ObservableObject {
         guard turnAccelSamples >= 10 else { return nil }
         let n = Double(turnAccelSamples)
         return (turnAccelSumNorth / n, turnAccelSumEast / n)
+    }
+
+    /// A HEADING THAT CANNOT GO SINGULAR.
+    ///
+    /// CMDeviceMotion.heading is the bearing of one particular direction in the phone, and which
+    /// direction depends on how the phone is held. When that direction points close to straight
+    /// down its horizontal part is tiny and the reading is noise. On the 23 Sep 15:14 ride the
+    /// phone sat head-down at 45 degrees in a pocket, the direction was 20 degrees from vertical,
+    /// and over each minute the heading scattered 49 degrees (median) around what the gyro
+    /// measured - the route drawn from it was 72 degrees off.
+    ///
+    /// The attitude itself is fine. So this takes whichever of the phone's X, Y and Z axes lies
+    /// most nearly flat - by a margin, so it does not chatter between two - and reports the bearing
+    /// of that axis. Over the same minutes it scattered 1 degree. Switching axes would jump the
+    /// reading, so the difference between the two axes at that instant is carried forward and the
+    /// output stays continuous; everything downstream learns offsets against it, so its absolute
+    /// zero does not matter, only that it holds still.
+    ///
+    /// Replayed on the 52 rides with enough GPS to grade (GPS for grading only), the typical riding
+    /// error was 18 degrees either way, but rides worse than 40 degrees fell from 7 to 4 and the
+    /// worst from 72 to 58. It does cost where the phone slowly rolled in the pocket during a ride
+    /// (15 Sep 13:05: 5 -> 30 degrees), where Core Motion's own choice happened to hold better.
+    private func updateAxisHeading(from motion: CMDeviceMotion) {
+        guard motionReferenceFrameIsAbsolute else { currentAxisHeading = nil; return }
+        let g = motion.gravity
+        let dt = lastAxisHeadingTimestamp.map { min(max(motion.timestamp - $0, 0), 1) } ?? 0
+        lastAxisHeadingTimestamp = motion.timestamp
+        // Smoothed over ~2 s so one step or bump does not decide the axis.
+        if var s = axisHeadingGravity {
+            let a = dt / (2.0 + dt)
+            s.x += (g.x - s.x) * a; s.y += (g.y - s.y) * a; s.z += (g.z - s.z) * a
+            axisHeadingGravity = s
+        } else {
+            axisHeadingGravity = (g.x, g.y, g.z)
+        }
+        guard let s = axisHeadingGravity else { return }
+        let norm = max(sqrt(s.x * s.x + s.y * s.y + s.z * s.z), 1e-9)
+        let align = [abs(s.x) / norm, abs(s.y) / norm, abs(s.z) / norm]
+        // Bearings of +X, +Y, +Z: the columns of R = Rz(yaw) Rx(pitch) Ry(roll), north and WEST rows.
+        let att = motion.attitude
+        let cr = cos(att.roll), sr = sin(att.roll)
+        let cp = cos(att.pitch), sp = sin(att.pitch)
+        let cy = cos(att.yaw), sy = sin(att.yaw)
+        let north = [cy * cr - sy * sp * sr, -sy * cp, cy * sr + sy * sp * cr]
+        let west = [sy * cr + cy * sp * sr, cy * cp, sy * sr - cy * sp * cr]
+        func bearing(_ i: Int) -> Double { atan2(-west[i], north[i]) * 180 / .pi }
+        let best = align.indices.min { align[$0] < align[$1] } ?? 1
+        let current: Int
+        if let axis = axisHeadingAxis {
+            if align[axis] - align[best] > 0.15 {
+                axisHeadingRebase = (axisHeadingRebase + bearing(axis) - bearing(best))
+                    .truncatingRemainder(dividingBy: 360)
+                current = best
+            } else {
+                current = axis
+            }
+        } else {
+            // Start on the top edge when it is flat enough - a phone's natural "pointing" - and
+            // on the most nearly flat axis otherwise.
+            current = align[1] < 0.7 ? 1 : best
+        }
+        axisHeadingAxis = current
+        var h = bearing(current) + axisHeadingRebase + magneticDeclinationDegrees
+        h = h.truncatingRemainder(dividingBy: 360)
+        if h < 0 { h += 360 }
+        currentAxisHeading = h
     }
 
     /// Horizontal acceleration for the cornering offset learner and the walking direction:

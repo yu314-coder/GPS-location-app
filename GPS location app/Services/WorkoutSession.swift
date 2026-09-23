@@ -406,11 +406,11 @@ class WorkoutSession: ObservableObject {
             turnOffsetRe = 0; turnOffsetIm = 0; turnOffsetEvidence = 0; turnOffsetTicks = 0
             turnOffset = nil
         }
-        // Against Core Motion's heading, not whichever datum is current: CLHeading takes over
-        // whenever the app is in the foreground, and for a tilted phone the two differ by 25-100
-        // degrees on the rides on record. One accumulator must not mix them.
+        // Against the attitude heading, the same one the route is steered by (absoluteHeadingDatum
+        // falls back to CLHeading or Core Motion's heading only when it is unavailable, and one
+        // accumulator must not mix sources).
         guard let accel, let turn = lastTickGyroTurn, dt > 0.2,
-              let compass = locationManager.currentMotionHeading,
+              let compass = locationManager.currentAxisHeading ?? locationManager.currentMotionHeading,
               estimatedFallbackSpeed >= TURN_OFFSET_MIN_SPEED,
               !source.hasPrefix("PDR"), !deviceIsBeingHandled else { return }
         // A GPS-measured riding offset, when there is one (GPS lost mid-ride outside Velocity
@@ -515,6 +515,13 @@ class WorkoutSession: ObservableObject {
         //
         // Five seconds is far longer than the delivery interval when updates are actually
         // arriving, and far shorter than the gap once they stop.
+        // ONE SOURCE, AND ONE THAT CANNOT GO SINGULAR. See LocationManager.updateAxisHeading.
+        // CLHeading and Core Motion's heading each follow a direction in the phone that depends
+        // on how it is held, differ from each other by 25-100 degrees on a tilted phone, and take
+        // turns being "current" as the app goes to and from the foreground - every hand-over was
+        // a jump the learned offsets did not know about. The attitude-derived heading is always
+        // delivered, holds still, and is what every offset is now learned against.
+        if let axis = locationManager.currentAxisHeading { return axis }
         if let fresh = locationManager.currentCompassHeading,
            let t = locationManager.currentCompassHeadingTime,
            Date().timeIntervalSince(t) < 5.0 {
@@ -3198,7 +3205,7 @@ class WorkoutSession: ObservableObject {
 
     /// Direction of walking from the last four seconds of steps, or nil. See walkOffsetSamples.
     /// `raw` is the window's own forward/back vote, `direction` the end actually chosen.
-    private func walkingDirection(coreMotionHeading compass: Double)
+    private func walkingDirection(heading compass: Double)
         -> (direction: Double, raw: Double, skew: Double, flat: Bool)? {
         let window = locationManager.walkPhysicalWindow
         guard window.count >= 100 else { return nil }      // 50 Hz only; 2 Hz is not a gait
@@ -3512,8 +3519,8 @@ class WorkoutSession: ObservableObject {
             lastWalkSkew = nil
             axisWasGated = false
             if imuIsStepping, !vehicleContextIsCurrent,
-               let compassCM = locationManager.currentMotionHeading,
-               let walk = walkingDirection(coreMotionHeading: compassCM) {
+               let compassCM = locationManager.currentAxisHeading ?? locationManager.currentMotionHeading,
+               let walk = walkingDirection(heading: compassCM) {
                 lastRawWalkAxis = walk.raw
                 lastResolvedWalkAxis = walk.direction
                 lastWalkSkew = walk.skew
