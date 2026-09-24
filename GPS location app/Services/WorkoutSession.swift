@@ -364,6 +364,11 @@ class WorkoutSession: ObservableObject {
     /// When the last riding tick was accepted; a gap longer than RIDE_RESTART_GAP starts a ride.
     private var lastRidingTickTime: Date?
     private let RIDE_RESTART_GAP: TimeInterval = 20
+    /// A vehicle tick this fast is riding, for everything except learning. At the learner's own
+    /// 4 m/s the first seconds of every ride were still drawn on the walking heading and walking
+    /// offset: 24 Sep 07:58 rolled off at 9-12 km/h for ten seconds, about 40 m, pointing the way
+    /// the walk had. Replayed on every session, 1.5-4 m/s made no difference anywhere else.
+    private let RIDE_START_SPEED = 2.5          // m/s, ~9 km/h
     /// Gyro turn over the most recent heading tick, degrees clockwise.
     private var lastTickGyroTurn: Double?
 
@@ -409,9 +414,8 @@ class WorkoutSession: ObservableObject {
         // Against the attitude heading, the same one the route is steered by (absoluteHeadingDatum
         // falls back to CLHeading or Core Motion's heading only when it is unavailable, and one
         // accumulator must not mix sources).
-        guard let accel, let turn = lastTickGyroTurn, dt > 0.2,
-              let compass = locationManager.currentAxisHeading ?? locationManager.currentMotionHeading,
-              estimatedFallbackSpeed >= TURN_OFFSET_MIN_SPEED,
+        guard let compass = locationManager.currentAxisHeading ?? locationManager.currentMotionHeading,
+              estimatedFallbackSpeed >= RIDE_START_SPEED,
               !source.hasPrefix("PDR"), !deviceIsBeingHandled else { return }
         // A GPS-measured riding offset, when there is one (GPS lost mid-ride outside Velocity
         // Mode), is several times tighter than anything below; it goes back in charge on every
@@ -458,6 +462,9 @@ class WorkoutSession: ObservableObject {
         if rideStarting, let datum = absoluteHeadingDatum {
             motionHeadingDegrees = normalizedHeading(datum + (compassMisalignment ?? 0))
         }
+        // Riding has begun; learning needs more speed than that. See RIDE_START_SPEED.
+        guard let accel, let turn = lastTickGyroTurn, dt > 0.2,
+              estimatedFallbackSpeed >= TURN_OFFSET_MIN_SPEED else { return }
         let h = compass * .pi / 180
         let forward = accel.north * cos(h) + accel.east * sin(h)
         let right = -accel.north * sin(h) + accel.east * cos(h)
