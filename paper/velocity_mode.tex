@@ -44,7 +44,7 @@ from satellites; here both come from the phone's motion sensors.
 
 \paragraph{Speed from vibration.} A moving vehicle shakes, and it shakes differently at different
 speeds~\cite{carspeednet}. (Adding up acceleration instead does not work on a phone: its small
-sensor errors grow into kilometres within minutes~\cite{memserrors}.) Every second, the phone takes the last four seconds of up-and-down acceleration, measured
+sensor errors grow into kilometres within minutes~\cite{memserrors}.) Every second, the phone takes the last five seconds of up-and-down acceleration, measured
 $50$ times a second, and turns it into a short ``fingerprint'' of eleven numbers --- how much
 energy the shaking has at each of nine frequency ranges, plus two measures of its overall
 strength. Whenever GPS is available, the phone stores fingerprints together with the speed GPS
@@ -95,8 +95,8 @@ earlier recordings, which were made with the phone's raw sensor readings saved:
 \item \textbf{Speed.} The speed model was rebuilt exactly as the app builds it --- the same
 fingerprint, the same $12$-neighbour average, the same refusals, the same correction --- with a
 memory of $4000$ examples drawn at random from every \emph{other} journey, so that no journey was
-ever measured with its own GPS in the memory. On the journeys the app had recorded with this
-version itself, the rebuilt model's distance was within about $8\%$ of what the app had drawn.
+ever measured with its own GPS in the memory. On nine journeys the app had recorded with the same
+speed model, the rebuilt model's distance was within about $8\%$ of what the app had drawn.
 \item \textbf{Direction.} The direction method, including the redrawing, was run over the saved
 motion sensor readings.
 \item \textbf{Walking.} Distance is what the app drew. For walks that began within minutes of a
@@ -121,8 +121,9 @@ enough for that not to matter:
 are better than $40$~m: the straight distance GPS moved, against the distance the system added.
 Walking moves so little in half a minute that only straight stretches between fixes better than
 $25$~m are used.
-\item \textbf{Direction} is compared every half-minute: the bearing from the GPS position $15$~s
-earlier to the one $15$~s later, against the system's heading over the same half-minute.
+\item \textbf{Direction} is compared every second: the bearing from the GPS position $15$~s
+earlier to the one $15$~s later, against the system's heading over the same half-minute. For the
+plane, which covers far more ground, the stretch is ten seconds.
 \item \textbf{Whole routes} are compared by finding the rotation and the size change that best lay
 the drawn route over the GPS track, pinned at the shared starting point. The rotation is how far
 the whole route is turned; the size change is how much too big or too small it is.
@@ -172,14 +173,15 @@ GPS could check; the shading is within $20\%$. (c)~Straight stretches of walking
 
 \begin{itemize}\itemsep2pt
 \item \textbf{Motorcycle} ($39$ journeys, $177$~km checked). The app added $165$~km, $6\%$ short:
-fast riding reads slow more often than slow riding reads fast. The middle journey was $2\%$
-short, and $76\%$ of journeys were within $20\%$; the worst were $68\%$ short and $54\%$ long.
-\item \textbf{Car} ($31$ journeys, $142$~km checked). The app added $148$~km, $5\%$ long. The
-middle journey was $10\%$ long, and only $46\%$ of journeys were within $20\%$; the worst were
-$40\%$ short and $52\%$ long.
+the distance lost at high speed outweighs what is gained at low speed. Of the $38$ journeys with at
+least $1$~km checked, the middle one was $2\%$ short and $76\%$ were within $20\%$; the worst were
+$68\%$ short and $54\%$ long.
+\item \textbf{Car} ($31$ journeys, $142$~km checked). The app added $148$~km, $5\%$ long. Of the
+$28$ journeys with at least $1$~km checked, the middle one was $10\%$ long and only $46\%$ were
+within $20\%$; the worst were $40\%$ short and $52\%$ long.
 \item \textbf{Walking}. Over straight stretches the app was $7\%$ long: $9\%$ in ordinary walking
 and $6\%$ in the first minutes after a ride.
-\item \textbf{Plane}. $2.6$~km were counted of the $74$~km flown.
+\item \textbf{Plane}. The speed model counted $2.6$~km of the $74$~km flown.
 \end{itemize}
 
 Motorcycle and car together, the app added $314$~km where GPS measured $318$~km, $1.5\%$ short.
@@ -190,11 +192,11 @@ Motorcycle and car together, the app added $314$~km where GPS measured $318$~km,
 \centering
 \includegraphics[width=0.8\textwidth]{figures/fig3_direction.pdf}
 \caption{How often the direction is within a given angle of GPS, compared every second with a
-half-minute of GPS track.}
+half-minute of GPS track (ten seconds for the plane).}
 \label{fig:direction}
 \end{figure}
 
-Direction works about equally well in every case (Figure~\ref{fig:direction}):
+Direction holds up in every case (Figure~\ref{fig:direction}):
 
 \begin{itemize}\itemsep2pt
 \item \textbf{Motorcycle} ($40$ recordings): within $30^\circ$ $73\%$ of the time; middle error
@@ -238,11 +240,11 @@ Figure~\ref{fig:routes} and Table~\ref{tab:summary} put speed and direction toge
 \begin{itemize}\itemsep2pt
 \item \textbf{Motorcycle} ($40$ routes, $349$~km, many with a walk at one end). The median route is
 turned $10^\circ$ and $85\%$ are within $30^\circ$. Routes come out a little small --- a median
-$0.88$ of the real size --- because distance is short and small direction errors make the path
-fold. The drawn position drifts from GPS by a median of $15\%$ of the distance travelled.
+$0.88$ of the real size --- partly because distance is short, and partly because small direction
+errors make the path fold. The drawn position drifts from GPS by a median of $15\%$ of the distance travelled.
 \item \textbf{Car} ($23$ routes, $121$~km). The median route is turned $20^\circ$ and $70\%$ are
 within $30^\circ$; the size is right (median $1.01$). The drift is $18\%$ of the distance travelled.
-\item \textbf{Walking}. Only one route was mostly walking, $2$~km long; it was turned $58^\circ$.
+\item \textbf{Walking}. Only one route was mostly walking, $2.5$~km long; it was turned $53^\circ$.
 \item \textbf{Plane}. No route can be drawn, because speed in the air is not measured.
 \end{itemize}
 
@@ -261,9 +263,10 @@ where it was taxiing, taking off and climbing.}
 \end{figure}
 
 Figure~\ref{fig:flight} follows the flight with the same direction method as on the road. While
-taxiing, the middle error was $8^\circ$; in the air it was $16^\circ$. The one large miss is the
-pushback at the start, when the aircraft moves tail first: the method gives the way the nose points,
-which is opposite to the way it moves. In the climb the gap grows slowly, to about $24^\circ$ by the
+taxiing, the middle error was $8^\circ$; in the air it was $16^\circ$. Nine seconds were more than
+$30^\circ$ off. One is the pushback at the start, when the aircraft moves tail first: the method gives
+the way the nose points, which is opposite to the way it moves. The other eight came while the
+aircraft was stopped or crawling before the runway, where the GPS track has no clear direction. In the climb the gap grows slowly, to about $24^\circ$ by the
 end of the recording. Part of that may be wind, which pushes an aircraft sideways so that its nose
 and its track differ; GPS alone cannot tell the two apart.
 
@@ -287,9 +290,10 @@ $40$~km/h, so distance is not counted while climbing and turning together. The s
 fire on an ordinary rising, curving road: once for nine seconds at $48$~km/h, about $115$~m lost.
 \item \textbf{Aircraft.} Speed cannot be measured in an aircraft. In the air the cabin is smooth,
 so a speed model that has learned only from roads reads it as nearly standing still
-(Figure~\ref{fig:speed}d): $2.6$ of $74$~km. The app watches cabin pressure and stops using its road
-examples once it sees a climb, but then it has nothing else to measure speed with; and the phone's
-own orientation filter treats the long, steady push of a takeoff as a tilt~\cite{quatcf}. The
+(Figure~\ref{fig:speed}d): $2.6$ of $74$~km. The app watches cabin pressure and, once it sees a climb,
+stops using its road examples and uses only examples learned on earlier flights that had GPS; with
+one flight recorded, that could not be tested. The phone's own orientation filter also treats the
+long, steady push of a takeoff as a tilt~\cite{quatcf}. The
 direction still works (Figure~\ref{fig:flight}).
 \end{itemize}
 
@@ -337,19 +341,22 @@ compared with the riding they came from.
 All recordings were made by one person, on one iPhone, mostly in one city, by motorcycle, car,
 on foot and on only one flight; other people, phones and vehicles may behave differently. Most results come from running the
 newest method again over earlier recordings rather than from live use, though on the journeys the
-app recorded with this version the rerun matched it closely. GPS in a pocket is itself only accurate
+app recorded with the same speed model the rerun matched it closely. GPS in a pocket is itself only accurate
 to tens of metres, so small errors cannot be measured reliably.
 
 \begin{thebibliography}{9}
 \small
-\bibitem{carspeednet} A.~Cohen and I.~Klein. CarSpeedNet: Learning-based speed estimation from
-accelerometer-only inertial sensing. arXiv:2401.07468, 2024.
-\bibitem{memserrors} Smartphone MEMS accelerometer and gyroscope measurement errors: laboratory
-testing and analysis of the effects on positioning performance. \emph{Sensors}, 23(17):7609, 2023.
-\bibitem{pdrheading} Pedestrian dead reckoning with novel heading estimation under magnetic
-interference and multiple smartphone postures. \emph{Measurement}, 183, 2021.
-\bibitem{quatcf} Quaternion-based complementary filter for attitude determination of a
-smartphone. \emph{IEEE Sensors Journal}, 16(15), 2016.
+\bibitem{carspeednet} B.~Or. Learning-based speed estimation from accelerometer-only inertial
+sensing (CarSpeedNet). arXiv:2401.07468, 2024.
+\bibitem{memserrors} V.~Capuano, L.~Xu and J.~Estrada Benavides. Smartphone MEMS accelerometer and
+gyroscope measurement errors: laboratory testing and analysis of the effects on positioning
+performance. \emph{Sensors}, 23(17):7609, 2023.
+\bibitem{pdrheading} W.~Li, R.~Chen, Y.~Yu, Y.~Wu and H.~Zhou. Pedestrian dead reckoning with novel
+heading estimation under magnetic interference and multiple smartphone postures.
+\emph{Measurement}, 182:109610, 2021.
+\bibitem{quatcf} M.~B. Del~Rosario, N.~H. Lovell and S.~J. Redmond. Quaternion-based complementary
+filter for attitude determination of a smartphone. \emph{IEEE Sensors Journal}, 16(15):6008--6017,
+2016.
 \end{thebibliography}
 
 \end{document}
