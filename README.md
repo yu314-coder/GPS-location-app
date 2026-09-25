@@ -69,7 +69,11 @@ attitude logged (476 minutes of riding, 344 km):
 | Walking with the phone in a pocket, compass alone | 81° | 30% |
 | Walking with the phone in a pocket, Velocity Mode | **10°** | **93%** |
 
-Every one of the 61 routes is drawn against its own GPS track in the paper's Appendix A.
+Route by route, over 60 recordings and 451 km of GPS track, the whole drawn route is rotated from
+the real one by a median 13° and lies within 30° on 88% of recordings — against 31° and 48% for the
+compass alone, and 73% for earlier builds that learned the angle from GPS. With rotation and size
+removed, all three draw the same shape: the gyroscope gets the shape right, and what is left is how
+far the route is turned and how long it is. The paper's appendix lists every recording.
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
 varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured without
@@ -79,8 +83,9 @@ sits at is learned per ride: if the phone shifts in a pocket mid-ride without be
 rest of the ride is drawn off by roughly however far it moved.
 
 📄 **[Read the paper](https://github.com/yu314-coder/GPS-location-app/releases/tag/v1.0-paper)**
-— method, results, every route drawn against GPS, and eighteen approaches that were implemented,
-measured and rejected.
+— method, results, a route-by-route comparison with GPS, and over twenty approaches that were
+implemented, measured and rejected, including a neural network that beat the store offline and was
+withdrawn in the field.
 [LaTeX source](paper/). The paper also ships inside the app: **Settings → Velocity Mode → Read the
 paper**, alongside an interactive version with the equations and error charts.
 

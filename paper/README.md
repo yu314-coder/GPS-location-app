@@ -16,11 +16,12 @@ Twice, so the figure references resolve. Requires a TeX distribution with `amsma
 | File | |
 |---|---|
 | `velocity_mode.tex` | Source |
-| `velocity_mode.pdf` | Compiled, 25 pages |
-| `figures/` | Nine figures, generated from the recorded logs |
+| `velocity_mode.pdf` | Compiled, 29 pages |
+| `figures/` | Seven figures, generated from the recorded logs |
 
 Every number in the paper is measured against GPS recorded at the same moment as the estimate —
 none is modelled, simulated or extrapolated. The direction results for the current method re-run
 the shipped direction logic over the recorded sensor logs of every journey (61 with attitude
-logged), with GPS used only to grade; distance in those routes is as each build recorded it. Where the method fails, the paper says so and gives
+logged, 60 with enough GPS to compare whole routes), with GPS used only to grade; distance in
+those routes is as each build recorded it. Where the method fails, the paper says so and gives
 the magnitude.
