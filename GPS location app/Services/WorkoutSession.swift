@@ -4998,9 +4998,27 @@ class WorkoutSession: ObservableObject {
             currentMetrics.totalDistance = restoreDistance
             previousLocation = flight.locations.last ?? previousLocation
         }
+        // A DEAD-RECKONED STEP CANNOT TELEPORT.
+        //
+        // One recorded drive ended with a single estimated point 2,052 m from the GPS fix beside
+        // it in time; the route ran out to it and back, adding 5.4 km never travelled to a 49 km
+        // recording, while the other 131 estimated points sat a median 79 m from the truth.
+        // Nothing bounded a step by what the vehicle could have covered.
+        //
+        // The bound is RELATIVE, never an absolute speed: twice what the speed this step is being
+        // drawn at could cover since the previous point (at most 10 s of it), and never under
+        // 200 m. An earlier version capped steps at 120 m/s, which would have cut an aircraft's
+        // cruise by a fifth; this one scales with whatever the vehicle is actually doing.
+        let sincePrevious = max(timestamp.timeIntervalSince(previousLocation.timestamp), 0)
+        let plausibleLimit = max(2.0 * max(speedMetersPerSecond, 0) * min(max(sincePrevious, 1), 10), 200.0)
+        let steppedDistance = min(distanceMeters, plausibleLimit)
+        if steppedDistance < distanceMeters {
+            print("📍 ⚠️ estimated step clamped: \(Int(distanceMeters)) m in "
+                  + "\(String(format: "%.1f", sincePrevious)) s at \(Int(speedMetersPerSecond * 3.6)) km/h -> \(Int(steppedDistance)) m")
+        }
         let coordinate = projectedCoordinate(
             from: CLLocationCoordinate2D(latitude: previousLocation.latitude, longitude: previousLocation.longitude),
-            distanceMeters: distanceMeters,
+            distanceMeters: steppedDistance,
             bearingDegrees: headingDegrees
         )
         // HONEST, GROWING UNCERTAINTY — not a flat 250 m.
@@ -5028,7 +5046,7 @@ class WorkoutSession: ObservableObject {
             horizontalAccuracy: drift,
             verticalAccuracy: max(drift, ESTIMATED_LOCATION_VERTICAL_ACCURACY / 10),
             course: headingDegrees,
-            speed: max(distanceMeters / max(timestamp.timeIntervalSince(previousLocation.timestamp), 0.5), 0.0),
+            speed: max(steppedDistance / max(sincePrevious, 0.5), 0.0),
             timestamp: timestamp
         )
         let estimatedLocation = FlightLocation(
@@ -5045,7 +5063,7 @@ class WorkoutSession: ObservableObject {
             // Every step of a ride in progress was steered by compass + offset, crawling and all.
             let kind: DrawnStepKind = stepKindThisTick == .walking ? .walking
                 : (rideStartStep != nil ? .riding : .other)
-            drawnSteps.append(DrawnStep(index: flight.locations.count - 1, distance: distanceMeters,
+            drawnSteps.append(DrawnStep(index: flight.locations.count - 1, distance: steppedDistance,
                                         originalHeading: headingDegrees, heading: headingDegrees,
                                         kind: kind, offsetApplied: steeringOffsetThisTick,
                                         walk: kind == .walking ? stepWalkThisTick : nil))
