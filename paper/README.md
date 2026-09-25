@@ -16,10 +16,11 @@ Twice, so the figure references resolve. Requires a TeX distribution with `amsma
 | File | |
 |---|---|
 | `velocity_mode.tex` | Source |
-| `velocity_mode.pdf` | Compiled, 7 pages |
-| `figures/` | Four figures, generated from the recorded logs |
+| `velocity_mode.pdf` | Compiled, 8 pages |
+| `figures/` | Five figures, generated from the recorded logs |
 
-Every number in the paper compares the current version with GPS recorded at the same time and used
-only as the answer key. Speed, distance and whole-route results come from the nine journeys recorded
-with the current version (22–24 September 2026); direction results also re-run the current direction
-method over the sensor logs of all 61 recordings with the phone's orientation logged.
+Every number in the paper compares the newest version with GPS recorded at the same time and used
+only as the answer key. Earlier recordings were re-run through the newest speed and direction
+methods: the speed model is rebuilt as the app builds it, with a memory drawn from every other
+journey, and the direction method runs over the saved motion sensor readings. The paper and its
+figures carry no recording dates or times.

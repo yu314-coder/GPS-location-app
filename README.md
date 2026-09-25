@@ -43,18 +43,18 @@ by nearest-neighbour lookup against every signature GPS has previously labelled.
 allowed to refuse: if nothing it has stored resembles the present signature, it says so rather
 than guessing.
 
-**Measured accuracy** — the current version against GPS, which was recorded alongside and used
-only as the answer key. Nine motorcycle journeys with the phone in a trouser pocket (2.8 hours,
-84 km of GPS track); direction also over all 61 recordings with the phone's orientation logged.
+**Measured accuracy** — the newest version, run over every earlier recording and compared with GPS
+recorded at the same time, used only as the answer key.
 
-| | Current version vs GPS |
+| | Newest version vs GPS |
 |---|---|
-| Distance, nine journeys (where GPS could check) | **0.4%** short in total; every journey within 16% |
-| Speed | average error 8.5 km/h — reads high at 10–20 km/h, low above 60 km/h |
-| Direction while riding | within 30° of GPS **72%** of the time |
+| Distance, 70 journeys (18 hours) | **1.5%** short in total; 64% of journeys within 20% |
+| Speed | average error 9 km/h — reads high at 10–30 km/h, low above 40 km/h |
+| Direction while riding (62 recordings) | within 30° of GPS **73%** of the time |
 | Direction while walking, phone in a pocket | within 30° **93%** of the time |
-| Whole route turned from the real one | median **9°**; 7 of 9 routes within 30° |
-| Gap between drawn and real position | about 12% of the distance travelled |
+| Direction on a flight (gate to climb) | within 30° of the GPS track **99%** of the time |
+| Whole route turned from the real one (64 routes) | median **13°**; 78% within 30° |
+| Gap between drawn and real position | median 17% of the distance travelled |
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
 varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured without
