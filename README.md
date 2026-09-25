@@ -44,17 +44,14 @@ allowed to refuse: if nothing it has stored resembles the present signature, it 
 than guessing.
 
 **Measured accuracy** — the newest version, run over every earlier recording and compared with GPS
-recorded at the same time, used only as the answer key.
+recorded at the same time, used only as the answer key. Split by what was moving.
 
-| | Newest version vs GPS |
-|---|---|
-| Distance, 70 journeys (18 hours) | **1.5%** short in total; 64% of journeys within 20% |
-| Speed | average error 9 km/h — reads high at 10–30 km/h, low above 40 km/h |
-| Direction while riding (62 recordings) | within 30° of GPS **73%** of the time |
-| Direction while walking, phone in a pocket | within 30° **93%** of the time |
-| Direction on a flight (gate to climb) | within 30° of the GPS track **99%** of the time |
-| Whole route turned from the real one (64 routes) | median **13°**; 78% within 30° |
-| Gap between drawn and real position | median 17% of the distance travelled |
+| | Motorcycle | Car | Walking | Plane |
+|---|---|---|---|---|
+| Distance vs GPS | **6%** short (39 journeys); 76% of journeys within 20% | **5%** long (31 journeys); 46% within 20% | **9%** long; twice the distance in the first minutes after a ride | 2.6 of 74 km — speed in the air is not measured |
+| Speed | average error 9 km/h; reads low above 40 km/h | average error 8 km/h; close up to 80 km/h | about 5 km/h where GPS says 4.5 | a little low while taxiing; reads almost still in the air |
+| Direction within 30° of GPS | **73%** of the time | **74%** | **93%** (phone in a pocket) | **99%** |
+| Whole route turned | median **10°** (40 routes) | median **20°** (23 routes) | — | — |
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
 varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured without
