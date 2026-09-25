@@ -1,5 +1,5 @@
 \documentclass[11pt]{article}
-\usepackage[margin=1.35in]{geometry}
+\usepackage[margin=1.25in]{geometry}
 \usepackage{parskip}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
@@ -9,8 +9,8 @@
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
 
-\title{\vspace{-1.5em}\textbf{Recording a route without satellites:\\
-speed from vibration, direction from turns, and their failure modes}}
+\title{\vspace{-1.5em}\textbf{Recording a route without satellites}\\[0.3em]
+\large How accurate a phone's own sensors are, measured against GPS}
 \author{Yu Yao-Hsing\\\small\texttt{euler.yu@gmail.com}}
 \date{\small September 2026}
 
@@ -18,1239 +18,266 @@ speed from vibration, direction from turns, and their failure modes}}
 \maketitle
 
 \begin{abstract}\noindent
-A phone can record where it has been without satellite positioning, reading speed from how the
-vehicle shakes and direction from its motion sensors. We describe the method as shipped in a
-consumer iOS workout application and measure it against GPS recorded alongside, used only as a
-reference, over journeys by car, motorcycle and on foot. Driving fast and steadily with the phone
-resting in the vehicle, distance is within $3.8\%$ over $15$~km; in slow stop-start traffic the
-same system first read $20$--$60\%$ long. Most of that gap was a caching policy rather than the
-signal: the store kept rare fast examples by evicting from its most crowded speed bin, which left
-it holding $5\%$ of its examples below $5$~km/h where the riding produced $24\%$. Replacing a random
-example instead, and calibrating by percentiles, left later rides roughly unbiased on average,
-though single rides still vary by tens of percent. Direction needs no satellite at all: the angle at
-which the phone sits is learned from the sideways acceleration of the vehicle's turns, and walking
-is steered by the axis of the steps. Compared route by route with GPS over $60$ recordings and
-$451$~km, the whole route is rotated by a median $13^\circ$ and within $30^\circ$ on $88\%$ of
-recordings, against $31^\circ$ and $48\%$ for the phone's compass alone and $73\%$ for earlier
-builds that learned the angle from GPS. With rotation and size removed all three draw the same
-shape: the gyroscope gets the shape right, and what separates a good route from a bad one is how
-far the whole of it is turned and how long it is. We report in full over twenty approaches that
-were implemented, measured and rejected --- among them a sequence network that beat the store
-offline and was withdrawn after it failed in the field --- and the platform semantics that cost
-more than any modelling choice: a vendor sensor fusion that removes the signal aircraft dead
-reckoning needs, a platform heading that goes singular in a pocket, and an acceleration reported
-with the opposite sign to the vehicle's.
+When GPS is lost --- in a tunnel, an underground car park, or an aircraft --- a phone can still
+draw the route it travels. It reads \emph{speed} from how the vehicle shakes and \emph{direction}
+from its gyroscope and compass, and it never uses GPS after the first point. This paper measures
+how well the current version of that system works, by recording GPS at the same time and using it
+only as the answer key. Over nine motorcycle journeys with the phone in a trouser pocket
+($2.8$~hours, $84$~km), the distance the system measured was within $0.4\%$ of GPS in total, and
+within $16\%$ on every journey. Whole routes were turned from their true direction by a median of $9^\circ$. The main
+weaknesses are speed at the extremes --- fast riding reads slow and slow riding reads fast --- and
+the first minute of a ride, before the phone has learned how it sits in the pocket.
 \end{abstract}
 
-\section{Introduction}
+\section{What the system does}
 
-Satellite positioning fails where routes are most often wanted: tunnels, underground car parks,
-dense urban canyons, and aircraft cabins. The standard response is inertial dead reckoning ---
-integrate acceleration twice --- which is well known to diverge, since accelerometer bias is
-indistinguishable from sustained real acceleration and its double integral grows without bound.
+A route is a series of short steps. Each step needs a length and a direction. With GPS both come
+from satellites; here both come from the phone's motion sensors.
 
-An alternative exists for wheeled vehicles. Road and engine vibration scale with speed, so a
-spectral signature of vertical acceleration can be mapped to speed directly, without
-integration and therefore without accumulation. CarSpeedNet~\cite{carspeednet} reports
-RMSE $1.8$~m/s and MAE $0.72$~m/s from $13.2$~hours of accelerometer-only driving, at the same
-$4$-second window length we arrive at independently. Its $0.5$-hour test holdout is drawn from
-that same collection, so the reported figure describes journeys much like the ones it learned from.
-
-This paper describes such a system built into a shipping application, and --- more usefully ---
-reports what happens outside the distribution, on a phone that is sometimes mounted, sometimes
-pocketed, sometimes in a hand, in a car, on a motorcycle, and once in an aircraft.
-
-\paragraph{Contributions.}
-\begin{enumerate}\itemsep1pt
-\item An out-of-distribution evaluation of vibration-derived speed across carry positions and
-vehicle types, on one device and one user, with per-regime error.
-\item A cache-policy bias: an eviction rule that protects rare fast examples silently reshapes
-the distribution the estimator answers from, accounts for most of the low-speed over-read, and is
-fixed by changing the eviction, not by reweighting at lookup (\S\ref{sec:cache}).
-\item Direction without GPS --- a heading that cannot go singular, the carry angle from cornering,
-walking direction from the step axis --- and a route-level comparison with GPS over $60$
-recordings that separates each route's error into rotation, size and shape
-(\S\ref{sec:direction}, \S\ref{sec:routes}, Appendix~\ref{app:routes}).
-\item The measured cost of the specific-force ambiguity on a consumer platform: two approaches
-defeated, and a third we had blamed on it withdrawn.
-\item Negative results in full, including a sequence network that beat the store offline and was
-withdrawn in the field, and two approaches that look correct in aggregate and fail per query.
-\item Platform and systems defects that silently invalidated data --- among them a test mode that
-used the GPS it was meant to exclude, and four meanings of ``heading'' --- offered as
-evidence that platform semantics dominate modelling error in this setting.
-\end{enumerate}
-
-\section{Related work}
-
-\paragraph{Speed from vibration.} The closest work is CarSpeedNet~\cite{carspeednet}, a CNN
-taking three-axis smartphone accelerometer input, reporting RMSE $1.8$~m/s and MAE $0.72$~m/s
-over $13.2$~hours of driving. Related approaches estimate speed from chassis
-vibration with CNNs~\cite{cnnspeed}, infer position directly from vehicle vibration with an
-IMU~\cite{vibposition}, and use learned momentary speed to constrain strapdown inertial
-navigation~\cite{constrainsins}. Outside the inertial domain, vehicle speed has been estimated
-from tyre--road noise, where band energies at $1$--$4$~kHz give $1.4\%$ average
-error~\cite{soundspeed} and the underlying physics --- tread-block passage at
-$f = NV/L$ --- gives a direct speed dependence.
-
-Our estimator is deliberately simpler than these: a $k$-NN regressor over log-spectral band
-energies, chosen because it can \emph{decline} to answer when nothing resembling the query has
-been observed, which a trained network cannot. The contribution here is not the estimator but
-the evaluation regime.
-
-\paragraph{Published accuracy is usually measured on familiar data.} CarSpeedNet's $0.5$-hour holdout comes
-from the same $13.2$-hour collection as its training data. This matters: we measure $+1.0$ to $+1.7$~km/h bias on
-a store built from matched journeys and $+6.8$~km/h on the same device once the store contains
-other carry positions and vehicles --- a degradation invisible to a random split. The
-transportation-mode literature has confronted this more directly; the Sussex--Huawei Locomotion
-dataset~\cite{shl} was assembled specifically to enable reproducible cross-user evaluation,
-with benchmark F1 near $0.93$ for eight-class mode recognition~\cite{shlbench}. No equivalent
-public dataset exists for \emph{speed} regression across carry positions.
-
-\paragraph{Inertial dead reckoning.} That double integration of consumer MEMS output is
-unusable is well established: laboratory characterisation of smartphone IMUs reports position
-error exceeding $1$~km within $100$~s from pure inertial
-propagation~\cite{memserrors}, with error growth dominated by uncompensated bias and varying
-substantially between handsets. Learned approaches to inertial odometry~\cite{solin} and the
-broader survey of deep inertial positioning~\cite{dlsurvey} attack this by replacing integration
-with regression, as we do. Standard mitigations --- zero-velocity updates~\cite{zupt} and map
-matching~\cite{mapmatch} --- bound rather than remove the drift.
-
-\paragraph{Heading and carry position.} Pedestrian dead reckoning divides into step detection,
-heading estimation and position propagation~\cite{pdr3d}, and heading is consistently the
-limiting term. Carry position is known to dominate: measured heading standard deviations of
-$6.22^\circ$, $6.82^\circ$ and $14.68^\circ$ for holding, calling and swinging respectively,
-with corresponding final position errors of $2.11$, $2.34$ and $4.5$~m~\cite{pdrheading}. Our
-$\beta$ term is the vehicular analogue of the carry-mode misalignment that literature addresses
-for pedestrians. An earlier draft of this paper reported that $\beta$ cannot be recovered without
-an external reference. That was wrong: a vehicle's turns reveal it (\S\ref{sec:direction}).
-
-\paragraph{The specific-force ambiguity.} An accelerometer measures specific force and cannot
-separate gravity from sustained linear acceleration. This is standard, and attitude-estimation
-work explicitly compensates for it, either by estimating disturbance acceleration
-adaptively~\cite{disturbaccel} or by weighting the accelerometer correction by how far its
-magnitude departs from $g$~\cite{quatcf}. What we add is the downstream consequence on a
-platform where the fusion is not ours to modify: the vendor-supplied attitude and
-gravity-removed acceleration are the only interface, and their handling of sustained
-acceleration silently defeats two otherwise reasonable designs (\S\ref{sec:onecause}).
-
-\section{Method}
-
-\subsection{Signature}
-
-Vertical acceleration $x[n]$ is sampled at $50$~Hz into a ring buffer of $N = 256$ samples
-($4.0$~s), windowed and transformed:
-\begin{align}
-w[n] &= \tfrac{1}{2} - \tfrac{1}{2}\cos\!\left(\frac{2\pi n}{N-1}\right)\\
-X[k] &= \sum_{n=0}^{N-1}\big(x[n]-\bar{x}\big)\,w[n]\,e^{-2\pi i k n / N}
-\end{align}
-Energy is accumulated into nine logarithmically spaced bands bounded at
-$0.4$, $0.8$, $1.6$, $2.5$, $4$, $6$, $9$, $13$, $18$ and $24$~Hz:
+\paragraph{Speed from vibration.} A moving vehicle shakes, and it shakes differently at different
+speeds~\cite{carspeednet}. (Adding up acceleration instead does not work on a phone: its small
+sensor errors grow into kilometres within minutes~\cite{memserrors}.) Every second, the phone takes the last four seconds of up-and-down acceleration, measured
+$50$ times a second, and turns it into a short ``fingerprint'' of eleven numbers --- how much
+energy the shaking has at each of nine frequency ranges, plus two measures of its overall
+strength. Whenever GPS is available, the phone stores fingerprints together with the speed GPS
+measured at that moment; it keeps up to $4000$ of them. Without GPS, it looks up the $12$ stored
+fingerprints closest to the current one and averages their speeds:
 \begin{equation}
-f_b = \ln\!\Big(\textstyle\sum_{k \in b} |X[k]|^2 + \epsilon\Big), \quad b = 1\ldots 9
+\hat v = \frac{\sum_{j=1}^{12} v_j / d_j^2}{\sum_{j=1}^{12} 1 / d_j^2}
 \end{equation}
-Two time-domain terms complete an eleven-dimensional signature:
+where $v_j$ is a stored speed and $d_j$ how far its fingerprint is from the current one. If even
+the closest stored fingerprint is far away, the phone does not guess. Averaging tends to pull every
+answer toward the middle, so a correction learned from the stored examples stretches the answers
+back out.
+
+\paragraph{Direction from turns.} The gyroscope measures every turn precisely but does not know
+north; the compass knows north but measures where the \emph{phone} points, not where the vehicle
+is going --- a known problem for phones carried in different ways~\cite{pdrheading}. In a pocket those differ by some angle $\beta$, which depends on how the phone happens to
+sit. The phone learns $\beta$ from the vehicle's own turns. In a turn the vehicle is pushed toward
+the inside of the curve, so the sideways push the phone feels, compared with which way the
+gyroscope says it is turning, shows where ``forward'' is. Written as complex numbers,
 \begin{equation}
-f_{10} = \ln \sigma(x), \qquad
-f_{11} = \ln\!\Big(\tfrac{1}{N-1}\textstyle\sum_n |x[n]-x[n-1]|\Big)
+\hat\beta = \arg \sum_t \frac{a_t}{|a_t|}\,\overline{i\,v_t\,\omega_t}
 \end{equation}
+where $a_t$ is the sideways and forward acceleration measured relative to the compass, $v_t$ the
+speed and $\omega_t$ the turn rate. The phone makes a first estimate after $30$~seconds of riding
+and keeps improving it; when it improves, the part of the ride already drawn is redrawn with the
+better value.
 
-The window length was measured rather than assumed. At $4$~s the held-out bias is
-$+1.0$~km/h at $2$--$10$~km/h; doubling to $8$~s raises it to $+6.0$, because the window
-then straddles changes in speed. Finer low-frequency banding changed nothing.
+Walking is handled differently: over four seconds, the back-and-forth of the steps lines up with
+the direction of walking, and each push-off is sharper than each landing, which says which end of
+that line is forward.
 
-\subsection{Speed}
+\paragraph{The compass reading itself.} The phone's built-in heading is unreliable in one common
+pocket position: when the phone sits head-down at an angle, it scattered by about $49^\circ$ a
+minute even though the phone was not moving in the pocket. So the system computes its own heading
+from the phone's orientation, using whichever edge of the phone is closest to level. That heading
+scattered by about $1^\circ$ a minute in the same position.
 
-No functional form is imposed. The system stores $(\mathbf{f}, v)$ pairs whenever GPS supplies a
-speed, and answers by locality. With running feature means $\mu_i$ and variances $\sigma_i^2$,
-\begin{align}
-d^2(\mathbf{f},\mathbf{g}) &= \sum_{i=1}^{11}\left(\frac{f_i-\mu_i}{\sigma_i}-\frac{g_i-\mu_i}{\sigma_i}\right)^{\!2}\\
-\hat{v} &= \frac{\sum_{j=1}^{K} w_j v_j}{\sum_{j=1}^{K} w_j},
-\qquad w_j = \frac{1}{d_j^2 + \epsilon}
-\end{align}
-with $K = 12$, where $\pi_j$ corrects for how over- or under-represented a neighbour's speed is in
-the store relative to how often that speed was actually travelled:
-\begin{equation}
-\pi(v) = \operatorname{clamp}\!\left(\frac{P_{\text{ridden}}(\text{bin}(v))}{P_{\text{store}}(\text{bin}(v))},\;0.05,\;20\right),
-\qquad w_j = \frac{\pi(v_j)}{d_j^2 + \epsilon}
-\end{equation}
-$P_{\text{ridden}}$ is a decaying histogram of every observation as it was learned, over $2$~km/h
-bins, with a half-life of about $1400$ observations; $P_{\text{store}}$ is the same histogram of
-what the store currently holds. The two differ because of the eviction policy, not because of
-anything about the signal, and \S\ref{sec:cache} shows that difference accounts for most of the
-low-speed over-read. Both are $1$ on a fresh install, where the estimator reduces to the
-unweighted form above. Crucially the estimator is allowed to decline:
-\begin{equation}
-\min_j d_j^2 > 4 \;\Longrightarrow\; \text{no answer}
-\end{equation}
-Error scales directly with match distance --- MAE $5.3$~km/h below $d^2\!=\!1.03$, rising to
-$16.9$ in the range $2.12$--$4.36$ --- so refusing a distant match removes the worst readings.
+\paragraph{Only the first point uses GPS.} After that, each step is laid down from the previous
+point, along the current direction, for the distance the speed covers in that second.
 
-The store holds $4000$ observations. Once it is full, an incoming observation replaces one chosen
-at random, with two exceptions: the fastest $2\%$ of ground speeds are never chosen, so the store
-keeps evidence for speeds it rarely sees, and a ground observation never replaces an airborne one.
-\S\ref{sec:cache} explains why this replaced an earlier rule, and why $\pi$ remains only as a small
-correction while an old store turns over.
+\section{How it was tested}
 
-Averaging twelve neighbours pulls every answer toward the middle of their speeds. A monotone
-calibration undoes that: over held-out stored observations, the $q$-th percentile of what the
-estimator predicts is mapped onto the $q$-th percentile of what GPS measured, at $21$ points, and
-every answer is passed through that map. Finally the \emph{displayed} speed is smoothed over
-$2$~s; distance is integrated from the unsmoothed estimate, because smoothing lags a real change
-and costs a few percent of distance.
+GPS was recorded alongside every test and never used by the system; it serves only as the answer
+key. Two sets of recordings were used:
 
-\subsection{Regime separation}
+\begin{itemize}\itemsep1pt
+\item \textbf{Nine journeys with the current version} (22--24 September 2026): motorcycle, phone
+in a trouser pocket, most ending with a short walk; $2.8$~hours and $84$~km of GPS track. These are
+used for speed, distance and whole routes, because they were recorded by exactly the system
+described above.
+\item \textbf{All $61$ recordings with the phone's orientation logged} (15 August to 24 September;
+car and motorcycle). The current direction method was run again over their sensor recordings, so
+these measure direction only. Seven include a walk long and straight enough to check.
+\end{itemize}
 
-A store holding several vehicles holds several mutually incompatible mappings. Measured
-directly: a ground-trained model reported $19$~km/h at a $900$~km/h cruise, because cruise is
-\emph{quieter} than taxiing and the slowest stored signature was the closest match. After flight
-data entered the same store, a city drive reported a mean of $337$~km/h against a true $30$.
-Air and ground are therefore stored and searched as separate partitions.
+In a pocket GPS is itself only accurate to $10$--$40$~m, so it was used over stretches long
+enough for that not to matter:
 
-\subsection{Direction}\label{sec:dirmethod}
-
-Turn angle comes from the gyroscope, absolute direction from the magnetometer:
-\begin{equation}
-\theta_t = \theta_{t-1} + \Delta\psi_{\text{gyro}}
-+ \kappa\big(\psi_{\text{datum}} + \beta - \theta_{t-1}\big), \qquad \kappa = 0.25
-\end{equation}
-where $\beta$ is the \emph{carry offset}: the angle between where the phone points and where the
-body or vehicle travels. Earlier versions learned $\beta$ from GPS course during the first
-$180$~s of a workout and then froze it. The current one uses no satellite information after the
-first point, in four parts.
-
-\paragraph{A datum that cannot go singular.} $\psi_{\text{datum}}$ is not the platform's heading.
-Core Motion reports the bearing of a direction fixed in the phone, and which direction depends on
-how the phone is held; when it points near vertical the reading is noise (\S\ref{sec:headings}).
-Instead, with the attitude $R = R_z(\text{yaw})\,R_x(\text{pitch})\,R_y(\text{roll})$ mapping the
-device frame to north--west--up, we take the bearing of whichever device axis lies most nearly
-horizontal --- the one least aligned with gravity, switching only when another is flatter by $0.15$
-in $|\cos|$ --- and carry the difference between the two axes across a switch so the reading stays
-continuous. Only offsets are ever learned against it, so its absolute zero does not matter.
-
-\paragraph{The carry offset from cornering.} In a turn a vehicle accelerates toward the inside of
-the turn. Writing the horizontal acceleration in the datum's frame as a complex number
-$a = a_{\text{fwd}} + i\,a_{\text{right}}$, with $v$ the estimated speed and $\omega$ the gyroscope
-turn rate (clockwise positive),
-\begin{equation}
-a_t \approx e^{i\beta}\,(i\,v_t\,\omega_t)
-\qquad\Longrightarrow\qquad
-\hat\beta = \arg \sum_t \frac{a_t}{|a_t|}\;\overline{i\,v_t\,\omega_t}
-\end{equation}
-over every riding second at $v \geq 4$~m/s. Normalising $a_t$ keeps one pothole from outvoting a
-minute of corners. The acceleration must be the physical one, which is the \emph{negative} of what
-Core Motion reports as user acceleration (\S\ref{sec:headings}). The first estimate is made after
-$30$ riding seconds.
-
-\paragraph{Walking from the steps.} With the phone in a pocket the compass was $56$--$137^\circ$
-from the direction of walking on five of the seven walks graded, so walking is steered by the steps
-instead. Over
-$4$~s, the principal axis of horizontal physical acceleration is the line of travel, and its third
-moment along that axis is positive toward the front, because push-off is sharper than heel-strike.
-Each window's vote enters a circular median of (vote $-\ \psi_{\text{datum}}$) over the last $20$
-windows, which picks the end of the current window's axis; the heading is pulled toward it at
-$0.5$ per second. A window counts only if the phone's posture held within $15^\circ$ across it,
-and settling at a new angle ($25^\circ$) starts the record afresh. A phone lying flat
-($|g_z| > 0.7$, in the hand) takes the end nearer the datum instead, because the vote came out
-reversed on the one flat walk recorded.
-
-\paragraph{Redrawing.} Every drawn point keeps the heading and offset it was drawn with. When a
-ride's $\hat\beta$ moves by $3^\circ$, every point of the current ride is turned by the difference;
-once a walk has eight counted windows, its opening windows are redrawn with the settled median. The
-saved route therefore carries the best estimate reached, while the live display carries the one
-available at the time. A ride begins at $2.5$~m/s, and at that moment the heading is set to
-$\psi_{\text{datum}} + \hat\beta$ outright, because sitting down turns the phone about a horizontal
-axis the gyroscope's vertical rate does not see.
-
-\subsection{Projection}
-
-\begin{equation}
-\Delta s = \hat{v}\,\Delta t, \quad
-\phi_t = \phi_{t-1} + \frac{\Delta s \cos\theta_t}{R}, \quad
-\lambda_t = \lambda_{t-1} + \frac{\Delta s \sin\theta_t}{R\cos\phi_t}
-\end{equation}
-Only the first point of a route originates from GPS.
+\begin{itemize}\itemsep1pt
+\item \textbf{Speed and distance} are compared over half-minute stretches between GPS fixes that
+are better than $40$~m: the straight distance GPS moved, against the distance the system added.
+\item \textbf{Direction} is compared every half-minute: the bearing from the GPS position $15$~s
+earlier to the one $15$~s later, against the system's heading over the same half-minute.
+\item \textbf{Whole routes} are compared by finding the rotation and the size change that best lay
+the drawn route over the GPS track, pinned at the shared starting point. The rotation is how far
+the whole route is turned; the size change is how much too long or short it is.
+\end{itemize}
 
 \section{Results}
 
-Throughout this section \emph{real} means the speed or distance GPS recorded at the same instant
-as the estimate, and \emph{estimated} means what the app produced from the motion sensors alone.
-Real distance is the integral of GPS speed over time, not the sum of fix-to-fix jumps: on one
-$15$~km journey those two differ by $35\%$ ($14{,}445$~m against $19{,}496$~m), because position
-scatter adds length that was never travelled.
-
-\subsection{Distance over a whole journey}
+\subsection{Speed}
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.92\textwidth]{figures/fig_distance.pdf}
-\caption{Estimated distance against real distance, eight journeys. The estimate is close when the
-vehicle is fast and steady, and reads long when it is slow.}
+\includegraphics[width=0.66\textwidth]{figures/fig1_speed.pdf}
+\caption{Speed from the system against speed from GPS, over $184$ half-minutes of riding in the
+nine journeys. On the dashed line the two agree. The solid line is the middle of each $10$~km/h
+band, and the shading holds the middle half of the readings.}
+\label{fig:speed}
+\end{figure}
+
+Figure~\ref{fig:speed} shows the speed. Standing still and crawling are recognised correctly. In
+between, the system squeezes the range: $10$--$20$~km/h reads about $8$~km/h high, $30$--$40$~km/h
+is close, and above $60$~km/h it read about $42$ where GPS measured $79$. The average error is
+$8.5$~km/h. The squeeze comes from averaging twelve examples: when a fingerprint could belong to
+several speeds, the average lands in the middle.
+
+\subsection{Distance}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/fig2_distance.pdf}
+\caption{Distance over the stretches where GPS was good enough to check, for each journey. The
+percentage is the system's difference from GPS.}
 \label{fig:distance}
 \end{figure}
 
-\begin{table}[htbp]
-\centering\small
-\caption{Every journey, in full. Average speed is over moving time only.}
-\label{tab:journeys}
-\begin{tabular}{lrrrr}
-\toprule
-Journey & Estimated & Real & Error & Avg.\ speed\\
-\midrule
-Open road, 25 min   & 14\,994\,m & 14\,445\,m & $+3.8\%$  & 43 km/h\\
-Suburban, 12 min    &  3\,793\,m &  3\,678\,m & $+3.1\%$  & 28 km/h\\
-Motorcycle, 20 min  &  6\,181\,m &  5\,118\,m & $+20.8\%$ & 35 km/h\\
-City, 15 min        &  3\,363\,m &  2\,801\,m & $+20.1\%$ & 21 km/h\\
-City, 12 min        &  5\,741\,m &  4\,720\,m & $+21.6\%$ & 29 km/h\\
-Car park, 11 min    &  2\,762\,m &  2\,207\,m & $+25.2\%$ & 20 km/h\\
-Car park, 8 min     &  2\,548\,m &  1\,616\,m & $+57.6\%$ & 20 km/h\\
-Car park, 4 min     &  1\,755\,m &  1\,086\,m & $+61.6\%$ & 19 km/h\\
-\midrule
-Motorcycle in a pocket & 4\,466\,m & 2\,535\,m & $+76.2\%$ & 21 km/h\\
-\bottomrule
-\end{tabular}
-\end{table}
+The over-reading at low speed and under-reading at high speed largely cancel over a journey.
+Over the stretches GPS could check --- $25$--$83\%$ of each journey's time --- the system added
+$39.4$~km where GPS measured $39.5$~km, $0.4\%$ short. Individual journeys ranged from $16\%$ short
+to $11\%$ long (Figure~\ref{fig:distance}).
 
-Table~\ref{tab:journeys} lists every journey. The best is a $15$~km open road drive at $+3.8\%$;
-the worst road case is a four-minute car-park trip at $+61.6\%$. The last row is the phone carried
-in a pocket rather than resting in the vehicle, which is a different failure and is discussed in
-\S8.
-
-\subsection{Why slow journeys read long}
+\subsection{Direction}
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.92\textwidth]{figures/fig_bias.pdf}
-\caption{How much the estimate reads above the real speed, by real speed. Tested by hiding each
-stored example in turn and asking the model to recover it.}
-\label{fig:bias}
-\end{figure}
-
-The ordering in Table~\ref{tab:journeys} follows average speed, not any property of the route, and
-Figure~\ref{fig:bias} explains why. Tested against $4{,}178$ stored examples from matched journeys
---- hiding each one in turn and asking the model to recover it --- the estimate reads
-$1.0$ to $1.7$~km/h high at \emph{every} speed.
-
-A fixed error in km/h is not a fixed error in percent. Two km/h on a $50$~km/h road is $2\%$; the
-same two km/h on a $5$~km/h crawl is $40\%$. So the estimator that looks excellent on a motorway
-looks poor in traffic, without anything about it having changed.
-
-This is also why no correction helps. Subtracting a constant $6$~km/h --- fitted on two journeys
-where the estimate happened to read exactly that much high --- repaired those two and made three
-others worse, reducing total absolute error across all journeys by only $7\%$.
-
-That account is correct as far as it goes, and it is not the whole story. It was measured by
-holding out stored examples, so it describes the error on the distribution the store holds. The
-riding has a different distribution, and \S\ref{sec:cache} shows that the difference between the
-two --- created entirely by the cache's eviction rule --- is the larger term.
-
-\subsection{The cache policy is the bias}\label{sec:cache}
-
-The store holds $4000$ observations. When it is full, an incoming observation displaces one drawn
-from the most crowded $2$~km/h speed bin. The intent is to stop a rare $100$~km/h example being
-squeezed out by thousands of red lights, and it achieves that. What it also does is make the store
-stop resembling the riding.
-
-\begin{table}[htbp]
-\centering\small
-\caption{What was ridden against what the store keeps, over $44$ instrumented recordings. The
-eviction rule is the only difference between the two rows.}
-\label{tab:storemix}
-\begin{tabular}{lrrr}
-\toprule
-& $<5$~km/h & $5$--$30$~km/h & $>30$~km/h\\
-\midrule
-Observations as learned & $24\%$ & $31\%$ & $45\%$\\
-Observations the store keeps & $5\%$ & $26\%$ & $69\%$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-A query that lands between regimes is answered by whatever its twelve nearest neighbours happen to
-be, and after rebalancing most of them are fast. That predicts a specific signature of error:
-correct where the store is dense in both versions, wrong and high where the rebalancing has thinned
-the evidence. This is what the shipped application does --- within a few percent above $50$~km/h,
-roughly double at $15$--$30$~km/h.
-
-To test it rather than assert it, the estimator was reimplemented offline against the same feature
-extraction, the same $K$, the same decline threshold, and trained leave-one-ride-out on the other
-rides' labelled windows. The only variable is how the training pool is assembled.
-
-\begin{table}[htbp]
-\centering\footnotesize
-\caption{Distance error, leave-one-ride-out. Rebuilding the pool under the shipped eviction rule
-reproduces the shipped error; the same estimator on an unrebalanced pool does not. Weighting keeps
-the balanced store and corrects the imbalance at lookup.}
-\label{tab:cache}
-\begin{tabular}{lrrrr}
-\toprule
- & & \multicolumn{3}{c}{Replay, pool built}\\
-\cmidrule(lr){3-5}
-Ride & Shipped app & evicted & natural & weighted\\
-\midrule
-Motorcycle, 14 Sep & $+32\%$ & $+7\%$  & $-5\%$  & $-4\%$\\
-Motorcycle, 15 Sep & $+53\%$ & $+23\%$ & $+3\%$  & $+8\%$\\
-Motorcycle, 16 Sep a & $+11\%$ & $-0\%$  & $-19\%$ & $-8\%$\\
-Motorcycle, 16 Sep b & $+39\%$ & $+38\%$ & $-2\%$  & $+10\%$\\
-Motorcycle, 16 Sep c & $+50\%$ & $+36\%$ & $+12\%$ & $+9\%$\\
-Motorcycle, 16 Sep d & $+30\%$ & $+15\%$ & $-9\%$  & $-8\%$\\
-\midrule
-Mean $|$error$|$ & $36\%$ & $20\%$ & $8\%$ & $8\%$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Two things follow from Table~\ref{tab:cache}. The estimator was never the problem: on a pool that
-was never rebalanced it is within $8\%$ on the same rides, using the same eleven features that
-\S\ref{sec:pocket} had concluded carried no speed. And the fix does not require giving up the
-eviction rule --- weighting each neighbour by $\pi(v)$ recovers the same $8\%$ while keeping the
-rare fast examples an aircraft partition depends on. The residual gap between the replay's $20\%$
-and the shipped $36\%$ is the store's older content, which the replay cannot reconstruct.
-
-We record this as a modelling lesson of the same kind as the platform defects in \S6: nothing about
-the eviction rule is wrong locally, it is sound cache management, and it was invisible for weeks
-because the store's contents were never compared against the distribution they were drawn from.
-
-\paragraph{What shipped instead.} The weighting of Table~\ref{tab:cache} did not survive contact
-with the field. The ridden histogram is a decayed count of the last few rides, while the store was
-built over months, and the ratio between the two is not the correction the store needs: the next
-build's logs showed a median weight of $1.01$ at $15$--$30$~km/h where about $4$ was needed, and
-replayed as shipped the weighting gave $22\%$ against $22\%$ without it. What converges is changing
-the eviction itself. Replayed from a store built under the crowded-bin rule through seven rides in
-order, that rule stayed at $5\%$ slow observations throughout and the last four rides averaged
-$82\%$ distance error; replacing a random observation instead reached $11\%$ slow and $13\%$ error
-over the same four rides, improving from the very next one. That is what ships (\S3.2), with the
-weighting kept as a residual correction worth $13\% \to 11\%$ in the same replay.
-
-After it and the percentile calibration, whole-ride distance over eight later rides was roughly
-unbiased, $-1\%$ to $-4\%$ pooled. What remains is compression of the speed range: $5$--$15$~km/h
-still reads about double and $50$--$80$~km/h about a quarter low, and mean absolute speed error
-stays near $9.7$~km/h whatever correction is applied --- the floor set by the signature, not by
-the estimator. Figure~\ref{fig:similarity}(d) shows the same history in the recorded routes: drawn
-at a median $1.02$ times their real size in August, $1.27$ in the first half of September, and
-$0.98$ in the last week.
-
-\subsection{Direction: the angle the phone sits at}\label{sec:direction}
-
-The phone rarely points the way the vehicle travels. It sits at some angle in a cradle, a pocket
-or a cup holder, and that angle --- $\beta$ in \S\ref{sec:dirmethod} --- has to be subtracted before
-the recorded heading means anything.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.92\textwidth]{figures/fig_heading.pdf}
-\caption{Why the angle matters, measured with the earlier GPS-learned version. The same journeys
-with the angle unlearned and learned. Left: how far the whole route is rotated. Right: how far the
-finish point lands from where it really was.}
-\label{fig:heading}
-\end{figure}
-
-Figure~\ref{fig:heading} shows what that is worth. With the angle unlearned the route comes out
-the right shape and the right length and simply points the wrong way: on the $15$~km journey the
-recorded straight-line displacement matched the real one to within $8$~m while being rotated
-$26^\circ$, which put the finish $4{,}174$~m from where it actually was. Learning the angle moves
-the finish to $366$~m, $2.4\%$ of the distance travelled. Those figures come from the earlier
-version, which measured the angle from GPS in the first three minutes and then held it.
-
-\paragraph{Without GPS.} The current version learns the angle from turns and uses no satellite
-information after the first point (\S\ref{sec:dirmethod}). To see what that costs, the direction
-logic was replayed through every recording that logged the phone's attitude: $61$ recordings from
-$15$~August to $24$~September, car and motorcycle, mounted and pocketed, $476$ minutes of riding
-over $344$~km. Direction is replayed; distance is left as each build recorded it, so the routes
-below carry whatever speed error was current at the time. GPS enters only as the grader: for every
-half-minute of riding, the bearing between the GPS fixes $15$~s either side --- at least $150$~m
-and four times their accuracy apart, each better than $60$~m --- against the circular mean of the
-drawn heading over the same half-minute.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=\textwidth]{figures/fig_direction.pdf}
-\caption{How far the drawn direction is from the real one. Left: $19{,}570$ graded half-minutes of
-riding over $61$ recordings. \emph{As recorded} is what each build drew at the time, which for all
-but the last four recordings meant an angle learned from GPS. Right: $721$ graded seconds of walking
-with the phone in a pocket, over seven walks.}
+\includegraphics[width=0.92\textwidth]{figures/fig3_direction.pdf}
+\caption{How often the system's direction is within a given angle of the GPS direction. Left:
+$19{,}570$ half-minutes of riding over $61$ recordings. Right: $721$ seconds of walking over seven
+walks with the phone in a pocket.}
 \label{fig:direction}
 \end{figure}
 
+While riding, the direction was within $30^\circ$ of GPS $72\%$ of the time and within
+$45^\circ$ $86\%$ of the time; the middle error was $19^\circ$ (Figure~\ref{fig:direction}). While
+walking with the phone in a pocket it was within $30^\circ$ $93\%$ of the time, with a middle
+error of $10^\circ$. Checked against the angle GPS implies, the pocket angle $\beta$ learned from
+turns was typically within about $10^\circ$, and about $11^\circ$ after only $30$~seconds.
+
+\subsection{Whole routes}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/fig4_routes.pdf}
+\caption{The nine journeys drawn by the system, compared with GPS. (a)~How far the whole route is
+turned from the GPS track; the shaded band is $\pm 30^\circ$. (b)~Its length relative to the GPS
+track; the band is $\pm 10\%$. (c)~How far the drawn position is from the GPS position as the
+journey goes on; the dashed line is $12\%$ of the distance travelled.}
+\label{fig:routes}
+\end{figure}
+
 \begin{table}[htbp]
 \centering\small
-\caption{Direction error over every recording with attitude logged. Half-minutes of riding for the
-first four rows, seconds of walking for the last three. Pocket and flat split the $61$ riding
-recordings by how the phone lay ($35$ and $26$).}
-\label{tab:direction}
+\caption{The nine journeys. \emph{Turned} and \emph{Length} as in Figure~\ref{fig:routes}(a,b);
+\emph{Gap} is the distance from the GPS position, as a share of the distance travelled so far
+(the middle value over the journey).}
+\label{tab:journeys}
 \begin{tabular}{lrrrrr}
 \toprule
- & Median & \multicolumn{3}{c}{Within $30^\circ$} & Recordings\\
-\cmidrule(lr){3-5}
- & error & all & pocket & flat & over $40^\circ$\\
+Journey & Duration & GPS track & Turned & Length & Gap\\
 \midrule
-Riding, phone compass alone          & $34.1^\circ$ & $43\%$ & $30\%$ & $62\%$ & $24$\\
-Riding, as recorded (angle from GPS) & $16.7^\circ$ & $66\%$ & $61\%$ & $72\%$ & $11$\\
-Riding, this method, live            & $20.3^\circ$ & $67\%$ & $68\%$ & $67\%$ & $7$\\
-Riding, this method, saved route     & $18.7^\circ$ & $72\%$ & $73\%$ & $69\%$ & $3$\\
-\midrule
-Walking, phone compass alone         & $80.8^\circ$ & $30\%$ &&& \\
-Walking, as recorded                 & $102.3^\circ$ & $18\%$ &&& \\
-Walking, this method                 & $9.6^\circ$ & $93\%$ &&& \\
+22 Sep 08:06 & 32 min & 11.7 km & $-38^\circ$ & $0.92$ & $46\%$\\
+22 Sep 13:00 & 12 min &  6.0 km & $-7^\circ$  & $1.18$ & $8\%$\\
+22 Sep 15:38 & 19 min & 13.9 km & $+8^\circ$  & $0.85$ & $9\%$\\
+23 Sep 08:41 & 21 min & 11.5 km & $-24^\circ$ & $0.87$ & $19\%$\\
+23 Sep 11:50 &  8 min &  5.7 km & $-12^\circ$ & $1.14$ & $12\%$\\
+23 Sep 12:57 &  8 min &  1.7 km & $+71^\circ$ & $1.07$ & $49\%$\\
+23 Sep 15:14 & 27 min & 13.1 km & $-3^\circ$  & $0.85$ & $12\%$\\
+24 Sep 07:58 & 20 min & 10.4 km & $-9^\circ$  & $1.14$ & $12\%$\\
+24 Sep 16:07 & 20 min & 10.3 km & $-1^\circ$  & $1.00$ & $6\%$\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:direction} and Figure~\ref{fig:direction} summarise it. Without GPS the typical
-error is slightly worse than with the GPS-learned angle, $18.7^\circ$ against $16.7^\circ$, but the
-failures are fewer: $72\%$ of riding within $30^\circ$ against $66\%$, and $3$ recordings worse
-than $40^\circ$ against $11$. The GPS-learned angle is excellent when it is learned and wrong for
-the whole journey when it is not --- frozen at a bad value from one poor fix, or never learned
-because the first three minutes were spent standing still. The compass alone is the floor, and in a
-pocket it is a poor one: within $30^\circ$ for $30\%$ of riding. Walking changes the most, because
-the recorded builds had no working walking direction at all.
-
-Against the angle measured from GPS on the $27$ rides where that measurement is possible --- measured
-with the platform's heading as the datum, before the change to the axis heading --- the cornering
-estimate was $11.0^\circ$ off (median) after $30$ riding seconds and $9.4^\circ$ at the end of the
-ride, within $30^\circ$ on $26$ of $27$. Redrawing each ride with its latest estimate is what
-moves the saved route ahead of the live one. It is not free: on about ten recordings the later
-estimate was the worse one, and redrawing spread it back over the ride, by up to $24^\circ$.
-
-\subsection{Routes as a whole}\label{sec:routes}
-
-A heading error per half-minute does not say what the finished route looks like. So each recording's
-drawn route was compared with its GPS track as a whole, three ways: the phone's compass alone, the
-route as recorded at the time, and this method --- all three with the distance the phone recorded,
-so they differ only in direction. For every recording the drawn and GPS positions at the same
-instants were paired, and the rotation and scale about the shared start that best lay one on the
-other were found by least squares:
-\begin{equation}
-c = \frac{\sum_i \bar z_i\, w_i}{\sum_i |z_i|^2}, \qquad
-\text{rotation} = -\arg c, \qquad \text{size} = 1/|c|, \qquad
-\text{shape} = \sqrt{\frac{\sum_i |c\,z_i - w_i|^2}{\sum_i |w_i|^2}}
-\end{equation}
-with $z_i$ and $w_i$ the drawn and GPS positions as complex numbers east~$+\,i\,$north. Rotation is
-the direction error of the route as a whole, size is the distance error, and shape is whatever is
-left: $0$ is the same route turned and scaled. GPS fixes are those under two seconds old and better
-than $40$~m, with impossible jumps removed; $60$ recordings qualify, $451$~km of GPS track.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=\textwidth]{figures/fig_route_similarity.pdf}
-\caption{Every recording's route against its own GPS track. (a)~How far each whole route is rotated,
-as recorded against this method; below the line is better. (b)~The same as distributions, with the
-compass alone. (c)~What is left once rotation and size are removed: the shape, which the gyroscope
-gets equally right in all three. (d)~Route size, which is the speed estimate of the build that
-recorded it; direction does not change it.}
-\label{fig:similarity}
-\end{figure}
-
-\begin{table}[htbp]
-\centering\small
-\caption{Route similarity over $60$ recordings. Rotation and shape as defined above; drift is the
-distance from the GPS position at the same instant, divided by the distance travelled so far,
-median over each recording beyond its first $300$~m, then median over recordings. Appendix~\ref{app:routes}
-lists every recording.}
-\label{tab:routes}
-\begin{tabular}{lrrrrr}
-\toprule
- & \multicolumn{3}{c}{Whole-route rotation} & Shape & Drift\\
-\cmidrule(lr){2-4}
- & median & within $30^\circ$ & over $45^\circ$ & median & median\\
-\midrule
-Phone compass alone      & $31^\circ$ & $48\%$ & $23$ & $0.10$ & $35\%$\\
-As recorded at the time  & $15^\circ$ & $73\%$ & $10$ & $0.12$ & $24\%$\\
-This method, no GPS      & $13^\circ$ & $88\%$ & $4$  & $0.11$ & $21\%$\\
-\midrule
-\multicolumn{6}{l}{\emph{Phone in a pocket, $34$ recordings}}\\
-Phone compass alone      & $54^\circ$ & $26\%$ & $21$ & $0.12$ & $53\%$\\
-As recorded at the time  & $17^\circ$ & $68\%$ & $9$  & $0.13$ & $29\%$\\
-This method, no GPS      & $11^\circ$ & $94\%$ & $1$  & $0.11$ & $21\%$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Table~\ref{tab:routes} and Figure~\ref{fig:similarity} give the result, and its most useful part is
-panel~(c). Once rotation and size are taken out, the three versions of every route are equally
-close to the truth --- a median shape difference of $0.10$ to $0.12$. The gyroscope draws the shape
-of a journey correctly whatever supplies the absolute direction; what separates a good route from a
-bad one is almost entirely how far the whole thing is turned, and how long it is.
-
-On rotation the method without GPS is ahead of the builds that learned the angle from GPS: whole
-routes within $30^\circ$ on $88\%$ of recordings against $73\%$, and four rotated past $45^\circ$
-against ten. With the phone in a pocket the gap is widest --- $94\%$ against $68\%$, one against
-nine --- because that is where the GPS-learned angle failed outright when it failed, frozen for a
-whole ride at a value learned from one poor fix. The compass alone rotates a pocketed route by a
-median $54^\circ$. On the $26$ recordings with the phone lying flat the two are level ($81\%$
-within $30^\circ$ each), and there the compass alone is already within $30^\circ$ on $77\%$.
-
-Size is not a direction property and is the same in all three versions; panel~(d) shows it by
-period, and \S\ref{sec:cache} explains the history. Both still matter for how far a point lands from
-where it was: a median rotation of $13^\circ$ on its own moves a point by $2\sin(6.5^\circ)$, about
-$23\%$ of its distance from the start, and the median size error of $12\%$ by $12\%$.
-
-\subsection{Underground car parks}
-
-\begin{table}[htbp]
-\centering\small
-\caption{The two car-park journeys split by the ramp detector. A ramp is where the estimate fails;
-the road between the ramps is ordinary.}
-\label{tab:ramp}
-\begin{tabular}{llrrr}
-\toprule
-Journey & Where & Estimated & Real & Error\\
-\midrule
-Car park, 4 min & on the ramp &   267\,m &    67\,m & $+299\%$\\
-Car park, 4 min & on the road & 1\,488\,m & 1\,018\,m & $+46\%$\\
-Car park, 8 min & on the ramp &   618\,m &   229\,m & $+170\%$\\
-Car park, 8 min & on the road & 1\,930\,m & 1\,387\,m & $+39\%$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The two worst journeys in Table~\ref{tab:journeys} are both car parks, and
-Table~\ref{tab:ramp} locates the failure. A car crawling up a concrete spiral shakes as hard as
-one doing $40$~km/h on a road, so the estimate on a ramp runs $170\%$ to $299\%$ long while the
-road between the ramps behaves ordinarily.
-
-Detecting a ramp needs two signals together. The barometer alone flags every hill --- $8$~km of
-one $15$~km journey, where the estimate is fine. Rotation alone flags every junction. A helical
-ramp is the only thing that climbs steadily \emph{and} turns continuously the same way, so the app
-withholds distance when the barometer shows more than $0.08$~m/s of sustained climb and the
-gyroscope more than $150^\circ$ of same-direction turning within $30$~s.
-
-\section{Negative results}
-
-We report these in full because each cost real effort and two share one cause.
-
-\subsection{Aircraft speed cannot be worked out at all}
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.92\textwidth]{figures/fig_flight.pdf}
-\caption{A real $22.8$-minute flight replayed with GPS removed at four points, giving the distance
-the app would have recorded had signal been lost there.}
-\label{fig:flight}
-\end{figure}
-
-\begin{table}[htbp]
-\centering\small
-\caption{The same flight, in numbers. Signal is normally lost on the ground, which is the worst
-case: the last speed the app saw was taxi speed, and it holds it.}
-\label{tab:flight}
-\begin{tabular}{lrrr}
-\toprule
-GPS lost & Speed held & Estimated & Error\\
-\midrule
-At the gate            &   5.6 km/h & 14.7 km & $-82\%$\\
-Just before takeoff    &  15.9 km/h & 10.2 km & $-87\%$\\
-60 s into the climb    & 320.7 km/h & 49.7 km & $-31\%$\\
-At cruise              & 307.6 km/h & 46.5 km & $-34\%$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-A flight was recorded with GPS valid on all $1323$ ticks, reaching $706$~km/h. Replaying it with
-GPS removed (Figure~\ref{fig:flight}, Table~\ref{tab:flight}) shows the problem clearly: signal is
-normally lost on the ground, so the last speed the app has is taxi speed, and it holds it for the
-whole flight.
-
-The correction that should rescue this --- adding up the acceleration along the direction of
-travel --- recovers about $60$~km/h of a $679$~km/h climb. After $400$~seconds of held speed it had
-contributed $-2$~km/h. Direction, by contrast, is unaffected: $3.9^\circ$ median across the same
-flight. The route points the right way and is the wrong length.
-
-\subsection{One cause, three failures}\label{sec:onecause}
-
-\textbf{Core Motion's attitude filter reinterprets sustained linear acceleration as a change in
-the gravity direction.} The ambiguity itself is standard~\cite{disturbaccel,quatcf}; what is
-reported here is its measured cost when the fusion is vendor-supplied and cannot be replaced. A takeoff roll is the most sustained acceleration a phone will ever
-experience, and is therefore precisely what the filter removes. This defeated two designs, and
-we had wrongly blamed it for a third:
-
-\begin{enumerate}\itemsep2pt
-\item \emph{Aircraft speed integration}, above.
-\item \emph{Deriving $\beta$ from acceleration} --- withdrawn. A vehicle accelerates along its
-axis, so the world-frame acceleration bearing should give the travel direction; measured on three
-drives, circular concentration was $R = 0.15$, $0.18$, $0.19$, and we attributed that to the
-fusion. Most of it was ours. Core Motion's user acceleration is the reaction the phone feels, the
-negative of the vehicle's acceleration, so every bearing was reversed; and the frame was built by
-guessing between the attitude matrix and its transpose, which a phone lying flat cannot tell apart.
-Corrected, straight-line speed changes still give a poor answer --- $44^\circ$ median error ---
-but the sideways acceleration of turns gives the carry angle to about $11^\circ$
-(\S\ref{sec:direction}).
-\item \emph{Inertial takeoff detection.} Integrating positive along-track acceleration and
-latching at $45$~m/s in one unbroken episode should identify a takeoff and nothing else.
-Replayed: today's car $52.5$~m/s (latched), a second car $209.9$ (latched), a motorcycle $328.5$
-(latched), a two-minute \emph{walk} $119.7$ (latched), and the actual flight $15.4$ --- never
-latched. Backwards on every case. The episode rarely breaks in a vibrating vehicle because road
-noise holds the signal above the floor, so the integral accumulates the positive half of the
-noise indefinitely.
-\end{enumerate}
-
-\subsection{Regime identification does not transfer}
-
-Whole-session fingerprints --- the mean normalised signature of a workout --- separate regimes
-cleanly. Across eight sessions, same-vehicle-and-carry pairs sit $0.54$--$1.70$ apart,
-same-vehicle-different-carry $1.81$--$2.87$, and different-vehicle $4.30$--$6.97$.
-
-Restricting the neighbour search by that fingerprint nevertheless made prediction \emph{worse}
-($+2.2 \rightarrow +3.4$~km/h). The ranking is unreliable at the individual level: for one car
-journey the nearest stored session was a car ($1.38$), but the second was a \emph{hand-held}
-session ($1.54$) and the third a \emph{motorcycle in a pocket} ($1.74$), both ahead of the same
-car driven the same morning ($2.29$).
-
-\subsection{On a motorcycle in a pocket the signature carries no speed at all}
-\label{sec:pocket}
-
-Every failure above is a matter of degree: the estimate is too high, or too low, or right about
-the wrong regime. This one is different in kind. Over a $19.1$-minute motorcycle ride with the
-phone in a trouser pocket --- $1146$ ticks at a clean $1$~Hz, Velocity Mode on for $1143$ of
-them, three GPS fixes in the drawn route --- the reported speed and the real speed are
-statistically unrelated: $R = +0.13$. The vibration signature and the real speed are related at
-$R = -0.02$, which is to say not at all.
-
-Table~\ref{tab:pocket} shows what that looks like from the outside. The estimate reports roughly
-$50$~km/h whatever the motorcycle is doing, including when it is stationary at a light.
-
-\begin{table}[htbp]
-\centering
-\caption{Motorcycle, phone in a pocket. Mean estimated speed within each band of real speed. The
-estimate is flat: it does not fall when the motorcycle stops and does not rise when it accelerates.}
-\label{tab:pocket}
-\begin{tabular}{lrr}
-\toprule
-Real speed & Ticks & Mean estimated \\
-\midrule
-$0$--$2$~km/h (stopped) & $47$ & $36.2$~km/h \\
-$2$--$10$~km/h          & $25$ & $54.4$~km/h \\
-$10$--$25$~km/h         & $3$  & $57.8$~km/h \\
-$25$--$45$~km/h         & $14$ & $55.5$~km/h \\
-$45$--$70$~km/h         & $54$ & $49.8$~km/h \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.92\textwidth]{figures/fig_motorcycle.pdf}
-\caption{Left: estimated against real speed by band --- the estimate is flat where the truth is
-not. Right: the vibration signature is indistinguishable between a standstill and $45$~km/h, and
-marginally \emph{higher} at rest.}
-\label{fig:motorcycle}
-\end{figure}
-
-The cause is visible in the signature itself. Its median value is $7.467$ while the motorcycle is
-stopped and $7.386$ while it is doing over $45$~km/h --- indistinguishable, and marginally higher
-at rest. A car carries the phone on a rigid surface and delivers road and tyre noise that scales
-with speed. A motorcycle delivers engine vibration, which tracks engine speed rather than road
-speed and is undiminished at a standstill in gear, through a layer of clothing that damps what
-little road input survives. There is no speed information in the input, so no estimator built on
-this feature can recover one; the $47$ stationary ticks accumulated $468$~m of distance that did
-not happen.
-
-What makes this the most serious result in the paper is not the error but the confidence.
-Fingerprint distance sat at $3.51$ for the entire ride, outside the same-vehicle-different-carry
-range of $1.81$--$2.87$ measured in \S\ref{sec:onecause} and approaching the different-vehicle
-range. The extrapolation flag --- the mechanism whose job is to notice exactly this --- was
-\emph{false on all $1146$ ticks}. The system reported $53.8$~km/h at a red light and never
-signalled that it was answering about a regime it had never seen.
-
-\subsection{Correction: the pocket signature does carry speed}\label{sec:pocketfix}
-
-\S\ref{sec:pocket} is the strongest claim in this paper and it is partly wrong. The quantity
-measured there at $R = -0.02$ against real speed is a scalar from the superseded hand-built
-estimator --- a scaled dominant vibration frequency, which the diagnostics file still records
-beside the learned model's output --- and not the eleven-dimensional signature \S3.1 defines.
-The two were conflated. Re-measured on four motorcycle rides with the phone in a trouser pocket
-under open sky, the signal is present and strong:
-
-\begin{table}[htbp]
-\centering\small
-\caption{Motorcycle, phone in a trouser pocket, $16$ September. RMS of vertical acceleration
-against real speed, in $4$-second windows. The relationship the earlier scalar could not see.}
-\label{tab:rms}
-\begin{tabular}{lrrrrrr}
-\toprule
-Real speed (km/h) & $0$--$5$ & $5$--$15$ & $15$--$30$ & $30$--$45$ & $45$--$60$ & $60$--$90$\\
-\midrule
-Median RMS (m/s$^2$) & $0.11$ & $0.39$ & $0.63$ & $0.95$ & $1.11$ & $1.27$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Over $331$ windows on one ride, RMS ranks with real speed at Spearman $+0.82$, ahead of the
-shipped application's own reported speed ($+0.73$); spectral centroid ranks at $-0.64$, so the
-information is in amplitude rather than in where the energy sits. RMS is already one of the
-eleven features ($f_{10}$, \S3.1). The flat $\sim\!50$~km/h reading that \S\ref{sec:pocket}
-reports is therefore not an absence of signal in the input but the cache bias of
-\S\ref{sec:cache} overwhelming it: the same features, searched against an unrebalanced pool,
-place the same pocketed rides within $8$--$10\%$.
-
-What survives from \S\ref{sec:pocket} is the part about confidence, which the correction makes
-worse rather than better. The system reported $53.8$~km/h at a red light, the extrapolation flag
-was false on all $1146$ ticks, and the diagnosis that followed --- \emph{this carry has no
-signal} --- was itself wrong and stood for three weeks, because the log recorded a feature that
-was no longer the one being used. An instrument that reports a superseded quantity beside a
-current one, with no indication of which is which, produces confident wrong conclusions in the
-analyst as readily as in the application.
-
-\subsection{Confidence signals that do not work}
-
-Neighbour disagreement is the natural confidence measure for a $k$-NN regressor. It fails here
-in the wrong direction: out-of-distribution motorcycle queries had a \emph{tighter} neighbour
-spread than in-distribution car queries ($5.2$ vs $12.4$~km/h), because they land consistently
-in one wrong region. Session-level fingerprint distance correlated with speed bias at
-$r = -0.01$ over six journeys.
-
-\subsection{Discriminating a hijacked pedometer}
-
-On a motorcycle, engine vibration is counted as footsteps. Apple's activity classifier reported
-\texttt{automotive} on $636$ ticks and \texttt{walking} on $271$ of one continuous ride, and each
-flicker allowed the pedometer to take over: it drove $27\%$ of the ride, reporting a mean
-$3.3$~km/h while GPS recorded $49.6$.
-
-Three per-tick discriminators were measured against real walking and rejected: vibration energy
-($79\%$ caught at $21\%$ false), gait-band spectral concentration (distributions overlap), and
-both combined with rotation rate ($69\%$ at $7\%$). What worked was history rather than
-instantaneous features: across two real walks the classifier \emph{never} reported automotive in
-$190$ stepping ticks, while on motorcycles the median gap since it last did was $84$~s. Requiring
-two minutes of silence before a pedometer-driven revocation suppressed $61\%$ of false
-hand-overs at zero measured cost.
-
-\subsection{Four more that were measured and rejected}
-
-\textbf{Integrating between stops.} Each detected stop is a known zero, so acceleration along the
-travel direction can be integrated between two of them with the drift pinned out at both ends.
-Measured over the segments of one ride: $-65\%$ of the real distance using the application's
-heading, $-50\%$ using the raw motion heading, and $-75\%$ even when the GPS course was supplied
-as a perfect direction. Residual drift reaches $10$--$21$~m/s per segment for a pocketed phone.
-
-\textbf{Time since the last stop.} If the over-read were a pull-away artefact it would concentrate
-after a stop. It does not: on two rides the excess distance splits $+64\%$, $+54\%$, $+48\%$ and
-$+81\%$ across $10$--$30$, $30$--$60$, $60$--$120$ and $120$~s${+}$ since the last stop.
-
-\textbf{Zeroing an idling engine.} Shake does not separate a stationary motorcycle with its engine
-running from one crawling: accelerometer magnitude has median $0.22$~m/s$^2$ stopped against
-$0.65$ at $4$--$12$~km/h, heavily overlapped. The best threshold tested removes $1142$~m of
-phantom distance across $70$ recordings while zeroing $312$ crawling and $200$ slow-riding ticks
---- about $2000$~m that was really travelled.
-
-\textbf{Reweighting the amplitude features.} Since $f_{10}$ and $f_{11}$ carry the speed
-information (\S\ref{sec:pocketfix}), weighting them above the nine band energies in the distance
-metric should help. It changes nothing measurable ($8\%$ mean distance error at $\times1$,
-$\times2$ and $\times3$). The neighbour search was never the problem; the pool was.
-
-\subsection{A neural network: better offline, withdrawn in the field}\label{sec:neural}
-
-The $k$-NN store is simple on purpose (\S2), so the obvious question is whether a trained network
-does better. Seven designs were trained on the same eleven features and scored on held-out rides,
-each given the same percentile calibration and the same gates, with mean absolute speed error in
-km/h:
-
-\begin{enumerate}\itemsep1pt
-\item A per-window CNN in place of the store: worse, $11.1$ against $9.4$ on the ground and $88$
-against $34$ in the air.
-\item The average of the two: worse than the better one alone.
-\item A CNN given the store's calibration and gates: closer, never ahead.
-\item Spectrum input, augmentation and ground pretraining: the best per-window network, and still
-behind.
-\item A residual network on top of the store, initialised as an exact copy of it: $11.0$ against
-$10.8$, no gain.
-\item \emph{Distillation}: a student trained on the store's own answers matches it exactly,
-$10.9$ against $10.9$, and needs no GPS labels at all --- the store's function compresses into
-$40{,}000$ parameters.
-\item A \emph{sequence} model, a GRU over $20$--$40$~s of features: $8.8$ against $10.6$ for the
-store, and $9.2$ for the store with its $2$~s display smoothing. Doubling context, layers, data or
-seeds bought $0.1$~km/h. Time, not capacity, is what the store lacks.
-\end{enumerate}
-
-The sequence model was then shipped for eleven builds, running beside the store on every tick with
-a developer setting choosing which one drew the route and both answers logged. On two car drives it
-did what the offline numbers promised --- $2.8$ against $3.2$~km/h on $570$ paired ticks --- and
-something they had not measured: the store had no answer on $32\%$ of one drive, because a car is
-far from a store built on a motorcycle, while the network answered $95\%$ of the time. Its cost
-was not a reason to hesitate either: $1.9$~ms and $0.31$~J for a whole ride against $1.1$~ms and
-$0.10$~J for the store. A recurrent layer cannot run on the Neural Engine; a convolutional version
-that can was $4.7$~km/h against the GRU's $3.6$ on the same split, to save $0.2$~J.
-
-It was withdrawn after a retrain. The retrained network read a pocketed motorcycle ride $34\%$
-low where its predecessor had read $13\%$ low, plausibly because its calibration had been fitted on
-a training set by then dominated by $8{,}493$ windows of car-mounted motorway driving. The next
-ride its owner judged a complete failure, and every build since has run the store alone. The cause
-of that ride is not known; its log was never sent for analysis.
-
-A larger lesson came from the same work, on a different network. A small CNN on the raw $50$~Hz
-window beat the store's per-tick error on ten of eleven held-out rides, $7.9$ against $14.1$~km/h,
-and left distance error by speed band exactly where it was, because the compression comes from
-averaging under uncertainty, not from the features. Out of distribution it failed unsafely: on a
-flight it had never seen it averaged $223$~km/h of error and recorded $5\%$ of the distance, where
-the store declines to answer. A network that is better on familiar data and confidently wrong on
-unfamiliar data is the wrong trade for a system whose purpose is the unfamiliar case.
-
-\subsection{Six ways of finding direction that did not work}
-
-Each was built, replayed against GPS on the logged rides, and dropped. Numbers are median direction
-error unless stated.
-
-\textbf{The axis the motorcycle leans about.} A leaning bike rolls about its own direction of
-travel, so the principal axis of horizontal rotation should give that direction up to a half-turn.
-It gives $25^\circ$ even with the half-turn forgiven.
-
-\textbf{The thigh as a pointer.} Walking, gravity in the phone's frame runs down the thigh; seated,
-the thigh points forward, so the same device direction should point along the road. It does not:
-seated, that direction stayed $54$--$86^\circ$ from horizontal, and the estimate was $73^\circ$ off.
-
-\textbf{A lean-proof forward vector.} Leaning is a rotation about the forward direction, so solving
-for that direction in the phone's own frame --- least squares on
-$\mathbf{a}_{\text{dev}} = -v\omega\,[\mathbf{u}]_\times \mathbf{f}$ --- should be immune to lean.
-It scored $19.9^\circ$ against $15.9^\circ$ for the planar method over $29$ rides, better on six and
-worse on nine. Lean is not what limits the estimate.
-
-\textbf{Gating the compass by the gyroscope.} Following the gyroscope and letting the compass move
-the baseline only while the two agree within $30^\circ$ improved seven rides by more than $10^\circ$
-and worsened five; riding within $30^\circ$ fell from $69\%$ to $65\%$. It was treating a symptom whose cause was the heading
-definition (\S\ref{sec:headings}).
-
-\textbf{Switching headings by conditioning.} Using the platform's heading while its reference
-direction is well off vertical and the axis heading otherwise made the ride it was designed for
-worse, $72^\circ$ to $78^\circ$: every hand-over copies the noisier source into the offset.
-
-\textbf{The thigh's swing, for walking forward or back.} A thigh swings forward faster than it
-returns, so rotation about the axis across the direction of travel should be skewed toward the
-front. It was wrong in $56$--$62\%$ of two- to six-second windows, because the largest horizontal rotation
-of a pocketed phone while walking is about the direction of travel, not across it.
-
-\section{Systems failures}
-
-The first three defects below were not algorithmic, and each silently invalidated data for weeks.
-
-\textbf{A stale reading is not a missing reading.} \texttt{CLLocationManager} suspends heading
-updates outside the foreground, and the cached property is never cleared. On an $81$-minute drive
-the heading datum held \emph{one value for $4790$ of $4832$ seconds} while the device physically
-rotated $5264^\circ$. A fallback to Core Motion's heading had been added for the missing case and
-was never reached, because it was written as \texttt{clHeading ?? motionHeading} and a frozen
-value is not \texttt{nil}.
-
-\textbf{Background permission gating.} \texttt{allowsBackgroundLocationUpdates} was enabled only
-under \emph{Always} authorisation. Under \emph{When In Use} the process was suspended
-mid-journey: a single $371$-second hole in a $21$-minute drive, during which the $50$~Hz stream
-delivered $49$ samples where $18{,}550$ were due, accounting for the entire $20\%$ distance
-shortfall.
-
-\textbf{Instrumentation that cannot express the failure.} A $17$-minute workout the user believed
-was recording without GPS had the mode active for $34$~seconds; $63$ GPS fixes entered the route.
-The guarantee held --- the code path returns early --- but nothing in the log stated the mode's
-state, and it took an hour to establish from a side effect. Two columns now record it directly.
-
-\textbf{A repeated reading is not a new one.} The diagnostics file carries the latest GPS speed,
-accuracy and position on every tick, holding the last fix until another arrives --- in Velocity
-Mode, up to $45$~s. One ride held a $0$~km/h reading for $33$ consecutive ticks while the rider
-pulled away, which scored as the estimator reporting $60$~km/h at a standstill and put that ride at
-$+47\%$ where fresh fixes alone give $+36\%$. The column was not wrong; it was undated. Every
-figure in \S\ref{sec:cache} is computed against fixes under two seconds old, using an age column
-added afterwards.
-
-\textbf{Four meanings of ``heading''.}\label{sec:headings} The direction work was held back for
-weeks by platform semantics rather than by the estimator. Core Motion's heading is the bearing of a
-direction fixed in the phone, chosen by how the phone is held --- fitted as
-$(-0.05, 0.87, 0.49)$ in the device frame on some rides and $(-0.02, 0.46, 0.89)$ on others ---
-and when that direction points near vertical the reading is noise. On one ride the phone sat
-head-down at $45^\circ$, the direction was within $20^\circ$ of vertical, and over each minute the
-heading scattered $49^\circ$ around what the gyroscope measured; the route was drawn $72^\circ$
-off. The attitude itself was fine: the most nearly flat device axis scattered $1^\circ$ over the
-same minutes. \texttt{CLHeading} follows yet another direction, $25$--$100^\circ$ from Core Motion's
-on a tilted phone, and the application handed over between the two whenever it entered or left the
-foreground; seven rides whose carry angle had looked like zero turned out to have been measured
-against \texttt{CLHeading}. Core Motion's user acceleration is the reaction the phone
-feels, the negative of the vehicle's acceleration: on pocketed rides it pointed $139$--$180^\circ$
-away from the acceleration GPS measured. And a $30$~s running mean of the vertical rotation rate,
-subtracted as gyroscope bias, is a high-pass filter that hands back every turn over the following
-minute --- Core Motion's rotation rate is already bias-corrected. The compass correction hides that
-last one, and removing it changed nothing measurable, so it remains.
-
-\textbf{A gate that cannot recover.} The estimator refuses to answer when the workout's fingerprint
-sits further than $3.0$ from every learned session (\S3.3). That fingerprint is the mean of the
-workout's own GPS-labelled observations, and it only grows while GPS supplies a usable speed. On
-one ride GPS did so twenty times, during stops and a pull-away, and then effectively stopped: the
-fingerprint froze at $6.12$ --- a different-vehicle value, for the same motorcycle that had scored
-$0.29$--$1.88$ that morning --- and the gate refused every tick for $9.5$~minutes, recording $20$~m
-of a $4.3$~km ride. Across $21$ sessions the fingerprint exceeds $3$ only while a session holds
-about twenty observations ($3.35$, $4.47$, $4.78$, each settling to $0.7$--$1.1$) and never passes
-$2.57$ after sixty. A refusal now requires sixty. The defect is not the threshold but that a
-quantity computed from an eight-sample minimum was allowed to be authoritative and could not be
-revised once the evidence feeding it stopped.
-
-\textbf{A test mode that used GPS.} Velocity Mode can be forced on with GPS still available, to
-measure what it would do without. Twice that test quietly used GPS for direction. First, the carry
-angle was corrected continuously from GPS course --- on $716$ of $720$ ticks of one drive --- and
-later, after that was removed, it was learned from GPS during a three-minute warm-up. Every heading
-figure from those builds was flattered, and nothing in the output said so. The warm-up was removed
-in favour of the cornering estimate (\S\ref{sec:dirmethod}), and the log now records the
-learned-without-GPS angle in its own column.
-
-\textbf{A warm-up on the wall clock.} That warm-up was three minutes from pressing Start, not three
-minutes of movement, so a rider who warmed the engine and put a helmet on spent it standing still.
-The split across the forced rides was total: with no moving seconds inside the window the angle
-came out $-147^\circ$, $-33^\circ$ and $+130^\circ$; with $46$--$131$ moving seconds, $-1^\circ$,
-$-3^\circ$ and $+2^\circ$.
-
-\textbf{A walking angle applied to a ride.} The angle is learned separately walking and riding,
-because a pocketed phone sits differently in each. A correction that rotates the opening stretch
-of a route once the angle is known did not check which kind of angle it had: on five of $30$ rides
-the first to settle was learned walking away from the bike, and it rotated the whole ride by
-$+146^\circ$, $+161^\circ$, $+127^\circ$, $+73^\circ$ and $-55^\circ$.
-
-\textbf{A placeholder averaged as a measurement.} Estimated points carry a nominal $250$~m accuracy
-meaning ``dead reckoned''. The workout's average accuracy included them, so $6\%$ of estimated
-points turned a real $12$~m average into $26$~m and a quality score of $16/100$ --- which we took,
-for a while, as the receiver having degraded. The best-instrumented drive, $2127$ real fixes, has a
-median of $14.2$~m and $97\%$ within $20$~m. The receiver was fine.
-
-\textbf{One point, two kilometres.} A single dead-reckoned point once landed $2052$~m from the GPS fix
-beside it in time, adding $5.4$~km to a $49$~km recording, while the other $131$ sat a median $79$~m
-from the truth. Nothing bounded a step by what the vehicle could have covered since the last one.
-
-Both of the last two were fixed, and both fixes were reverted along with the network
-(\S\ref{sec:neural}) when the application was returned to its earlier build wholesale; neither is
-in the current version. We report them because a revert of that kind is itself a systems hazard:
-it restored the estimator that was wanted and silently removed two unrelated corrections with it.
-
-\section{Limitations}
+Figure~\ref{fig:routes} and Table~\ref{tab:journeys} put speed and direction together. Six of
+the nine routes are turned less than $15^\circ$ from the truth, and seven less than $30^\circ$; the
+middle value is $9^\circ$. Lengths run from $0.85$ to $1.18$ of the real length, with a middle
+value of $1.00$. The drawn position drifts away from GPS as the journey goes on --- typically by
+about $12\%$ of the distance travelled, so about $1.2$~km after $10$~km.
+
+Two journeys stand out. The $8$-minute journey at 12:57 contained under a minute of riding at
+speed, too little to learn the pocket angle well, and its route is turned $71^\circ$. The journey
+at 08:06 on 22 September is turned $38^\circ$; its pocket angle was learned about $25^\circ$ off and
+stayed there.
+
+\section{Where it goes wrong}
 
 \begin{itemize}\itemsep2pt
-\item \textbf{Hand carry destroys the signal; pocket carry degrades it.} At matched speeds a
-hand-held phone reads $0.6$--$0.8$ lower in the superseded summary feature, which stops varying
-with speed altogether. A pocket is different and was misdiagnosed for three weeks
-(\S\ref{sec:pocketfix}): the signature there does track speed, and a pocketed ride places within
-$8$--$10\%$ once the store's composition is corrected for.
-\item \textbf{Stationary vehicles with running engines.} A motorcycle at a red light reads
-$5.2$~km/h, accumulating $690$~m over $339$ stationary ticks. No tested signal separates an
-idling engine from a slow crawl.
-\item \textbf{Car-park ramps.} A vehicle crawling a concrete spiral shakes as hard as one at
-$40$~km/h on a road; measured error is $+169\%$ to $+297\%$. Detection requires two signals
-jointly --- barometric climb above $0.08$~m/s \emph{and} signed net rotation above $150^\circ$
-over $30$~s --- since the barometer alone flags every hill and rotation alone every junction.
-\item \textbf{Straight ramps are not detected, and it matters less than expected.} The turn
-requirement excludes any ramp that does not spiral. The first straight one recorded --- $12.6$~m
-of climb over $1.15$~km at $45$--$74$~km/h, under $45^\circ$ of net turning --- showed why the
-rule should not simply be relaxed: the estimate there was already right ($1135$~m against
-$1153$~m by GPS), so withholding it would have discarded a kilometre of correct distance. A
-turn-free climb test tightened to $6$~m of rise at $R^2 \geq 0.9$ still fires on $2169$ ticks
-across $64$ recordings, almost all ordinary hills, and on $131$ ticks of a flight's cabin
-pressure. Only a \emph{slow} straight ramp needs catching, and slow is the one thing the estimate
-cannot vouch for without GPS.
-\item \textbf{Unseen vehicles.} The model answers only for conditions it has observed.
-\item \textbf{Speed held through a stop.} When the phone is taken out of a pocket the vibration
-is the hand's, so the last speed is held rather than measured. Stopping and reaching for the phone
-therefore keeps the route moving: on one ride $48$~km/h was held for ten seconds after the
-motorcycle had stopped, about $130$~m that was never travelled.
-\item \textbf{The ramp detector at speed.} A rising, turning road can look like a car-park ramp. On
-one ride the detector withheld nine seconds at $48$~km/h on an ordinary road, about $115$~m.
-\item \textbf{Walking pace.} Step cadence times a learned stride read $4$--$7$~km/h on one walk
-where GPS measured $3.4$--$4.7$.
-\item \textbf{A phone that moves in the pocket.} The carry angle is learned per ride and assumed to
-hold. Where the phone slowly rolled in a pocket during a ride the error grew to $30^\circ$, and
-redrawing a ride with a later, worse estimate spread it back over the whole ride. A walk that
-begins while the phone is still being put away is drawn from the compass until the phone settles.
+\item \textbf{Fast riding reads slow, slow riding reads fast.} Above $60$~km/h the speed can be
+half the true value (Figure~\ref{fig:speed}). Over a whole journey the two partly cancel, but a
+journey that is mostly fast comes out short.
+\item \textbf{The first minute of a ride.} Until the pocket angle is learned, the direction comes
+from the compass alone, which in a pocket can be far off. The redrawing fixes the saved route
+afterwards, but a very short ride may never learn the angle well.
+\item \textbf{A phone that moves.} The pocket angle is assumed to stay the same for the whole
+ride. If the phone shifts, the rest of the ride is turned by about as much as it moved. When the
+phone is taken out of the pocket, the hand's movement hides the vehicle's vibration, so the last
+speed is held; on one ride, $48$~km/h was held for ten seconds after the motorcycle had stopped,
+about $130$~m that was never travelled.
+\item \textbf{Car-park ramps.} A car crawling up a concrete ramp shakes like one driving at
+$40$~km/h, so distance is not counted while climbing and turning together. The same test can
+fire on an ordinary rising, curving road: once for nine seconds at $48$~km/h, about $115$~m lost.
+\item \textbf{Aircraft.} Speed cannot be measured in an aircraft. The phone's own orientation
+filter treats the long, steady push of a takeoff as a tilt~\cite{quatcf}, and the signal is gone.
 \end{itemize}
 
-\section{Threats to validity}
+\section{What did not work}
 
-\paragraph{One device, one user, three vehicles.} The $23$ journeys of \S4.1 and the $60$ recordings
-of \S\ref{sec:routes} were all made on a single iPhone by one person, in one city, using one car,
-one motorcycle and walking. Every quantity here
-should be read as characterising that configuration. The transportation-mode literature moved to
-multi-user public datasets~\cite{shl} precisely because single-subject results do not transfer,
-and we have no evidence ours do.
+Many ideas were built and tested against GPS before the current version. The most instructive:
 
-\paragraph{GPS as ground truth.} Errors are measured against GPS recorded simultaneously. Where
-GPS is degraded --- underground, and in the urban canyon immediately after --- the reference is
-itself uncertain. For walking it can be worse than uncertain: on one $4.5$-minute walk the Doppler
-speed averaged $1.06$~m/s while position chords gave $1.6$--$2.2$~m/s depending on the sampling
-interval, at $14$--$20$~m accuracy. The accelerometer settles it without GPS --- autocorrelation
-gives a $1.05$~s stride period, so the application's $1.55$~m/s implies a $0.85$~m stride and the
-Doppler figure implies $0.55$~m, which is not the gait that was recorded. Walking figures in
-earlier drafts that rested on GPS alone should be treated as unproven. We use the integral of GPS speed rather than the sum of fix-to-fix
-displacements, because the latter accumulates position scatter: on one $15$~km drive the two
-differ by $35\%$ ($14{,}445$~m against $19{,}496$~m), and the fix-summed figure is the wrong one.
-Segments with no valid GPS speed are excluded and reported separately, but a systematic bias in
-GPS speed at low speed would propagate into our low-speed figures undetected.
+\begin{itemize}\itemsep2pt
+\item \textbf{Neural networks.} A network that reads $20$--$40$ seconds of fingerprints at once
+was more accurate on test data ($8.8$ against $10.6$~km/h) and ran in the app for a while, but
+after it was retrained it under-read a pocketed ride by a third, and it was removed. Another
+network, better than the current system on familiar data, was confidently wrong on a flight it
+had never seen, recording $5\%$ of the distance, where the current system simply declines to
+answer.
+\item \textbf{Direction from speeding up and braking.} The push when accelerating in a straight
+line points forward, so it should give direction. It was $44^\circ$ off; turns work far better.
+\item \textbf{Other direction ideas}: the axis the motorcycle leans about ($25^\circ$ off), the
+direction of the rider's thigh ($73^\circ$ off), and the swing of the thigh for telling forward
+from backward when walking (wrong more often than right).
+\item \textbf{How examples were forgotten.} When the store was full, it used to throw away
+examples from whichever speed it held most of, to keep rare fast examples. That left it holding
+$5\%$ of its examples below $5$~km/h when $24\%$ of real riding is that slow, so slow riding read
+far too fast. Throwing away a random example instead fixed most of it.
+\end{itemize}
 
-\paragraph{GPS as the direction reference.} Direction is graded on half-minute chords between
-fixes that are often $30$--$60$~m accurate, which puts a floor under every figure: every variant of
-the direction logic we replayed scored between $18^\circ$ and $21^\circ$ median error over all
-riding, however different its failures. Recordings worse than $40^\circ$, where the reference
-cannot be the explanation, are the more telling measure. Walking truth needs a straight half-minute
-of good fixes and exists for only seven walks.
+\section{Lessons}
 
-\paragraph{No baseline comparison.} We do not evaluate a published method on this data, so we
-cannot say whether a CNN trained on the same journeys would degrade the same way outside its
-distribution. The comparison we do make --- matched store versus mixed store on identical
-held-out data --- isolates store composition, not architecture.
+\begin{itemize}\itemsep2pt
+\item \textbf{The phone's own definitions caused more error than the models.} Its built-in heading
+becomes unreliable in a common pocket position, and its ``user acceleration'' points the opposite
+way to the vehicle's acceleration. Each of these, once found, mattered more than any change to
+the estimators.
+\item \textbf{A test must not use what it is testing without.} Twice during development the
+no-GPS test mode quietly used GPS for direction, which made its results look better than they
+were.
+\item \textbf{Check what a learning system remembers.} The store's way of forgetting examples was
+sensible on its own and still shifted every answer, and it went unnoticed until its contents were
+compared with the riding they came from.
+\end{itemize}
 
-\paragraph{Thresholds fitted on few journeys.} The ramp detector ($0.08$~m/s climb with
-$150^\circ$ signed rotation over $30$~s) was selected by sweeping against seven journeys and
-choosing the lowest total absolute error. That is a small sample, and one journey regressed from
-$-7.1\%$ to $-31.7\%$ under the chosen setting because its ramp over-read had been cancelling an
-under-read elsewhere. We report it rather than tuning it away.
+\section*{Limits of this evaluation}
 
-\paragraph{Data availability.} The logs are per-tick CSV plus $50$~Hz raw traces, and the results
-here are reproducible from them. They are not currently public. Releasing them would make this a
-labelled multi-vehicle, multi-carry vibration corpus, which to our knowledge does not otherwise
-exist; we consider that the most useful next step.
+All recordings were made by one person, on one iPhone, in one city. The speed, distance and
+whole-route results come from nine motorcycle journeys with the phone in a pocket; cars and other
+carry positions may behave differently. GPS in a pocket is itself only accurate to tens of metres,
+so small errors cannot be measured reliably. The direction results for older recordings come from
+running the current method again over their sensor logs.
 
-\section{Conclusion}
-
-Vibration-derived speed is a sound basis for GPS-free route recording within its regime: fast,
-steady travel with the phone mechanically coupled to the vehicle, where we measure $3.8\%$
-distance error over $15$~km. Outside that regime the failures are not gradual --- a hand on the
-phone removes the signal, and an aircraft's defining acceleration is erased by the platform's own
-sensor fusion. Direction, by contrast, no longer needs a satellite reference at all. Learned from
-the vehicle's own turns and from the steps when walking, it puts whole routes within $30^\circ$ of
-their real orientation on $88\%$ of $60$ recordings, ahead of the builds that learned the angle
-from GPS, and $93\%$ of walking within $30^\circ$ against $30\%$ for the compass alone. The shape
-of a route was never the problem; its rotation was, and its size still is.
-
-We would emphasise four lessons over any result. First, the dominant error sources were not
-modelling choices but platform semantics: a suspended process, a stale cached heading, a heading
-that goes singular when the phone sits head-down, an acceleration with the opposite sign to the
-vehicle's, an attitude filter making a defensible choice that destroys the signal of interest.
-Second, a component can be locally correct and globally biasing: the cache's eviction rule is sound
-cache management, and it silently reshaped the distribution the estimator answers from
-(\S\ref{sec:cache}); where a system learns continuously and stores what it learns, the storage
-policy is part of the model. Third, a model that is better on familiar data and confidently wrong
-on unfamiliar data is the wrong trade when the unfamiliar case is the purpose (\S\ref{sec:neural}).
-Fourth, a test is only a test if it cannot quietly use the thing it is testing without: twice the
-GPS-free mode used GPS for direction, and every figure from those builds was flattered.
-
-\begin{thebibliography}{99}
+\begin{thebibliography}{9}
 \small
-\bibitem{carspeednet} A.~Cohen and I.~Klein. CarSpeedNet: Learning-Based Speed Estimation from
-Accelerometer-Only Inertial Sensing. arXiv:2401.07468, 2024.
-\bibitem{cnnspeed} Speed Estimation From Vibrations Using a Deep Learning CNN Approach.
-\emph{IEEE Sensors Letters}, 2021. DOI 10.1109/LSENS.2021.3055512.
-\bibitem{vibposition} Learning Position From Vehicle Vibration Using an Inertial Measurement
-Unit. \emph{IEEE Trans. Intelligent Transportation Systems}, 2024. arXiv:2303.03942.
-\bibitem{constrainsins} Deep Learning Based Speed Estimation for Constraining Strapdown Inertial
-Navigation on Smartphones. arXiv:1808.03485, 2018.
-\bibitem{soundspeed} Estimation of Average Speed of Road Vehicles by Sound Intensity Analysis.
-\emph{Sensors}, 21(16), 2021.
-\bibitem{shl} H.~Gjoreski et~al. Enabling Reproducible Research in Sensor-Based Transportation
-Mode Recognition With the Sussex-Huawei Dataset. \emph{IEEE Access}, 7, 2019.
-\bibitem{shlbench} Benchmark Performance for the Sussex-Huawei Locomotion and Transportation
-Recognition Challenge 2018. In \emph{Human Activity Sensing}, Springer, 2019.
-\bibitem{memserrors} Smartphone MEMS Accelerometer and Gyroscope Measurement Errors: Laboratory
-Testing and Analysis of the Effects on Positioning Performance. \emph{Sensors}, 23(17):7609, 2023.
-\bibitem{solin} A.~Solin et~al. Inertial Odometry on Handheld Smartphones.
-arXiv:1703.00154, 2017.
-\bibitem{dlsurvey} Deep Learning for Inertial Positioning: A Survey. arXiv:2303.03757, 2023.
-\bibitem{zupt} A zero-velocity update method based on neural network and Kalman filter for
-vehicle-mounted inertial navigation systems. \emph{Meas. Sci. Technol.}, 34, 2023.
-\bibitem{mapmatch} GNSS/IMU/map-matching feedback integration with adaptive GNSS accuracy
-estimation for vehicle localization in urban canyons. \emph{Measurement}, 2024.
-\bibitem{pdr3d} Smartphone-Based Pedestrian Dead Reckoning for 3D Indoor Positioning.
-\emph{Sensors}, 21(24):8180, 2021.
+\bibitem{carspeednet} A.~Cohen and I.~Klein. CarSpeedNet: Learning-based speed estimation from
+accelerometer-only inertial sensing. arXiv:2401.07468, 2024.
+\bibitem{memserrors} Smartphone MEMS accelerometer and gyroscope measurement errors: laboratory
+testing and analysis of the effects on positioning performance. \emph{Sensors}, 23(17):7609, 2023.
 \bibitem{pdrheading} Pedestrian dead reckoning with novel heading estimation under magnetic
 interference and multiple smartphone postures. \emph{Measurement}, 183, 2021.
-\bibitem{disturbaccel} Accurate Attitude Estimation Using ARS under Conditions of Vehicle
-Movement Based on Disturbance Acceleration Adaptive Estimation and Correction.
-\emph{Sensors}, 16(10):1716, 2016.
-\bibitem{quatcf} Quaternion-Based Complementary Filter for Attitude Determination of a
-Smartphone. \emph{IEEE Sensors Journal}, 16(15), 2016.
+\bibitem{quatcf} Quaternion-based complementary filter for attitude determination of a
+smartphone. \emph{IEEE Sensors Journal}, 16(15), 2016.
 \end{thebibliography}
-
-\appendix
-\section{Every recording}\label{app:routes}
-
-Every recording with the phone's attitude logged and enough GPS to compare, in date order. \emph{Size}
-is the drawn route's size relative to the GPS track, set by the speed estimate of the build that
-recorded it. \emph{Rotation} is how far the whole route is turned relative to the GPS track,
-clockwise positive, as recorded at the time and with this method. \emph{Shape} is what remains once
-rotation and size are removed, for this method. \emph{Drift} is the distance from the GPS position at
-the same instant as a share of the distance travelled so far, median over the recording. Definitions
-are in \S\ref{sec:routes}. \emph{Flat} means the phone lay flat, as in a car mount; \emph{pocket}
-that it stood more upright, almost always in a trouser pocket on a motorcycle.
-
-\begin{table}[p]
-\centering\scriptsize
-\caption{Recordings 1--30, 15~August to 14~September.}
-\begin{tabular}{rlrrrrrrrr}
-\toprule
- & & & GPS & & \multicolumn{2}{c}{Rotation} & & \multicolumn{2}{c}{Drift}\\
-\cmidrule(lr){6-7}\cmidrule(lr){9-10}
-\# & Recording & Phone & km & Size & recorded & this & Shape & recorded & this\\
-\midrule
-1 & 15 Aug 21:32 & flat & 10.9 & 1.12 & $-128^\circ$ & $+29^\circ$ & 0.07 & 65\% & 16\%\\
-2 & 15 Aug 22:06 & flat & 1.6 & 1.13 & $+4^\circ$ & $+7^\circ$ & 0.08 & 6\% & 7\%\\
-3 & 16 Aug 12:32 & flat & 9.0 & 1.00 & $+2^\circ$ & $-8^\circ$ & 0.14 & 9\% & 11\%\\
-4 & 16 Aug 13:42 & flat & 4.4 & 1.12 & $-2^\circ$ & $-4^\circ$ & 0.05 & 4\% & 8\%\\
-5 & 17 Aug 20:21 & flat & 3.2 & 0.94 & $+11^\circ$ & $+46^\circ$ & 0.06 & 14\% & 45\%\\
-6 & 17 Aug 21:05 & flat & 3.1 & 0.92 & $+5^\circ$ & $-31^\circ$ & 0.09 & 9\% & 41\%\\
-7 & 19 Aug 08:46 & pocket & 13.0 & 0.45 & $-41^\circ$ & $-16^\circ$ & 0.22 & 31\% & 30\%\\
-8 & 19 Aug 10:52 & pocket & 6.6 & 0.57 & $+8^\circ$ & $+22^\circ$ & 0.31 & 62\% & 64\%\\
-9 & 19 Aug 18:15 & flat & 2.1 & 0.94 & $-22^\circ$ & $-27^\circ$ & 0.25 & 18\% & 19\%\\
-10 & 19 Aug 19:42 & flat & 1.6 & 2.06 & $+11^\circ$ & $+38^\circ$ & 0.32 & 40\% & 48\%\\
-11 & 21 Aug 20:55 & flat & 2.7 & 0.77 & $+7^\circ$ & $+13^\circ$ & 0.18 & 9\% & 11\%\\
-12 & 22 Aug 07:28 & pocket & 9.9 & 0.81 & $-4^\circ$ & $-29^\circ$ & 0.07 & 14\% & 33\%\\
-13 & 22 Aug 10:57 & flat & 9.5 & 0.77 & $+34^\circ$ & $+10^\circ$ & 0.14 & 29\% & 15\%\\
-14 & 22 Aug 20:42 & flat & 2.5 & 0.95 & $+37^\circ$ & $+8^\circ$ & 0.13 & 21\% & 6\%\\
-15 & 23 Aug 15:47 & flat & 10.4 & 0.66 & $-19^\circ$ & $-14^\circ$ & 0.25 & 29\% & 36\%\\
-16 & 23 Aug 18:38 & flat & 16.3 & 1.02 & $-27^\circ$ & $-22^\circ$ & 0.05 & 24\% & 21\%\\
-17 & 25 Aug 20:54 & flat & 1.8 & 1.48 & $+8^\circ$ & $+10^\circ$ & 0.19 & 31\% & 25\%\\
-18 & 25 Aug 22:48 & flat & 1.2 & 1.28 & $+19^\circ$ & $+26^\circ$ & 0.21 & 35\% & 39\%\\
-19 & 28 Aug 17:00 & pocket & 5.1 & 1.18 & $+79^\circ$ & $-18^\circ$ & 0.10 & 72\% & 21\%\\
-20 & 28 Aug 17:57 & pocket & 4.8 & 1.01 & $-24^\circ$ & $-0^\circ$ & 0.19 & 21\% & 8\%\\
-21 & 29 Aug 10:40 & flat & 4.7 & 1.15 & $+10^\circ$ & $+46^\circ$ & 0.16 & 26\% & 60\%\\
-22 & 29 Aug 12:45 & flat & 4.9 & 1.18 & $-4^\circ$ & $+8^\circ$ & 0.06 & 13\% & 17\%\\
-23 & 29 Aug 19:56 & flat & 2.9 & 1.20 & $-2^\circ$ & $-13^\circ$ & 0.04 & 14\% & 18\%\\
-24 & 31 Aug 08:06 & pocket & 12.3 & 1.17 & $-3^\circ$ & $+0^\circ$ & 0.15 & 12\% & 12\%\\
-25 & 10 Sep 16:03 & flat & 8.5 & 1.21 & $+16^\circ$ & $+1^\circ$ & 0.17 & 18\% & 14\%\\
-26 & 11 Sep 07:37 & pocket & 13.8 & 1.68 & $+17^\circ$ & $-17^\circ$ & 0.08 & 41\% & 42\%\\
-27 & 11 Sep 15:19 & pocket & 14.7 & 1.36 & $+17^\circ$ & $-16^\circ$ & 0.12 & 22\% & 19\%\\
-28 & 11 Sep 21:50 & flat & 6.5 & 1.05 & $-1^\circ$ & $+56^\circ$ & 0.03 & 4\% & 75\%\\
-29 & 14 Sep 08:02 & pocket & 11.9 & 0.88 & $-19^\circ$ & $+11^\circ$ & 0.12 & 26\% & 12\%\\
-30 & 14 Sep 16:01 & pocket & 7.3 & 1.34 & $-40^\circ$ & $+12^\circ$ & 0.09 & 43\% & 21\%\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[p]
-\centering\scriptsize
-\caption{Recordings 31--60, 15 to 24~September.}
-\begin{tabular}{rlrrrrrrrr}
-\toprule
- & & & GPS & & \multicolumn{2}{c}{Rotation} & & \multicolumn{2}{c}{Drift}\\
-\cmidrule(lr){6-7}\cmidrule(lr){9-10}
-\# & Recording & Phone & km & Size & recorded & this & Shape & recorded & this\\
-\midrule
-31 & 15 Sep 08:06 & pocket & 11.9 & 1.55 & $+3^\circ$ & $+26^\circ$ & 0.07 & 41\% & 55\%\\
-32 & 15 Sep 13:05 & pocket & 9.5 & 0.84 & $-51^\circ$ & $-29^\circ$ & 0.45 & 58\% & 33\%\\
-33 & 16 Sep 08:56 & pocket & 12.0 & 1.45 & $-59^\circ$ & $-4^\circ$ & 0.05 & 66\% & 26\%\\
-34 & 16 Sep 11:42 & flat & 8.0 & 1.32 & $-5^\circ$ & $-24^\circ$ & 0.07 & 24\% & 38\%\\
-35 & 16 Sep 15:21 & pocket & 2.0 & 1.41 & $+2^\circ$ & $-1^\circ$ & 0.12 & 30\% & 26\%\\
-36 & 16 Sep 15:26 & pocket & 7.3 & 1.21 & $+3^\circ$ & $+30^\circ$ & 0.07 & 11\% & 47\%\\
-37 & 17 Sep 08:03 & pocket & 9.3 & 1.23 & $-10^\circ$ & $-11^\circ$ & 0.16 & 22\% & 21\%\\
-38 & 17 Sep 12:30 & pocket & 8.8 & 1.12 & $-53^\circ$ & $+6^\circ$ & 0.11 & 64\% & 13\%\\
-39 & 17 Sep 13:33 & pocket & 5.7 & 1.47 & $-5^\circ$ & $+6^\circ$ & 0.11 & 18\% & 21\%\\
-40 & 17 Sep 14:59 & flat & 6.5 & 1.12 & $-17^\circ$ & $-5^\circ$ & 0.15 & 17\% & 10\%\\
-41 & 18 Sep 09:00 & pocket & 12.0 & 1.26 & $-55^\circ$ & $-8^\circ$ & 0.08 & 50\% & 14\%\\
-42 & 18 Sep 12:33 & pocket & 4.1 & 1.61 & $-1^\circ$ & $+4^\circ$ & 0.07 & 43\% & 43\%\\
-43 & 18 Sep 15:17 & pocket & 16.6 & 0.99 & $-5^\circ$ & $-2^\circ$ & 0.09 & 15\% & 4\%\\
-44 & 18 Sep 19:12 & pocket & 8.0 & 1.84 & $-155^\circ$ & $+17^\circ$ & 0.16 & 41\% & 15\%\\
-45 & 19 Sep 17:47 & pocket & 4.0 & 0.80 & $+20^\circ$ & $-8^\circ$ & 0.08 & 26\% & 15\%\\
-46 & 19 Sep 21:00 & pocket & 3.2 & 0.42 & $+10^\circ$ & $-14^\circ$ & 0.36 & 32\% & 45\%\\
-47 & 20 Sep 11:34 & flat & 2.8 & 1.20 & $+4^\circ$ & $-15^\circ$ & 0.08 & 15\% & 34\%\\
-48 & 20 Sep 11:53 & flat & 2.8 & 0.97 & $+32^\circ$ & $+29^\circ$ & 0.04 & 44\% & 40\%\\
-49 & 20 Sep 13:17 & flat & 15.6 & 0.77 & $+26^\circ$ & $-9^\circ$ & 0.06 & 22\% & 15\%\\
-50 & 20 Sep 16:19 & pocket & 4.3 & 0.93 & $+2^\circ$ & $-21^\circ$ & 0.09 & 12\% & 32\%\\
-51 & 21 Sep 16:05 & flat & 5.1 & 0.49 & $+42^\circ$ & $-1^\circ$ & 0.21 & 51\% & 32\%\\
-52 & 22 Sep 08:06 & pocket & 11.7 & 0.92 & $-145^\circ$ & $-37^\circ$ & 0.15 & 98\% & 46\%\\
-53 & 22 Sep 13:00 & pocket & 6.0 & 1.18 & $+20^\circ$ & $-7^\circ$ & 0.15 & 15\% & 8\%\\
-54 & 22 Sep 15:38 & pocket & 13.9 & 0.85 & $+19^\circ$ & $+8^\circ$ & 0.13 & 11\% & 9\%\\
-55 & 23 Sep 08:41 & pocket & 11.5 & 0.87 & $-51^\circ$ & $-24^\circ$ & 0.11 & 36\% & 19\%\\
-56 & 23 Sep 11:50 & pocket & 5.7 & 1.14 & $-13^\circ$ & $-12^\circ$ & 0.14 & 12\% & 12\%\\
-57 & 23 Sep 12:57 & pocket & 1.7 & 1.07 & $+82^\circ$ & $+71^\circ$ & 0.40 & 42\% & 49\%\\
-58 & 23 Sep 15:14 & pocket & 13.1 & 0.85 & $-15^\circ$ & $-3^\circ$ & 0.15 & 28\% & 12\%\\
-59 & 24 Sep 07:58 & pocket & 10.4 & 1.14 & $-12^\circ$ & $-9^\circ$ & 0.05 & 13\% & 12\%\\
-60 & 24 Sep 16:07 & pocket & 10.3 & 1.00 & $+1^\circ$ & $-1^\circ$ & 0.09 & 3\% & 6\%\\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \end{document}

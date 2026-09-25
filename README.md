@@ -43,37 +43,18 @@ by nearest-neighbour lookup against every signature GPS has previously labelled.
 allowed to refuse: if nothing it has stored resembles the present signature, it says so rather
 than guessing.
 
-**Measured accuracy** — every journey recorded with GPS running alongside purely as ground truth.
+**Measured accuracy** — the current version against GPS, which was recorded alongside and used
+only as the answer key. Nine motorcycle journeys with the phone in a trouser pocket (2.8 hours,
+84 km of GPS track); direction also over all 61 recordings with the phone's orientation logged.
 
-Distance, from how the vehicle shakes:
-
-| Journey | Distance error |
+| | Current version vs GPS |
 |---|---|
-| Open road, 15 km | **+3.8%** |
-| Suburban, 12 min | +3.1% |
-| City driving, 12–15 min | +20% to +22% |
-| Car park, 4–11 min | +25% to +62% |
-| Motorcycle, phone in a pocket | first measured +76%; within 8–10% in replay once the store's composition is corrected |
-
-The spread is a property of the signal, not a defect. Absolute speed error is a few km/h at any
-speed — 1% of a motorway pace and 140% of a walking one — so the same estimator looks excellent
-on an open road and poor in traffic.
-
-Direction, with no GPS at all — the current method replayed over all 61 recordings with the phone's
-attitude logged (476 minutes of riding, 344 km):
-
-| | Median error | Within 30° |
-|---|---|---|
-| Riding, phone compass alone | 34° | 43% |
-| Riding, Velocity Mode | **19°** | **72%** |
-| Walking with the phone in a pocket, compass alone | 81° | 30% |
-| Walking with the phone in a pocket, Velocity Mode | **10°** | **93%** |
-
-Route by route, over 60 recordings and 451 km of GPS track, the whole drawn route is rotated from
-the real one by a median 13° and lies within 30° on 88% of recordings — against 31° and 48% for the
-compass alone, and 73% for earlier builds that learned the angle from GPS. With rotation and size
-removed, all three draw the same shape: the gyroscope gets the shape right, and what is left is how
-far the route is turned and how long it is. The paper's appendix lists every recording.
+| Distance, nine journeys (where GPS could check) | **0.4%** short in total; every journey within 16% |
+| Speed | average error 8.5 km/h — reads high at 10–20 km/h, low above 60 km/h |
+| Direction while riding | within 30° of GPS **72%** of the time |
+| Direction while walking, phone in a pocket | within 30° **93%** of the time |
+| Whole route turned from the real one | median **9°**; 7 of 9 routes within 30° |
+| Gap between drawn and real position | about 12% of the distance travelled |
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
 varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured without
@@ -83,9 +64,8 @@ sits at is learned per ride: if the phone shifts in a pocket mid-ride without be
 rest of the ride is drawn off by roughly however far it moved.
 
 📄 **[Read the paper](https://github.com/yu314-coder/GPS-location-app/releases/tag/v1.0-paper)**
-— method, results, a route-by-route comparison with GPS, and over twenty approaches that were
-implemented, measured and rejected, including a neural network that beat the store offline and was
-withdrawn in the field.
+— how it works, how accurate the current version is against GPS, where it goes wrong, and what
+did not work. Seven pages.
 [LaTeX source](paper/). The paper also ships inside the app: **Settings → Velocity Mode → Read the
 paper**, alongside an interactive version with the equations and error charts.
 
