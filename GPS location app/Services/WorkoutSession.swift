@@ -435,13 +435,6 @@ class WorkoutSession: ObservableObject {
                 compassMisalignment = nil
                 offsetSource = .none
             }
-            if untrustedHeadingPrefixStart == nil {
-                untrustedHeadingPrefixStart = flight.locations.count
-                prefixOffsetSum = 0
-                prefixOffsetCount = 0
-                prefixWalkingTicks = 0
-                offsetHistory = []
-            }
         } else if let learned = turnOffset, !gpsRidingConsensus, offsetSource != .ridingTurns {
             var value = learned
             if let datum = absoluteHeadingDatum { value += normalizedSignedAngle(compass - datum) }
@@ -461,6 +454,15 @@ class WorkoutSession: ObservableObject {
         lastRidingTickTime = now
         if rideStarting, let datum = absoluteHeadingDatum {
             motionHeadingDegrees = normalizedHeading(datum + (compassMisalignment ?? 0))
+        }
+        // This ride is redrawn as its offset improves (see drawnSteps), which also covers the
+        // stretch before the first estimate; the one-off prefix rotation must not do it twice.
+        // A walk ends a ride even when it is shorter than RIDE_RESTART_GAP.
+        if rideStarting || rideStartStep == nil {
+            rideStartStep = drawnSteps.count
+            lastRedrawOffset = nil
+            lastRedrawTime = nil
+            untrustedHeadingPrefixStart = nil
         }
         // Riding has begun; learning needs more speed than that. See RIDE_START_SPEED.
         guard let accel, let turn = lastTickGyroTurn, dt > 0.2,
@@ -488,16 +490,84 @@ class WorkoutSession: ObservableObject {
             value += normalizedSignedAngle(compass - datum)
         }
         let settled = normalizedSignedAngle(value)
+        let previous = compassMisalignment ?? 0
         compassMisalignment = settled
         offsetSource = .ridingTurns
-        // The riding drawn so far used the zero prior; turn it onto the value just learned, now.
-        // Waiting for the value to settle (the general prefix rule) would let the stretch grow
-        // past this point, and a single rotation cannot then fit both halves. Little is gained
-        // by the wait: replayed on 27 rides, the first estimate (30 s) was 11.0 degrees off (median)
-        // and the end-of-ride value 9.4.
-        if firstEstimate, untrustedHeadingPrefixStart != nil {
-            let applied = prefixOffsetCount > 0 ? prefixOffsetSum / prefixOffsetCount : 0
-            rotateUntrustedPrefix(by: normalizedSignedAngle(settled - applied))
+        // Redraw this ride on the better value, and move the live heading with it rather than
+        // easing across, so what is drawn from now on and what was redrawn agree.
+        let moved = lastRedrawOffset.map { angularDistance($0, settled) } ?? .infinity
+        let due = lastRedrawTime.map { now.timeIntervalSince($0) >= REDRAW_MIN_INTERVAL } ?? true
+        if firstEstimate || (moved >= REDRAW_MIN_CHANGE && due) {
+            motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + normalizedSignedAngle(settled - previous))
+            redrawCurrentRide(to: settled)
+            lastRedrawOffset = settled
+            lastRedrawTime = now
+        }
+    }
+
+    /// Turn every riding step of the current ride onto `offset`. See drawnSteps.
+    private func redrawCurrentRide(to offset: Double) {
+        guard let start = rideStartStep, start < drawnSteps.count else { return }
+        var changed = false
+        for k in start..<drawnSteps.count where drawnSteps[k].kind == .riding {
+            let heading = normalizedHeading(drawnSteps[k].originalHeading
+                                            + normalizedSignedAngle(offset - drawnSteps[k].offsetApplied))
+            if angularDistance(heading, drawnSteps[k].heading) > 0.5 { changed = true }
+            drawnSteps[k].heading = heading
+        }
+        if changed { relayStepsOntoRoute(from: start) }
+    }
+
+    /// Re-pick the end of every window in the current walk with the settled offsets, smooth over
+    /// five windows, and redraw. See drawnSteps.
+    private func redrawWalkBout() {
+        guard let start = walkBoutStartStep, start < drawnSteps.count, !walkOffsetSamples.isEmpty else { return }
+        let median = Self.circularMedian(walkOffsetSamples)
+        var picked: [(step: Int, direction: Double)] = []
+        for k in start..<drawnSteps.count {
+            guard drawnSteps[k].kind == .walking, let w = drawnSteps[k].walk else { continue }
+            let reference = w.flat ? w.heading : w.heading + median
+            picked.append((k, angularDistance(w.axis, reference) <= 90 ? w.axis : w.axis + 180))
+        }
+        guard !picked.isEmpty else { return }
+        for (j, p) in picked.enumerated() {
+            var sx = 0.0, cx = 0.0
+            for q in max(0, j - 2)...min(picked.count - 1, j + 2) {
+                sx += sin(picked[q].direction * .pi / 180); cx += cos(picked[q].direction * .pi / 180)
+            }
+            drawnSteps[p.step].heading = normalizedHeading(atan2(sx, cx) * 180 / .pi)
+        }
+        relayStepsOntoRoute(from: start)
+    }
+
+    /// Lay the route down again from drawnSteps[start] on, each step at its own distance and its
+    /// (possibly new) heading. A point with no record moves with the one before it; a real fix is
+    /// never moved, and nothing after one is.
+    private func relayStepsOntoRoute(from start: Int) {
+        let firstIndex = drawnSteps[start].index
+        // Built as a copy and assigned once: the route is observed, and assigning point by point
+        // republished it once per point.
+        var locations = flight.locations
+        guard firstIndex > 0, firstIndex < locations.count else { return }
+        defer { flight.locations = locations }
+        var previous = locations[firstIndex - 1]
+        var shiftNorth = 0.0, shiftEast = 0.0
+        var k = start
+        for index in firstIndex..<locations.count {
+            let point = locations[index]
+            guard point.isEstimated else { return }
+            if k < drawnSteps.count, drawnSteps[k].index == index {
+                let c = projectedCoordinate(
+                    from: CLLocationCoordinate2D(latitude: previous.latitude, longitude: previous.longitude),
+                    distanceMeters: drawnSteps[k].distance, bearingDegrees: drawnSteps[k].heading)
+                let cosLat = max(cos(point.latitude * .pi / 180), 0.000001)
+                shiftNorth = (c.latitude - point.latitude) * 111_320.0
+                shiftEast = (c.longitude - point.longitude) * 111_320.0 * cosLat
+                k += 1
+            }
+            let moved = point.movedHorizontally(north: shiftNorth, east: shiftEast)
+            locations[index] = moved
+            previous = moved
         }
     }
     /// Previous compass reading, for the gyro cross-check that rejects magnetic disturbance.
@@ -780,6 +850,49 @@ class WorkoutSession: ObservableObject {
     private let WALK_HEADING_GAIN = 0.5
     /// |gravity z| above this is a phone lying flat rather than upright in a pocket.
     private let WALK_FLAT_GRAVITY_Z = 0.7
+    /// Posture limits for counting a window. See walkingDirection(heading:).
+    private let WALK_POSTURE_STEADY: Double = 15      // degrees between the halves of one window
+    private let WALK_POSTURE_NEW: Double = 25         // degrees from the posture last counted
+    private var walkPosture: (x: Double, y: Double, z: Double)?
+    // REDRAWING WHAT WAS DRAWN BEFORE THE ANSWER WAS KNOWN.
+    //
+    // Every second is drawn with what is known at that second, and at the start of a ride or a
+    // walk that is not much: the cornering offset's first estimate on 24 Sep 16:07 was 25 degrees
+    // off and took nine minutes to settle, and a walk's forward/back choice rests on a handful of
+    // windows. The saved route is what gets looked at afterwards, so each drawn point keeps how it
+    // was drawn, and the stretch is redrawn once the answer is better:
+    //
+    //  - a ride, whenever its offset has moved 3 degrees since the last redraw: every riding
+    //    second of the current ride turned by (offset now - offset it was drawn with). Replayed on
+    //    every ride with GPS (GPS for grading only): stretches within 30 degrees 67 -> 72%, rides
+    //    worse than 40 degrees 6 -> 3, better on 22 rides and worse on 10 - where the later
+    //    estimate itself was the worse one, which no rule could have seen coming;
+    //  - a walk, once it has 8 counted windows: its opening windows re-pick their end with the
+    //    settled offsets and are drawn along that, smoothed over 5 windows. First ten seconds of
+    //    a walk: 13 -> 9 degrees median.
+    private enum DrawnStepKind { case riding, walking, other }
+    private struct DrawnStep {
+        let index: Int                         // into flight.locations
+        let distance: Double
+        let originalHeading: Double
+        var heading: Double
+        let kind: DrawnStepKind
+        let offsetApplied: Double              // riding: the offset its heading was steered by
+        let walk: (axis: Double, heading: Double, flat: Bool)?
+    }
+    private var drawnSteps: [DrawnStep] = []
+    private var stepKindThisTick: DrawnStepKind = .other
+    private var stepWalkThisTick: (axis: Double, heading: Double, flat: Bool)?
+    private var steeringOffsetThisTick: Double = 0
+    private var rideStartStep: Int?
+    private var lastRedrawOffset: Double?
+    private var lastRedrawTime: Date?
+    private var walkBoutStartStep: Int?
+    private var walkBoutSettled = false
+    private var lastWalkStepTime: Date?
+    private let REDRAW_MIN_CHANGE: Double = 3            // degrees
+    private let REDRAW_MIN_INTERVAL: TimeInterval = 10
+    private let WALK_SETTLED_WINDOWS = 8
     /// Third moment of the last walking window along its axis, for the log.
     private var lastWalkSkew: Double?
     /// Last resolved walking axis, recorded per tick purely so the 180° decision is inspectable
@@ -3211,15 +3324,40 @@ class WorkoutSession: ObservableObject {
     }
 
     /// Direction of walking from the last four seconds of steps, or nil. See walkOffsetSamples.
-    /// `raw` is the window's own forward/back vote, `direction` the end actually chosen.
+    /// `axis` is the window's line of travel (mod 180), `raw` its own forward/back vote,
+    /// `direction` the end actually chosen.
+    ///
+    /// ONLY A PHONE THAT HAS SETTLED MAY VOTE. At the start of the 24 Sep 16:07 walk the phone was
+    /// still going into the pocket - gravity swung from (-0.63, 0.10, -0.64) to (-0.28, 0.91, 0.15)
+    /// in five seconds - and the offsets it voted in that time outnumbered the first honest window,
+    /// which the app then drew backwards. A window whose two halves disagree about which way is
+    /// down by more than WALK_POSTURE_STEADY is steered but not counted; a phone that has come to
+    /// rest at a new angle (WALK_POSTURE_NEW) starts the record afresh, since the old offsets
+    /// describe a carry that no longer exists. Replayed on every walk with GPS: the first ten
+    /// seconds of a walk went from 81 to 96% within 30 degrees, and nothing later changed.
     private func walkingDirection(heading compass: Double)
-        -> (direction: Double, raw: Double, skew: Double, flat: Bool)? {
+        -> (direction: Double, axis: Double, raw: Double, skew: Double, flat: Bool)? {
         let window = locationManager.walkPhysicalWindow
         guard window.count >= 100 else { return nil }      // 50 Hz only; 2 Hz is not a gait
         let n = Double(window.count)
-        var meanN = 0.0, meanE = 0.0, meanGz = 0.0
-        for s in window { meanN += s.north; meanE += s.east; meanGz += s.gravityZ }
-        meanN /= n; meanE /= n; meanGz /= n
+        var meanN = 0.0, meanE = 0.0
+        var g1 = (x: 0.0, y: 0.0, z: 0.0), g2 = (x: 0.0, y: 0.0, z: 0.0)
+        let half = window.count / 2
+        for (i, s) in window.enumerated() {
+            meanN += s.north; meanE += s.east
+            if i < half { g1.x += s.gravity.x; g1.y += s.gravity.y; g1.z += s.gravity.z }
+            else { g2.x += s.gravity.x; g2.y += s.gravity.y; g2.z += s.gravity.z }
+        }
+        meanN /= n; meanE /= n
+        func unit(_ v: (x: Double, y: Double, z: Double)) -> (x: Double, y: Double, z: Double) {
+            let m = max(sqrt(v.x * v.x + v.y * v.y + v.z * v.z), 1e-9)
+            return (v.x / m, v.y / m, v.z / m)
+        }
+        func angle(_ a: (x: Double, y: Double, z: Double), _ b: (x: Double, y: Double, z: Double)) -> Double {
+            acos(max(-1, min(1, a.x * b.x + a.y * b.y + a.z * b.z))) * 180 / .pi
+        }
+        let u1 = unit(g1), u2 = unit(g2)
+        let posture = unit((g1.x + g2.x, g1.y + g2.y, g1.z + g2.z))
         var cnn = 0.0, cee = 0.0, cne = 0.0
         for s in window {
             let dn = s.north - meanN, de = s.east - meanE
@@ -3237,19 +3375,26 @@ class WorkoutSession: ObservableObject {
         guard variance > 1e-9 else { return nil }
         let skew = (m3 / n) / pow(variance, 1.5)
         let voted = normalizedHeading(skew >= 0 ? axis : axis + 180)
-        let flat = abs(meanGz) > WALK_FLAT_GRAVITY_Z
+        let flat = abs(posture.z) > WALK_FLAT_GRAVITY_Z
+        if let settled = walkPosture, angle(posture, settled) > WALK_POSTURE_NEW {
+            walkOffsetSamples = []
+            walkPosture = nil
+        }
         let reference: Double
         if flat {
             reference = compass
         } else {
-            walkOffsetSamples.append(normalizedSignedAngle(voted - compass))
-            if walkOffsetSamples.count > WALK_OFFSET_KEEP {
-                walkOffsetSamples.removeFirst(walkOffsetSamples.count - WALK_OFFSET_KEEP)
+            if angle(u1, u2) <= WALK_POSTURE_STEADY {
+                walkOffsetSamples.append(normalizedSignedAngle(voted - compass))
+                if walkOffsetSamples.count > WALK_OFFSET_KEEP {
+                    walkOffsetSamples.removeFirst(walkOffsetSamples.count - WALK_OFFSET_KEEP)
+                }
+                walkPosture = posture
             }
-            reference = compass + Self.circularMedian(walkOffsetSamples)
+            reference = walkOffsetSamples.isEmpty ? voted : compass + Self.circularMedian(walkOffsetSamples)
         }
         let direction = angularDistance(axis, reference) <= 90 ? axis : axis + 180
-        return (normalizedHeading(direction), voted, skew, flat)
+        return (normalizedHeading(direction), normalizedHeading(axis), voted, skew, flat)
     }
 
     private func resetInertialState(seedSpeed: Double, courseDegrees: Double) {
@@ -3457,6 +3602,8 @@ class WorkoutSession: ObservableObject {
             var turningNow = false
             var gyroTurnThisTick: Double? = nil
             lastTickGyroTurn = nil
+            stepKindThisTick = .other
+            stepWalkThisTick = nil
             if let previousCumulative = lastDeviceYawForHeading {
                 let dYaw = cumulativeYaw - previousCumulative
                 gyroTurnThisTick = dYaw
@@ -3536,6 +3683,18 @@ class WorkoutSession: ObservableObject {
                 let err = normalizedSignedAngle(walk.direction - motionHeadingDegrees)
                 motionHeadingDegrees = normalizedHeading(motionHeadingDegrees + WALK_HEADING_GAIN * err)
                 walkingSteeredThisTick = true
+                stepKindThisTick = .walking
+                stepWalkThisTick = (walk.axis, compassCM, walk.flat)
+                rideStartStep = nil                 // a walk ends the ride; the next one starts afresh
+                if lastWalkStepTime.map({ now.timeIntervalSince($0) > 10 }) ?? true {
+                    walkBoutStartStep = drawnSteps.count
+                    walkBoutSettled = false
+                }
+                lastWalkStepTime = now
+                if !walkBoutSettled, walkOffsetSamples.count >= WALK_SETTLED_WINDOWS {
+                    redrawWalkBout()
+                    walkBoutSettled = true
+                }
                 // Between windows, and while standing, the compass carries the walking offset.
                 // Expressed against the datum the heading is steered by this tick.
                 if !walk.flat, !walkOffsetSamples.isEmpty {
@@ -3578,6 +3737,7 @@ class WorkoutSession: ObservableObject {
                 compassCorrectionAppliedThisTick = true
             } else if !compassIsDisturbed, let compass = absoluteHeadingDatum {
                 let (misalignment, gain) = effectiveCompassMisalignment
+                steeringOffsetThisTick = misalignment
                 // Target = where the phone points PLUS how the body is offset from it.
                 let target = normalizedHeading(compass + misalignment)
                 var err = target - motionHeadingDegrees
@@ -3605,6 +3765,7 @@ class WorkoutSession: ObservableObject {
         if !compassIsDisturbed, !compassCorrectionAppliedThisTick,
            let compass = absoluteHeadingDatum {
             let (misalignment, gain) = effectiveCompassMisalignment
+            steeringOffsetThisTick = misalignment
             let target = normalizedHeading(compass + misalignment)
             var err = target - motionHeadingDegrees
             if err > 180 { err -= 360 } else if err < -180 { err += 360 }
@@ -4535,6 +4696,10 @@ class WorkoutSession: ObservableObject {
         lastTickGyroTurn = nil
         lastRidingTickTime = nil
         walkOffsetSamples = []
+        walkPosture = nil
+        drawnSteps = []
+        rideStartStep = nil; lastRedrawOffset = nil; lastRedrawTime = nil
+        walkBoutStartStep = nil; walkBoutSettled = false; lastWalkStepTime = nil
         launchMeanNorth = 0; launchMeanEast = 0; launchWindowElapsed = 0
         vehicleLaunchDetected = false; vehicleConfirmedByGPSSpeed = false
         if fallbackPedometerActive {
@@ -4790,7 +4955,8 @@ class WorkoutSession: ObservableObject {
     }
 
     private func appendEstimatedLocation(distanceMeters: Double, headingDegrees: Double,
-                                         speedMetersPerSecond: Double, timestamp: Date) {
+                                         speedMetersPerSecond: Double, timestamp: Date,
+                                         recordStep: Bool = true) {
         var previousLocation: FlightLocation
         if let last = flight.locations.last {
             previousLocation = last
@@ -4826,7 +4992,8 @@ class WorkoutSession: ObservableObject {
             let restoreDistance = currentMetrics.totalDistance
             for m in buffered {
                 appendEstimatedLocation(distanceMeters: m.distance, headingDegrees: m.heading,
-                                        speedMetersPerSecond: m.speed, timestamp: m.timestamp)
+                                        speedMetersPerSecond: m.speed, timestamp: m.timestamp,
+                                        recordStep: false)
             }
             currentMetrics.totalDistance = restoreDistance
             previousLocation = flight.locations.last ?? previousLocation
@@ -4874,6 +5041,15 @@ class WorkoutSession: ObservableObject {
         ).withMotion(currentMotionSnapshot(movementDirection: headingDegrees))
 
         flight.locations.append(estimatedLocation)
+        if recordStep {
+            // Every step of a ride in progress was steered by compass + offset, crawling and all.
+            let kind: DrawnStepKind = stepKindThisTick == .walking ? .walking
+                : (rideStartStep != nil ? .riding : .other)
+            drawnSteps.append(DrawnStep(index: flight.locations.count - 1, distance: distanceMeters,
+                                        originalHeading: headingDegrees, heading: headingDegrees,
+                                        kind: kind, offsetApplied: steeringOffsetThisTick,
+                                        walk: kind == .walking ? stepWalkThisTick : nil))
+        }
         NotificationCenter.default.post(
             name: .workoutLocationUpdated,
             object: nil,

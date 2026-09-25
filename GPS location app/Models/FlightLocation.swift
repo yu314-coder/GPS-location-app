@@ -240,11 +240,25 @@ struct FlightLocation: Identifiable, Codable, Hashable {
         let newLat = latitude + north / 111_320.0
         let cosLat = Swift.max(cos(latitude * .pi / 180), 0.000001)
         let newLon = longitude + east / (111_320.0 * cosLat)
-        return FlightLocation(
+        var moved = FlightLocation(
             id: id, timestamp: timestamp, latitude: newLat, longitude: newLon, altitude: altitude,
             horizontalAccuracy: horizontalAccuracy, verticalAccuracy: verticalAccuracy,
             speed: speed, course: course, pressure: pressure, satelliteCount: satelliteCount,
             signalStrength: signalStrength, isFiltered: isFiltered, isValid: isValid, isEstimated: isEstimated)
+        // The memberwise init above cannot take the motion snapshot, and dropping it meant every
+        // point a correction touched lost its sensor record.
+        moved.motionAcceleration = motionAcceleration
+        moved.forwardAcceleration = forwardAcceleration
+        moved.lateralAcceleration = lateralAcceleration
+        moved.deviceHeading = deviceHeading
+        moved.compassHeading = compassHeading
+        moved.movementDirection = movementDirection
+        moved.pitch = pitch; moved.roll = roll; moved.yaw = yaw
+        moved.rotationRate = rotationRate
+        moved.speedAccuracy = speedAccuracy
+        moved.verticalSpeed = verticalSpeed
+        moved.relativeAltitude = relativeAltitude
+        return moved
     }
 }
 

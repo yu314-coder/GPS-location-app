@@ -94,9 +94,10 @@ class LocationManager: NSObject, ObservableObject {
     private var turnAccelSumEast: Double = 0
     private var turnAccelSamples: Int = 0
     /// The last WALK_WINDOW_SECONDS of the same physical acceleration, with the device's gravity
-    /// z (how flat it lies), for the walking direction. Trimmed by time, not by count: the motion
+    /// (how it lies, and whether that is changing), for the walking direction. Trimmed by time, not by count: the motion
     /// rate switches between 2 and 50 Hz, and four seconds of steps is what was tested.
-    private(set) var walkPhysicalWindow: [(t: TimeInterval, north: Double, east: Double, gravityZ: Double)] = []
+    private(set) var walkPhysicalWindow: [(t: TimeInterval, north: Double, east: Double,
+                                           gravity: (x: Double, y: Double, z: Double))] = []
     private let WALK_WINDOW_SECONDS: TimeInterval = 4.0
 
     /// Heading of the phone from its full attitude, via whichever device axis lies most nearly
@@ -870,7 +871,7 @@ class LocationManager: NSObject, ObservableObject {
                 self.turnAccelSumEast += turnAccel.east
                 self.turnAccelSamples += 1
                 self.walkPhysicalWindow.append((motion.timestamp, turnAccel.north, turnAccel.east,
-                                                motion.gravity.z))
+                                                (motion.gravity.x, motion.gravity.y, motion.gravity.z)))
                 let cutoff = motion.timestamp - self.WALK_WINDOW_SECONDS
                 if let first = self.walkPhysicalWindow.first, first.t < cutoff {
                     self.walkPhysicalWindow.removeAll { $0.t < cutoff }
