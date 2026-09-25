@@ -24,20 +24,24 @@ consumer iOS workout application, and report its accuracy on twenty-three instru
 car, motorcycle and on foot. Each was recorded with GPS running alongside, used only as a
 reference: we call that the \emph{real} speed, and what the sensors produced the \emph{estimated}
 speed. Driving fast and steadily with the phone resting in the vehicle, estimated distance is
-within $3.8\%$ over $15$~km and direction within $5^\circ$; in slow stop-start traffic the same
-system reads $20$--$60\%$ long. Part of that gap is a property of the signal --- the estimate reads
+within $3.8\%$ over $15$~km; in slow stop-start traffic the same system reads $20$--$60\%$
+long. Direction needs no satellite reference either: the angle the phone sits at is learned from
+the sideways acceleration of turns, and replayed over $61$ recordings the saved route points within
+$30^\circ$ of the real direction for $72\%$ of riding, against $43\%$ for the phone's compass alone;
+walking with the phone in a pocket, direction from the steps is within $30^\circ$ for $93\%$ of the
+time. Part of that gap is a property of the signal --- the estimate reads
 one to two km/h high at any speed, which is $2\%$ of a motorway pace and $40\%$ of a crawl --- but
 most of it turned out not to be. The store evicts from its most crowded speed bin so that rare fast
 examples survive, and that policy alone leaves it holding $5\%$ of its examples below $5$~km/h where
 the riding produces $24\%$. Replaying the estimator against a store rebuilt under that rule
 reproduces the shipped application's error on six instrumented rides; the same estimator on an
 unrebalanced store does not. Undoing the imbalance at lookup takes mean distance error from $20\%$
-to $8\%$ (\S\ref{sec:cache}). We give equal space to twelve approaches that were implemented,
-measured and rejected. Three failed for one reason. An accelerometer cannot tell gravity apart from the vehicle
+to $8\%$ (\S\ref{sec:cache}). We give equal space to eighteen approaches that were implemented,
+measured and rejected. Two failed for one reason. An accelerometer cannot tell gravity apart from the vehicle
 pushing it --- long known in attitude estimation --- and on this platform the sensor fusion that
 resolves that ambiguity is the vendor's, cannot be replaced, and quietly removes the very signal
-that aircraft dead reckoning, direction-from-acceleration and takeoff detection all rely on. We
-report how much that costs.
+that aircraft dead reckoning and takeoff detection rely on. We report how much that costs, and
+correct an earlier claim that it also rules out direction from acceleration.
 \end{abstract}
 
 \section{Introduction}
@@ -62,11 +66,14 @@ pocketed, sometimes in a hand, in a car, on a motorcycle, and once in an aircraf
 \begin{enumerate}\itemsep1pt
 \item An out-of-distribution evaluation of vibration-derived speed across carry positions and
 vehicle types, on one device and one user, with per-regime error.
-\item The measured cost of the specific-force ambiguity on a consumer platform: three distinct
+\item The measured cost of the specific-force ambiguity on a consumer platform: two distinct
 approaches defeated, with magnitudes.
 \item A cache-policy bias: the eviction rule that protects rare fast examples silently reshapes
 the training distribution, and accounts for most of the low-speed over-read (\S\ref{sec:cache}).
-\item Twelve negative results reported in full, including two that look correct in aggregate and
+\item Direction without GPS --- a heading that cannot go singular, the carry angle from cornering,
+and walking direction from the step axis --- replayed over every recording with the routes drawn
+against GPS for all $61$ (\S\ref{sec:direction}, Appendix~\ref{app:routes}).
+\item Eighteen negative results reported in full, including two that look correct in aggregate and
 fail per-query.
 \item Three sensor-platform defects that silently invalidated weeks of data, offered as evidence
 that platform semantics dominate modelling error in this setting.
@@ -113,8 +120,8 @@ limiting term. Carry position is known to dominate: measured heading standard de
 $6.22^\circ$, $6.82^\circ$ and $14.68^\circ$ for holding, calling and swinging respectively,
 with corresponding final position errors of $2.11$, $2.34$ and $4.5$~m~\cite{pdrheading}. Our
 $\beta$ term is the vehicular analogue of the carry-mode misalignment that literature addresses
-for pedestrians, and our finding that it cannot be recovered without an external reference is
-consistent with theirs.
+for pedestrians. An earlier draft of this paper reported that $\beta$ cannot be recovered without
+an external reference. That was wrong: a vehicle's turns reveal it (\S\ref{sec:direction}).
 
 \paragraph{The specific-force ambiguity.} An accelerometer measures specific force and cannot
 separate gravity from sustained linear acceleration. This is standard, and attitude-estimation
@@ -123,7 +130,7 @@ adaptively~\cite{disturbaccel} or by weighting the accelerometer correction by h
 magnitude departs from $g$~\cite{quatcf}. What we add is the downstream consequence on a
 platform where the fusion is not ours to modify: the vendor-supplied attitude and
 gravity-removed acceleration are the only interface, and their handling of sustained
-acceleration silently defeats three otherwise reasonable designs (\S5.2).
+acceleration silently defeats two otherwise reasonable designs (\S\ref{sec:onecause}).
 
 \section{Method}
 
@@ -185,17 +192,60 @@ directly: a ground-trained model reported $19$~km/h at a $900$~km/h cruise, beca
 data entered the same store, a city drive reported a mean of $337$~km/h against a true $30$.
 Air and ground are therefore stored and searched as separate partitions.
 
-\subsection{Direction}
+\subsection{Direction}\label{sec:dirmethod}
 
 Turn angle comes from the gyroscope, absolute direction from the magnetometer:
 \begin{equation}
 \theta_t = \theta_{t-1} + \Delta\psi_{\text{gyro}}
-+ \kappa\big(\psi_{\text{datum}} + \beta - \theta_{t-1}\big)
++ \kappa\big(\psi_{\text{datum}} + \beta - \theta_{t-1}\big), \qquad \kappa = 0.25
 \end{equation}
 where $\beta$ is the \emph{carry offset}: the angle between where the phone points and where the
-body travels. $\beta$ is not observable without an external reference, so it is learned from GPS
-course over the first $180$~s of a workout and then frozen --- which mirrors the physical case
-the mode exists for: signal on the way to the aircraft, none thereafter.
+body or vehicle travels. Earlier versions learned $\beta$ from GPS course during the first
+$180$~s of a workout and then froze it. The current one uses no satellite information after the
+first point, in four parts.
+
+\paragraph{A datum that cannot go singular.} $\psi_{\text{datum}}$ is not the platform's heading.
+Core Motion reports the bearing of a direction fixed in the phone, and which direction depends on
+how the phone is held; when it points near vertical the reading is noise (\S\ref{sec:headings}).
+Instead, with the attitude $R = R_z(\text{yaw})\,R_x(\text{pitch})\,R_y(\text{roll})$ mapping the
+device frame to north--west--up, we take the bearing of whichever device axis lies most nearly
+horizontal --- the one least aligned with gravity, switching only when another is flatter by $0.15$
+in $|\cos|$ --- and carry the difference between the two axes across a switch so the reading stays
+continuous. Only offsets are ever learned against it, so its absolute zero does not matter.
+
+\paragraph{The carry offset from cornering.} In a turn a vehicle accelerates toward the inside of
+the turn. Writing the horizontal acceleration in the datum's frame as a complex number
+$a = a_{\text{fwd}} + i\,a_{\text{right}}$, with $v$ the estimated speed and $\omega$ the gyroscope
+turn rate (clockwise positive),
+\begin{equation}
+a_t \approx e^{i\beta}\,(i\,v_t\,\omega_t)
+\qquad\Longrightarrow\qquad
+\hat\beta = \arg \sum_t \frac{a_t}{|a_t|}\;\overline{i\,v_t\,\omega_t}
+\end{equation}
+over every riding second at $v \geq 4$~m/s. Normalising $a_t$ keeps one pothole from outvoting a
+minute of corners. The acceleration must be the physical one, which is the \emph{negative} of what
+Core Motion reports as user acceleration (\S\ref{sec:headings}). The first estimate is made after
+$30$ riding seconds.
+
+\paragraph{Walking from the steps.} With the phone in a pocket the compass was $56$--$137^\circ$
+from the direction of walking on five of the seven walks graded, so walking is steered by the steps
+instead. Over
+$4$~s, the principal axis of horizontal physical acceleration is the line of travel, and its third
+moment along that axis is positive toward the front, because push-off is sharper than heel-strike.
+Each window's vote enters a circular median of (vote $-\ \psi_{\text{datum}}$) over the last $20$
+windows, which picks the end of the current window's axis; the heading is pulled toward it at
+$0.5$ per second. A window counts only if the phone's posture held within $15^\circ$ across it,
+and settling at a new angle ($25^\circ$) starts the record afresh. A phone lying flat
+($|g_z| > 0.7$, in the hand) takes the end nearer the datum instead, because the vote came out
+reversed on the one flat walk recorded.
+
+\paragraph{Redrawing.} Every drawn point keeps the heading and offset it was drawn with. When a
+ride's $\hat\beta$ moves by $3^\circ$, every point of the current ride is turned by the difference;
+once a walk has eight counted windows, its opening windows are redrawn with the settled median. The
+saved route therefore carries the best estimate reached, while the live display carries the one
+available at the time. A ride begins at $2.5$~m/s, and at that moment the heading is set to
+$\psi_{\text{datum}} + \hat\beta$ outright, because sitting down turns the phone about a horizontal
+axis the gyroscope's vertical rate does not see.
 
 \subsection{Projection}
 
@@ -344,50 +394,104 @@ We record this as a modelling lesson of the same kind as the platform defects in
 the eviction rule is wrong locally, it is sound cache management, and it was invisible for weeks
 because the store's contents were never compared against the distribution they were drawn from.
 
-\subsection{Direction: the angle the phone sits at}
+\subsection{Direction: the angle the phone sits at}\label{sec:direction}
 
 The phone rarely points the way the vehicle travels. It sits at some angle in a cradle, a pocket
-or a cup holder, and that angle --- $\beta$ in \S3.4 --- has to be subtracted before the recorded
-heading means anything. It cannot be worked out from the motion sensors alone (\S5.2), so it is
-measured from GPS during the first three minutes of a journey and then held fixed.
+or a cup holder, and that angle --- $\beta$ in \S\ref{sec:dirmethod} --- has to be subtracted before
+the recorded heading means anything.
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.92\textwidth]{figures/fig_heading.pdf}
-\caption{The same journeys with the angle unlearned and learned. Left: how far the whole route is
-rotated. Right: how far the finish point lands from where it really was.}
+\caption{Why the angle matters, measured with the earlier GPS-learned version. The same journeys
+with the angle unlearned and learned. Left: how far the whole route is rotated. Right: how far the
+finish point lands from where it really was.}
 \label{fig:heading}
 \end{figure}
 
 Figure~\ref{fig:heading} shows what that is worth. With the angle unlearned the route comes out
 the right shape and the right length and simply points the wrong way: on the $15$~km journey the
 recorded straight-line displacement matched the real one to within $8$~m while being rotated
-$26^\circ$, which put the finish $4{,}174$~m from where it actually was. Re-running the same
-journey with the angle applied moves the finish to $366$~m, $2.4\%$ of the distance travelled.
+$26^\circ$, which put the finish $4{,}174$~m from where it actually was. Learning the angle moves
+the finish to $366$~m, $2.4\%$ of the distance travelled. Those figures come from the earlier
+version, which measured the angle from GPS in the first three minutes and then held it.
+
+\paragraph{Without GPS.} The current version learns the angle from turns and uses no satellite
+information after the first point (\S\ref{sec:dirmethod}). To see what that costs, the direction
+logic was replayed through every recording that logged the phone's attitude: $61$ recordings from
+$15$~August to $24$~September, car and motorcycle, mounted and pocketed, $476$ minutes of riding
+over $344$~km. Direction is replayed; distance is left as each build recorded it, so the routes
+below carry whatever speed error was current at the time. GPS enters only as the grader: for every
+half-minute of riding, the bearing between the GPS fixes $15$~s either side --- at least $150$~m
+and four times their accuracy apart, each better than $60$~m --- against the circular mean of the
+drawn heading over the same half-minute.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_direction.pdf}
+\caption{How far the drawn direction is from the real one. Left: $19{,}570$ graded half-minutes of
+riding over $61$ recordings. \emph{As recorded} is what each build drew at the time, which for all
+but the last four recordings meant an angle learned from GPS. Right: $721$ graded seconds of walking
+with the phone in a pocket, over seven walks.}
+\label{fig:direction}
+\end{figure}
 
 \begin{table}[htbp]
 \centering\small
-\caption{Average direction error across whole journeys, before and after the angle is measured.
-A positive value means the recorded route is rotated clockwise.}
-\label{tab:heading}
-\begin{tabular}{llr}
+\caption{Direction error over every recording with attitude logged. Half-minutes of riding for the
+first four rows, seconds of walking for the last three. Pocket and flat split the $61$ riding
+recordings by how the phone lay ($35$ and $26$).}
+\label{tab:direction}
+\begin{tabular}{lrrrrr}
 \toprule
-Journey & Phone angle & Direction error\\
+ & Median & \multicolumn{3}{c}{Within $30^\circ$} & Recordings\\
+\cmidrule(lr){3-5}
+ & error & all & pocket & flat & over $40^\circ$\\
 \midrule
-15 km, open road   & not learned & $+24.9^\circ$\\
-1.6 km, city       & not learned & $-35.8^\circ$\\
+Riding, phone compass alone          & $34.1^\circ$ & $43\%$ & $30\%$ & $62\%$ & $24$\\
+Riding, as recorded (angle from GPS) & $16.7^\circ$ & $66\%$ & $61\%$ & $72\%$ & $11$\\
+Riding, this method, live            & $20.3^\circ$ & $67\%$ & $68\%$ & $67\%$ & $7$\\
+Riding, this method, saved route     & $18.7^\circ$ & $72\%$ & $73\%$ & $69\%$ & $3$\\
 \midrule
-8 min, car park    & learned     & $+0.8^\circ$\\
-4 min, car park    & learned     & $-1.3^\circ$\\
-15 min, city       & learned     & $+1.0^\circ$\\
-11 min, car park   & learned     & $+2.1^\circ$\\
+Walking, phone compass alone         & $80.8^\circ$ & $30\%$ &&& \\
+Walking, as recorded                 & $102.3^\circ$ & $18\%$ &&& \\
+Walking, this method                 & $9.6^\circ$ & $93\%$ &&& \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:heading} gives the direction error over whole journeys. Unlearned, it is tens of
-degrees and consistent within a journey --- a rotation, not a wander, with circular concentration
-$R = 0.93$ and $0.71$. Learned, it is within about two degrees on four consecutive journeys.
+Table~\ref{tab:direction} and Figure~\ref{fig:direction} summarise it. Without GPS the typical
+error is slightly worse than with the GPS-learned angle, $18.7^\circ$ against $16.7^\circ$, but the
+failures are fewer: $72\%$ of riding within $30^\circ$ against $66\%$, and $3$ recordings worse
+than $40^\circ$ against $11$. The GPS-learned angle is excellent when it is learned and wrong for
+the whole journey when it is not --- frozen at a bad value from one poor fix, or never learned
+because the first three minutes were spent standing still. The compass alone is the floor, and in a
+pocket it is a poor one: within $30^\circ$ for $30\%$ of riding. Walking changes the most, because
+the recorded builds had no working walking direction at all.
+
+Against the angle measured from GPS on the $27$ rides where that measurement is possible --- measured
+with the platform's heading as the datum, before the change to the axis heading --- the cornering
+estimate was $11.0^\circ$ off (median) after $30$ riding seconds and $9.4^\circ$ at the end of the
+ride, within $30^\circ$ on $26$ of $27$. Redrawing each ride with its latest estimate is what
+moves the saved route ahead of the live one. It is not free: on about ten recordings the later
+estimate was the worse one, and redrawing spread it back over the ride, by up to $24^\circ$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_routes_examples.pdf}
+\caption{Three recent recordings, direction replayed without GPS, distances as recorded. Titles give
+the median direction error as recorded and with this method. (a)~Phone head-down at $45^\circ$ in a
+pocket, where the platform's heading scattered $49^\circ$ a minute (\S\ref{sec:headings}); recorded
+by a build that still used it. (b)~A $600$~m ride south and back, then a $270$~m walk east: recorded
+by a build with no working walking direction, the walk was drawn $136^\circ$ off. The ride in the
+replay is drawn worse than recorded: at $37$ riding seconds its only estimate of the angle was poor,
+and the redraw carried it over the whole ride. It is also drawn short, a speed error of that build
+(\S\ref{sec:cache}). (c)~The best recording to date.}
+\label{fig:routes}
+\end{figure}
+
+Figure~\ref{fig:routes} shows three recordings in full, and Appendix~\ref{app:routes} shows all
+$61$, each drawn against its own GPS track.
 
 \subsection{Underground car parks}
 
@@ -421,7 +525,7 @@ gyroscope more than $150^\circ$ of same-direction turning within $30$~s.
 
 \section{Negative results}
 
-We report these in full because each cost real effort and three share one cause.
+We report these in full because each cost real effort and two share one cause.
 
 \subsection{Aircraft speed cannot be worked out at all}
 
@@ -465,13 +569,20 @@ flight. The route points the right way and is the wrong length.
 \textbf{Core Motion's attitude filter reinterprets sustained linear acceleration as a change in
 the gravity direction.} The ambiguity itself is standard~\cite{disturbaccel,quatcf}; what is
 reported here is its measured cost when the fusion is vendor-supplied and cannot be replaced. A takeoff roll is the most sustained acceleration a phone will ever
-experience, and is therefore precisely what the filter removes. This defeated:
+experience, and is therefore precisely what the filter removes. This defeated two designs, and
+we had wrongly blamed it for a third:
 
 \begin{enumerate}\itemsep2pt
 \item \emph{Aircraft speed integration}, above.
-\item \emph{Deriving $\beta$ from acceleration.} A vehicle accelerates along its axis, so the
-world-frame acceleration bearing should give the travel direction. Measured against known
-answers on three drives, circular concentration was $R = 0.15$, $0.18$, $0.19$ --- noise.
+\item \emph{Deriving $\beta$ from acceleration} --- withdrawn. A vehicle accelerates along its
+axis, so the world-frame acceleration bearing should give the travel direction; measured on three
+drives, circular concentration was $R = 0.15$, $0.18$, $0.19$, and we attributed that to the
+fusion. Most of it was ours. Core Motion's user acceleration is the reaction the phone feels, the
+negative of the vehicle's acceleration, so every bearing was reversed; and the frame was built by
+guessing between the attitude matrix and its transpose, which a phone lying flat cannot tell apart.
+Corrected, straight-line speed changes still give a poor answer --- $44^\circ$ median error ---
+but the sideways acceleration of turns gives the carry angle to about $11^\circ$
+(\S\ref{sec:direction}).
 \item \emph{Inertial takeoff detection.} Integrating positive along-track acceleration and
 latching at $45$~m/s in one unbroken episode should identify a takeoff and nothing else.
 Replayed: today's car $52.5$~m/s (latched), a second car $209.9$ (latched), a motorcycle $328.5$
@@ -634,9 +745,42 @@ information (\S\ref{sec:pocketfix}), weighting them above the nine band energies
 metric should help. It changes nothing measurable ($8\%$ mean distance error at $\times1$,
 $\times2$ and $\times3$). The neighbour search was never the problem; the pool was.
 
+\subsection{Six ways of finding direction that did not work}
+
+Each was built, replayed against GPS on the logged rides, and dropped. Numbers are median direction
+error unless stated.
+
+\textbf{The axis the motorcycle leans about.} A leaning bike rolls about its own direction of
+travel, so the principal axis of horizontal rotation should give that direction up to a half-turn.
+It gives $25^\circ$ even with the half-turn forgiven.
+
+\textbf{The thigh as a pointer.} Walking, gravity in the phone's frame runs down the thigh; seated,
+the thigh points forward, so the same device direction should point along the road. It does not:
+seated, that direction stayed $54$--$86^\circ$ from horizontal, and the estimate was $73^\circ$ off.
+
+\textbf{A lean-proof forward vector.} Leaning is a rotation about the forward direction, so solving
+for that direction in the phone's own frame --- least squares on
+$\mathbf{a}_{\text{dev}} = -v\omega\,[\mathbf{u}]_\times \mathbf{f}$ --- should be immune to lean.
+It scored $19.9^\circ$ against $15.9^\circ$ for the planar method over $29$ rides, better on six and
+worse on nine. Lean is not what limits the estimate.
+
+\textbf{Gating the compass by the gyroscope.} Following the gyroscope and letting the compass move
+the baseline only while the two agree within $30^\circ$ improved seven rides by more than $10^\circ$
+and worsened five; riding within $30^\circ$ fell from $69\%$ to $65\%$. It was treating a symptom whose cause was the heading
+definition (\S\ref{sec:headings}).
+
+\textbf{Switching headings by conditioning.} Using the platform's heading while its reference
+direction is well off vertical and the axis heading otherwise made the ride it was designed for
+worse, $72^\circ$ to $78^\circ$: every hand-over copies the noisier source into the offset.
+
+\textbf{The thigh's swing, for walking forward or back.} A thigh swings forward faster than it
+returns, so rotation about the axis across the direction of travel should be skewed toward the
+front. It was wrong in $56$--$62\%$ of two- to six-second windows, because the largest horizontal rotation
+of a pocketed phone while walking is about the direction of travel, not across it.
+
 \section{Systems failures}
 
-Three defects were not algorithmic, and each silently invalidated data for weeks.
+The first three defects below were not algorithmic, and each silently invalidated data for weeks.
 
 \textbf{A stale reading is not a missing reading.} \texttt{CLLocationManager} suspends heading
 updates outside the foreground, and the cached property is never cleared. On an $81$-minute drive
@@ -663,6 +807,24 @@ pulled away, which scored as the estimator reporting $60$~km/h at a standstill a
 $+47\%$ where fresh fixes alone give $+36\%$. The column was not wrong; it was undated. Every
 figure in \S\ref{sec:cache} is computed against fixes under two seconds old, using an age column
 added afterwards.
+
+\textbf{Four meanings of ``heading''.}\label{sec:headings} The direction work was held back for
+weeks by platform semantics rather than by the estimator. Core Motion's heading is the bearing of a
+direction fixed in the phone, chosen by how the phone is held --- fitted as
+$(-0.05, 0.87, 0.49)$ in the device frame on some rides and $(-0.02, 0.46, 0.89)$ on others ---
+and when that direction points near vertical the reading is noise. On one ride the phone sat
+head-down at $45^\circ$, the direction was within $20^\circ$ of vertical, and over each minute the
+heading scattered $49^\circ$ around what the gyroscope measured; the route was drawn $72^\circ$
+off. The attitude itself was fine: the most nearly flat device axis scattered $1^\circ$ over the
+same minutes. \texttt{CLHeading} follows yet another direction, $25$--$100^\circ$ from Core Motion's
+on a tilted phone, and the application handed over between the two whenever it entered or left the
+foreground; seven rides whose carry angle had looked like zero turned out to have been measured
+against \texttt{CLHeading}. Core Motion's user acceleration is the reaction the phone
+feels, the negative of the vehicle's acceleration: on pocketed rides it pointed $139$--$180^\circ$
+away from the acceleration GPS measured. And a $30$~s running mean of the vertical rotation rate,
+subtracted as gyroscope bias, is a high-pass filter that hands back every turn over the following
+minute --- Core Motion's rotation rate is already bias-corrected. The compass correction hides that
+last one, and removing it changed nothing measurable, so it remains.
 
 \textbf{A gate that cannot recover.} The estimator refuses to answer when the workout's fingerprint
 sits further than $3.0$ from every learned session (\S3.3). That fingerprint is the mean of the
@@ -701,6 +863,10 @@ across $64$ recordings, almost all ordinary hills, and on $131$ ticks of a fligh
 pressure. Only a \emph{slow} straight ramp needs catching, and slow is the one thing the estimate
 cannot vouch for without GPS.
 \item \textbf{Unseen vehicles.} The model answers only for conditions it has observed.
+\item \textbf{A phone that moves in the pocket.} The carry angle is learned per ride and assumed to
+hold. Where the phone slowly rolled in a pocket during a ride the error grew to $30^\circ$, and
+redrawing a ride with a later, worse estimate spread it back over the whole ride. A walk that
+begins while the phone is still being put away is drawn from the compass until the phone settles.
 \end{itemize}
 
 \section{Threats to validity}
@@ -724,6 +890,13 @@ differ by $35\%$ ($14{,}445$~m against $19{,}496$~m), and the fix-summed figure 
 Segments with no valid GPS speed are excluded and reported separately, but a systematic bias in
 GPS speed at low speed would propagate into our low-speed figures undetected.
 
+\paragraph{GPS as the direction reference.} Direction is graded on half-minute chords between
+fixes that are often $30$--$60$~m accurate, which puts a floor under every figure: every variant of
+the direction logic we replayed scored between $18^\circ$ and $21^\circ$ median error over all
+riding, however different its failures. Recordings worse than $40^\circ$, where the reference
+cannot be the explanation, are the more telling measure. Walking truth needs a straight half-minute
+of good fixes and exists for only seven walks.
+
 \paragraph{No baseline comparison.} We do not evaluate a published method on this data, so we
 cannot say whether a CNN trained on the same journeys would degrade the same way outside its
 distribution. The comparison we do make --- matched store versus mixed store on identical
@@ -744,7 +917,10 @@ exist; we consider that the most useful next step.
 
 Vibration-derived speed is a sound basis for GPS-free route recording within its regime: fast,
 steady travel with the phone mechanically coupled to the vehicle, where we measure $3.8\%$
-distance error over $15$~km and $5^\circ$ of heading error. Outside that regime the failures are
+distance error over $15$~km. Direction no longer needs a satellite reference at all: learned from
+the vehicle's own turns, and from the steps when walking, it is within $30^\circ$ for $72\%$ of
+riding and $93\%$ of walking across every recording we have, against $43\%$ and $30\%$ for the
+phone's compass alone. Outside that regime the failures are
 not gradual --- a hand on the phone removes the signal entirely, and an aircraft's defining
 acceleration is erased by the platform's own sensor fusion.
 
@@ -797,5 +973,27 @@ Movement Based on Disturbance Acceleration Adaptive Estimation and Correction.
 \bibitem{quatcf} Quaternion-Based Complementary Filter for Attitude Determination of a
 Smartphone. \emph{IEEE Sensors Journal}, 16(15), 2016.
 \end{thebibliography}
+
+\appendix
+\section{Every recording, replayed}\label{app:routes}
+
+All $61$ recordings with the phone's attitude logged, in date order, each drawn with the current
+direction method and no GPS (blue) over its own GPS track (dots, used only for reference; black
+within $40$~m, grey within $110$~m). The start is green. Direction is replayed; distance is as each
+build recorded it, so a route that is the right shape but too long or too short is showing that
+build's speed error, not a direction error. Titles give the date, how the phone lay, and the median
+direction error over the recording's graded half-minutes.
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_routes_all_1.pdf}
+\caption{Recordings 1--35, 15~August to 21~September.}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_routes_all_2.pdf}
+\caption{Recordings 36--61, 21 to 24~September.}
+\end{figure}
 
 \end{document}
