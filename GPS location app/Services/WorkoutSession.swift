@@ -4172,6 +4172,26 @@ class WorkoutSession: ObservableObject {
             }
         }
 
+        // A RIDE OWES THE NEXT WALK NOTHING.
+        //
+        // Both walking counters run whatever we are doing: detectStep sees every sample, and
+        // CMPedometer's cumulative distance never pauses. Only a walking tick ever consumed them,
+        // so a ride stored its road bumps as steps and the next walk paid them out at the
+        // catch-up cap — twice the walking pace — until the debt ran out. Replaying detectStep on
+        // the logs, a pocketed motorcycle ride stores 1.2 "steps" a second (a stopped vehicle
+        // 0.04, a real walk 1.8): about 1000 steps, 700 m, on a 16-minute ride. On straight
+        // walking within three minutes of a ride the app drew 1778 m where GPS measured 861.
+        //
+        // So while we are in a vehicle and this was not a walking tick, everything counted so far
+        // is settled rather than owed. Catch-up WITHIN a walk is untouched: CMPedometer's sparse
+        // updates are still bled out while walking.
+        if vehicleContextIsCurrent, !sourceTag.hasPrefix("PDR") {
+            imuStepsPendingTick = 0
+            pdrAppendedDistance = max(pdrAppendedDistance, walkedDistanceEstimate,
+                                      fallbackPedometerDistance ?? 0)
+            walkedDistanceEstimate = pdrAppendedDistance
+        }
+
         // GLOBAL STATIONARY OVERRIDE. Live data showed "VIB [still] FORCED 17km/h" — the
         // activity classifier confidently said stationary while a computed branch (PDR, VIB, or
         // integration) still reported a nonzero speed, because none of those branches checked
