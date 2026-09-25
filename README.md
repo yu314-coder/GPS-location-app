@@ -26,8 +26,9 @@
 
 Satellite positioning fails where routes are most often wanted: tunnels, underground car parks,
 urban canyons, aircraft cabins. Velocity Mode records the journey anyway — **speed from how the
-vehicle shakes**, direction from the motion sensors, and position projected forward from a single
-starting fix. Only the first point of the route comes from GPS.
+vehicle shakes**, **direction from the motion sensors** (the angle the phone sits at is learned
+from the vehicle's own turns, and a walk is steered by the steps), and position projected forward
+from a single starting fix. Only the first point of the route comes from GPS.
 
 It engages on its own. Velocity Mode takes over whenever satellite positioning drops out **or
 degrades** — a long tunnel with vents, a covered ramp, a street between tall buildings, where
@@ -42,38 +43,44 @@ by nearest-neighbour lookup against every signature GPS has previously labelled.
 allowed to refuse: if nothing it has stored resembles the present signature, it says so rather
 than guessing.
 
-**Measured accuracy** — 23 instrumented journeys, each recorded with GPS running alongside purely
-as ground truth:
+**Measured accuracy** — every journey recorded with GPS running alongside purely as ground truth.
 
-| Journey | Distance error | Heading |
-|---|---|---|
-| Open road, 15 km | **+3.8%** | 5° median |
-| Motorcycle, mounted | +6% | — |
-| City driving, 12–19 min | +20% to +25% | 8–15° median |
-| Car park, 4–8 min | +58% to +62% | — |
-| **Motorcycle, phone in a pocket** | **no relationship to real speed** | — |
+Distance, from how the vehicle shakes:
+
+| Journey | Distance error |
+|---|---|
+| Open road, 15 km | **+3.8%** |
+| Suburban, 12 min | +3.1% |
+| City driving, 12–15 min | +20% to +22% |
+| Car park, 4–11 min | +25% to +62% |
+| Motorcycle, phone in a pocket | first measured +76%; within 8–10% in replay once the store's composition is corrected |
 
 The spread is a property of the signal, not a defect. Absolute speed error is a few km/h at any
 speed — 1% of a motorway pace and 140% of a walking one — so the same estimator looks excellent
 on an open road and poor in traffic.
 
-The last row is different in kind from the rest. Over a 19-minute ride with the phone in a
-trouser pocket the reported speed and the real speed were statistically unrelated (R = +0.13),
-and the vibration signature and the real speed more so (R = −0.02). The estimate reads roughly
-50 km/h whatever the motorcycle is doing, including standing still at a light. A car rests the
-phone on a rigid surface and delivers road noise that scales with speed; a motorcycle delivers
-engine vibration, which follows engine speed rather than road speed and is undiminished at a
-standstill in gear. There is no speed in the input, so nothing can recover one — and the model's
-own confidence signal failed to notice, which is the part worth fixing.
+Direction, with no GPS at all — the current method replayed over all 61 recordings with the phone's
+attitude logged (476 minutes of riding, 344 km):
 
-**What it cannot do.** A phone held in the hand loses the speed signal entirely (the signature
-stops varying with speed: measured flat from 10 to 65 km/h), and a phone in a pocket on a
-motorcycle loses it completely — see the table above. Aircraft speed cannot be measured without
+| | Median error | Within 30° |
+|---|---|---|
+| Riding, phone compass alone | 34° | 43% |
+| Riding, Velocity Mode | **19°** | **72%** |
+| Walking with the phone in a pocket, compass alone | 81° | 30% |
+| Walking with the phone in a pocket, Velocity Mode | **10°** | **93%** |
+
+Every one of the 61 routes is drawn against its own GPS track in the paper's Appendix A.
+
+**What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
+varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured without
 GPS, because Core Motion's attitude filter absorbs a takeoff roll as a change in the gravity
-direction. A vehicle the model has never learned reads wrong until it has.
+direction. A vehicle the model has never learned reads wrong until it has. And the angle the phone
+sits at is learned per ride: if the phone shifts in a pocket mid-ride without being taken out, the
+rest of the ride is drawn off by roughly however far it moved.
 
 📄 **[Read the paper](https://github.com/yu314-coder/GPS-location-app/releases/tag/v1.0-paper)**
-— method, results, and nine approaches that were implemented, measured and rejected.
+— method, results, every route drawn against GPS, and eighteen approaches that were implemented,
+measured and rejected.
 [LaTeX source](paper/). The paper also ships inside the app: **Settings → Velocity Mode → Read the
 paper**, alongside an interactive version with the equations and error charts.
 
