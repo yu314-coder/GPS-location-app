@@ -48,7 +48,7 @@ recorded at the same time, used only as the answer key. Split by what was moving
 
 | | Motorcycle | Car | Walking | Plane |
 |---|---|---|---|---|
-| Distance vs GPS | **6%** short (39 journeys); 76% of journeys within 20% | **5%** long (31 journeys); 46% within 20% | **9%** long; twice the distance in the first minutes after a ride | 2.6 of 74 km — speed in the air is not measured |
+| Distance vs GPS | **6%** short (39 journeys); 76% of journeys within 20% | **5%** long (31 journeys); 46% within 20% | **7%** long, right after a ride too | 2.6 of 74 km — speed in the air is not measured |
 | Speed | average error 9 km/h; reads low above 40 km/h | average error 8 km/h; close up to 80 km/h | about 5 km/h where GPS says 4.5 | a little low while taxiing; reads almost still in the air |
 | Direction within 30° of GPS | **73%** of the time | **74%** | **93%** (phone in a pocket) | **99%** |
 | Whole route turned | median **10°** (40 routes) | median **20°** (23 routes) | — | — |

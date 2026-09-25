@@ -34,8 +34,7 @@ over every earlier recording and comparing the result with GPS recorded at the s
 as the answer key. Direction works in all four: it was within $30^\circ$ of GPS $73\%$ of the time
 on a motorcycle, $74\%$ in a car, $93\%$ on foot and $99\%$ on a flight. Over $70$ journeys
 ($18$~hours), distance came out $6\%$ short on a motorcycle and $5\%$ long in a car. Walking came out
-$9\%$ long, but twice the true distance in the first minutes after a ride, and in the air speed
-cannot be measured at all. On a motorcycle, fast riding reads slow and slow riding reads fast.
+$7\%$ long, and in the air speed cannot be measured at all. On a motorcycle, fast riding reads slow and slow riding reads fast.
 \end{abstract}
 
 \section{What the system does}
@@ -100,6 +99,9 @@ ever measured with its own GPS in the memory. On the journeys the app had record
 version itself, the rebuilt model's distance was within about $8\%$ of what the app had drawn.
 \item \textbf{Direction.} The direction method, including the redrawing, was run over the saved
 motion sensor readings.
+\item \textbf{Walking.} Distance is what the app drew. For walks that began within minutes of a
+ride, recorded before the current version, it is the walking pace the app measured, which is what
+the current version draws there (Section~\ref{sec:lessons}).
 \end{itemize}
 
 Every result is split by what was moving. A motorcycle and a car were told apart from the sensors
@@ -150,9 +152,8 @@ speeds, the average lands in the middle. The average error is $9$~km/h.
 \item \textbf{Car} ($639$ half-minutes). Much closer: from $10$ to $80$~km/h the middle reading is
 within about $4$~km/h of GPS. Only above $80$~km/h does it read low ($71$ where GPS measured
 $92$). The average error is $8$~km/h.
-\item \textbf{Walking} ($43$ straight half-minutes). Ordinary walking reads about $5$~km/h where GPS
-measured about $4.5$. In the first minutes after a ride it reads about twice the true pace; the
-reason is under \emph{Where it goes wrong}.
+\item \textbf{Walking} ($43$ straight half-minutes). About $5$~km/h where GPS measured about
+$4.5$, just after a ride as at any other time.
 \item \textbf{Plane} (one flight). While taxiing the app reads a little low (about $15$~km/h
 where GPS measured $18$). In the air the cabin is smooth, and the speed model reads it as almost
 standing still.
@@ -176,8 +177,8 @@ short, and $76\%$ of journeys were within $20\%$; the worst were $68\%$ short an
 \item \textbf{Car} ($31$ journeys, $142$~km checked). The app added $148$~km, $5\%$ long. The
 middle journey was $10\%$ long, and only $46\%$ of journeys were within $20\%$; the worst were
 $40\%$ short and $52\%$ long.
-\item \textbf{Walking}. Over straight stretches of ordinary walking the app was $9\%$ long. In the
-first minutes after a ride it was $106\%$ long --- twice the distance walked.
+\item \textbf{Walking}. Over straight stretches the app was $7\%$ long: $9\%$ in ordinary walking
+and $6\%$ in the first minutes after a ride.
 \item \textbf{Plane}. $2.6$~km were counted of the $74$~km flown.
 \end{itemize}
 
@@ -226,7 +227,7 @@ per route, and the median.}
 \midrule
 Motorcycle & $6\%$ short; $76\%$ of journeys within $20\%$ & $73\%$ of the time & median $10^\circ$\\
 Car        & $5\%$ long; $46\%$ of journeys within $20\%$ & $74\%$ of the time & median $20^\circ$\\
-Walking    & $9\%$ long; twice after a ride & $93\%$ of the time & ---\\
+Walking    & $7\%$ long & $93\%$ of the time & ---\\
 Plane      & $2.6$ of $74$~km & $99\%$ of the time & ---\\
 \bottomrule
 \end{tabular}
@@ -273,11 +274,6 @@ and its track differ; GPS alone cannot tell the two apart.
 $60$~km/h the speed is about two-thirds of the true value (Figure~\ref{fig:speed}a). Over a whole
 journey the two partly cancel, but a journey that is mostly fast comes out short. A car does not
 have this problem below $80$~km/h.
-\item \textbf{Walking right after a ride counts double.} The phone's step counter reports distance
-in batches, and the app draws whatever the counter has reported that the route does not yet show,
-at up to twice the walking pace. In the first minutes after a ride the counter is ahead ---
-probably because it counted the ride's vibration as steps --- so the app draws about twice the
-distance walked (Figure~\ref{fig:distance}c).
 \item \textbf{The first minute of a ride.} Until the pocket angle is learned, the direction comes
 from the compass alone, which in a pocket can be far off. The redrawing fixes the saved route
 afterwards, but a very short ride may never learn the angle well.
@@ -316,7 +312,7 @@ $5\%$ of its examples below $5$~km/h when $24\%$ of real riding is that slow, so
 far too fast. Throwing away a random example instead fixed most of it.
 \end{itemize}
 
-\section{Lessons}
+\section{Lessons}\label{sec:lessons}
 
 \begin{itemize}\itemsep2pt
 \item \textbf{The phone's own definitions caused more error than the models.} Its built-in heading
@@ -326,6 +322,11 @@ the estimators.
 \item \textbf{A test must not use what it is testing without.} Twice during development the
 no-GPS test mode quietly used GPS for direction, which made its results look better than they
 were.
+\item \textbf{Check what a counter stores while nothing reads it.} The step detector kept counting
+while the phone rode in a pocket --- about one bump a second --- and only a walk ever emptied it. The
+next walk then paid out hundreds of metres at twice the walking pace. Splitting the results by kind
+of travel is what exposed it: walks right after a ride came out twice their length. A ride now
+clears the count.
 \item \textbf{Check what a learning system remembers.} The store's way of forgetting examples was
 sensible on its own and still shifted every answer, and it went unnoticed until its contents were
 compared with the riding they came from.
