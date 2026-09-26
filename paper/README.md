@@ -19,8 +19,14 @@ Twice, so the figure references resolve. Requires a TeX distribution with `amsma
 | `velocity_mode.pdf` | Compiled, 10 pages |
 | `figures/` | Five figures, each split into motorcycle, car, walking and plane |
 
-Every number in the paper compares the newest version with GPS recorded at the same time and used
-only as the answer key. Earlier recordings were re-run through the newest speed and direction
-methods: the speed model is rebuilt as the app builds it, with a memory drawn from every other
-journey, and the direction method runs over the saved motion sensor readings. The paper and its
-figures carry no recording dates or times.
+Every number in the paper compares the latest version with GPS recorded at the same time and used
+only as the answer key. Every recording was re-run through the latest app logic from its saved raw
+sensor readings (acceleration, rotation and orientation angles at 50 Hz):
+- speed: the model rebuilt as the app builds it, with a memory drawn from every other journey, plus
+  its rules for stops, a handled phone and holding the last answer;
+- walking: the step detector and its bookkeeping;
+- direction and routes: the direction method.
+
+Three inputs come from the recordings as they were: walking or riding, Apple's motion classifier,
+and the car-park ramp flag. The phone's step counter and cabin pressure were not recorded. The paper
+and its figures carry no recording dates or times.
