@@ -162,6 +162,21 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// Why the store answered or not: answered, too few examples, unlearned regime, no close match,
         /// locally unreliable, or no window yet.
         let storeStatus: String
+        /// DIRECTION, APART FROM THE SPEED ENGINES. The heading drift measured at stops and taken
+        /// off every attitude bearing (degrees, clockwise), the drift rate it is running at
+        /// (degrees per minute), and the axis heading before any correction (magnetic frame).
+        let headingDrift: Double
+        let driftRate: Double
+        let datumUncorrected: Double?
+        /// The phone compass (CLHeading) as iOS delivered it, with its own accuracy estimate,
+        /// blank when none arrived in the last 5 s (iOS sends it only in the foreground). Logged,
+        /// never used, so a drive can show how far the compass itself can be trusted.
+        let phoneCompass: Double?
+        let phoneCompassAccuracy: Double?
+        /// Core Motion's magnetometer calibration (-1 uncalibrated, 0 low, 1 medium, 2 high) and
+        /// the field strength in microtesla (Earth's is about 25-65; far outside that is a magnet).
+        let magAccuracy: Int?
+        let magField: Double?
     }
 
     /// ~4 hours at 1 Hz. Oldest rows are dropped rather than growing without bound.
@@ -252,20 +267,30 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         var pitch: Double = 0
         var yaw: Double = 0
         var motionHeading: Double = -1
+        // THE MAGNETOMETER, CALIBRATED, DEVICE FRAME (microtesla), and Core Motion's calibration
+        // accuracy (-1 uncalibrated to 2 high). With these a compass can be rebuilt offline from
+        // gravity and the field alone, with no gyro in it, and set against the attitude's heading.
+        var magX: Double = 0
+        var magY: Double = 0
+        var magZ: Double = 0
+        var magAccuracy: Int = -2
     }
     /// Latest unprocessed motion, stamped onto the next raw sample.
     private var pendingDeviceMotion: (ax: Double, ay: Double, az: Double,
                                       gx: Double, gy: Double, gz: Double,
                                       rx: Double, ry: Double, rz: Double,
                                       roll: Double, pitch: Double, yaw: Double,
-                                      motionHeading: Double)?
+                                      motionHeading: Double,
+                                      mx: Double, my: Double, mz: Double, magAccuracy: Int)?
 
     func noteDeviceMotion(accelX: Double, accelY: Double, accelZ: Double,
                           gravityX: Double, gravityY: Double, gravityZ: Double,
                           rotationX: Double, rotationY: Double, rotationZ: Double,
-                          roll: Double, pitch: Double, yaw: Double, motionHeading: Double) {
+                          roll: Double, pitch: Double, yaw: Double, motionHeading: Double,
+                          magX: Double = 0, magY: Double = 0, magZ: Double = 0, magAccuracy: Int = -2) {
         pendingDeviceMotion = (accelX, accelY, accelZ, gravityX, gravityY, gravityZ,
-                               rotationX, rotationY, rotationZ, roll, pitch, yaw, motionHeading)
+                               rotationX, rotationY, rotationZ, roll, pitch, yaw, motionHeading,
+                               magX, magY, magZ, magAccuracy)
     }
     private var raw: [RawSample] = []
     /// STREAMED TO DISK, NOT HELD IN MEMORY.
@@ -317,6 +342,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             sample.rotationX = m.rx; sample.rotationY = m.ry; sample.rotationZ = m.rz
             sample.roll = m.roll; sample.pitch = m.pitch; sample.yaw = m.yaw
             sample.motionHeading = m.motionHeading
+            sample.magX = m.mx; sample.magY = m.my; sample.magZ = m.mz; sample.magAccuracy = m.magAccuracy
         }
         raw.append(sample)
         if raw.count >= rawFlushThreshold { flushRawToDisk() }
@@ -329,7 +355,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += ",dev_accel_x,dev_accel_y,dev_accel_z"
         out += ",gravity_x,gravity_y,gravity_z"
         out += ",rot_x,rot_y,rot_z"
-        out += ",att_roll,att_pitch,att_yaw,motion_heading_deg\n"
+        out += ",att_roll,att_pitch,att_yaw,motion_heading_deg"
+        out += ",mag_x_ut,mag_y_ut,mag_z_ut,mag_accuracy\n"
         return out
     }
 
@@ -364,7 +391,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             chunk += String(format: ",%.6f,%.6f,%.6f", s.deviceAccelX, s.deviceAccelY, s.deviceAccelZ)
             chunk += String(format: ",%.6f,%.6f,%.6f", s.gravityX, s.gravityY, s.gravityZ)
             chunk += String(format: ",%.6f,%.6f,%.6f", s.rotationX, s.rotationY, s.rotationZ)
-            chunk += String(format: ",%.6f,%.6f,%.6f,%.2f\n", s.roll, s.pitch, s.yaw, s.motionHeading)
+            chunk += String(format: ",%.6f,%.6f,%.6f,%.2f", s.roll, s.pitch, s.yaw, s.motionHeading)
+            chunk += String(format: ",%.3f,%.3f,%.3f,%d\n", s.magX, s.magY, s.magZ, s.magAccuracy)
         }
         if let data = chunk.data(using: .utf8) {
             rawFileHandle?.write(data)
@@ -525,7 +553,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
         out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter,"
-        out += "net_speed_ms,store_speed_ms,speed_engine,launch_speed_ms,net_familiarity,store_status\n"
+        out += "net_speed_ms,store_speed_ms,speed_engine,launch_speed_ms,net_familiarity,store_status,"
+        out += "heading_drift_deg,drift_rate_dpm,datum_raw_deg,phone_compass_deg,phone_compass_acc_deg,mag_accuracy,mag_field_ut\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -557,7 +586,9 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
             out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + ","
-            out += Self.fmt(r.networkSpeed) + "," + Self.fmt(r.storeSpeed) + "," + Self.csvField(r.speedEngine) + "," + Self.fmt(r.launchSpeed) + "," + Self.fmt(r.networkFamiliarity, 3) + "," + Self.csvField(r.storeStatus) + "\n"
+            out += Self.fmt(r.networkSpeed) + "," + Self.fmt(r.storeSpeed) + "," + Self.csvField(r.speedEngine) + "," + Self.fmt(r.launchSpeed) + "," + Self.fmt(r.networkFamiliarity, 3) + "," + Self.csvField(r.storeStatus) + ","
+            out += Self.fmt(r.headingDrift, 2) + "," + Self.fmt(r.driftRate, 3) + "," + Self.fmt(r.datumUncorrected, 2) + ","
+            out += Self.fmt(r.phoneCompass, 1) + "," + Self.fmt(r.phoneCompassAccuracy, 1) + "," + (r.magAccuracy.map(String.init) ?? "") + "," + Self.fmt(r.magField, 1) + "\n"
         }
         return out
     }

@@ -73,6 +73,21 @@ class LocationManager: NSObject, ObservableObject {
     /// Local magnetic declination (true − magnetic), learned from CLHeading. Used to rotate
     /// Core Motion's magnetic-north-referenced acceleration into the true-north frame.
     private(set) var magneticDeclinationDegrees: Double = 0
+    /// How far Core Motion's heading has drifted clockwise since motion tracking started, in
+    /// degrees, as measured at stops by WorkoutSession (see updateHeadingDrift there). Subtracted
+    /// from every bearing that comes out of the attitude - the axis heading, Core Motion's
+    /// heading, the device yaw and the world-frame accelerations - exactly as the declination is
+    /// added, so they stay consistent with one another.
+    ///
+    /// WHY. The attitude's yaw is the gyro, pulled toward magnetic north by the magnetometer. In a
+    /// car it is not pulled hard enough: on a 25-minute drive the axis heading, Core Motion's own
+    /// magnetic heading and the raw gyro all walked away from GPS together, -13 to -55 degrees at
+    /// about 1.8 degrees a minute, with the phone fixed in the car. That is the gyro's own bias,
+    /// and it shows plainly whenever the car is standing still: the heading keeps turning.
+    /// (iOS's Compass reading, CLHeading, was not in that log; build 54 records it beside these.)
+    var headingDriftCorrection: Double = 0
+    /// Declination less the measured drift: the one rotation from the attitude's frame to true north.
+    private var frameRotationDegrees: Double { magneticDeclinationDegrees - headingDriftCorrection }
     /// False when Core Motion could only supply `.xArbitraryZVertical`, i.e. the world X axis
     /// is not north and integrated direction is meaningless in absolute terms.
     private(set) var motionReferenceFrameIsAbsolute: Bool = true
@@ -103,6 +118,20 @@ class LocationManager: NSObject, ObservableObject {
     /// Heading of the phone from its full attitude, via whichever device axis lies most nearly
     /// flat - never singular. See updateAxisHeading(from:).
     private(set) var currentAxisHeading: Double?
+    /// The same axis bearing in the attitude's own (magnetic) frame, with no declination and no
+    /// drift correction: what the drift is measured on, so neither correction can feed itself.
+    private(set) var currentAxisHeadingUncorrected: Double?
+    /// Mean |vertical rotation rate| (rad/s) since the last takeMeanVerticalRotation(): the
+    /// stillness test for measuring heading drift.
+    private var tickVerticalRateSum: Double = 0
+    private var tickVerticalRateSamples: Int = 0
+    /// The phone compass (CLHeading) as delivered, whatever its accuracy, for the diagnostics log
+    /// only - it steers nothing. With it a drive can show whether the compass itself drifts.
+    private(set) var latestCompassReading: (heading: Double, accuracy: Double, time: Date)?
+    /// Core Motion's magnetometer calibration (-1 uncalibrated, 0 low, 1 medium, 2 high) and field
+    /// strength in microtesla, for the diagnostics log.
+    private(set) var magnetometerAccuracy: Int?
+    private(set) var magneticFieldStrength: Double?
     private var axisHeadingGravity: (x: Double, y: Double, z: Double)?
     private var axisHeadingAxis: Int?          // 0 = +X, 1 = +Y, 2 = +Z
     private var axisHeadingRebase: Double = 0
@@ -771,6 +800,9 @@ class LocationManager: NSObject, ObservableObject {
         walkPhysicalWindow = []
         currentAxisHeading = nil; axisHeadingGravity = nil; axisHeadingAxis = nil
         axisHeadingRebase = 0; lastAxisHeadingTimestamp = nil
+        currentAxisHeadingUncorrected = nil; headingDriftCorrection = 0
+        tickVerticalRateSum = 0; tickVerticalRateSamples = 0
+        magnetometerAccuracy = nil; magneticFieldStrength = nil
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
@@ -864,6 +896,13 @@ class LocationManager: NSObject, ObservableObject {
                     self.verticalGyroBias += (verticalRate - self.verticalGyroBias) * biasAlpha
                 }
                 self.cumulativeDeviceYawRotation += (verticalRate - self.verticalGyroBias) * dtForRotation * 180.0 / .pi
+                self.tickVerticalRateSum += abs(verticalRate)
+                self.tickVerticalRateSamples += 1
+            }
+            if self.motionReferenceFrameIsAbsolute {
+                let f = motion.magneticField.field
+                self.magnetometerAccuracy = Int(motion.magneticField.accuracy.rawValue)
+                self.magneticFieldStrength = sqrt(f.x * f.x + f.y * f.y + f.z * f.z)
             }
             self.updateAxisHeading(from: motion)
             if let turnAccel = self.turnAcceleration(from: motion) {
@@ -915,7 +954,7 @@ class LocationManager: NSObject, ObservableObject {
             // magnetic reference to true north the same way the rest of the frame is converted.
             if motion.heading >= 0 {
                 var h = motion.heading
-                if self.motionReferenceFrameIsAbsolute { h += self.magneticDeclinationDegrees }
+                if self.motionReferenceFrameIsAbsolute { h += self.frameRotationDegrees }
                 if h < 0 { h += 360 } else if h >= 360 { h -= 360 }
                 self.currentMotionHeading = h
             }
@@ -970,6 +1009,9 @@ class LocationManager: NSObject, ObservableObject {
         walkPhysicalWindow = []
         currentAxisHeading = nil; axisHeadingGravity = nil; axisHeadingAxis = nil
         axisHeadingRebase = 0; lastAxisHeadingTimestamp = nil
+        currentAxisHeadingUncorrected = nil; headingDriftCorrection = 0
+        tickVerticalRateSum = 0; tickVerticalRateSamples = 0
+        magnetometerAccuracy = nil; magneticFieldStrength = nil
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         DispatchQueue.main.async { [weak self] in
@@ -987,6 +1029,13 @@ class LocationManager: NSObject, ObservableObject {
             self?.currentMotionDirectionDegrees = nil
         }
         print("📈 Stopped device-motion acceleration recording")
+    }
+
+    /// Mean |vertical rotation rate| in rad/s since the previous call, or nil with too few samples.
+    func takeMeanVerticalRotation() -> Double? {
+        defer { tickVerticalRateSum = 0; tickVerticalRateSamples = 0 }
+        guard tickVerticalRateSamples >= 2 else { return nil }
+        return tickVerticalRateSum / Double(tickVerticalRateSamples)
     }
 
     /// Mean physical horizontal acceleration (true north, east; m/s²) since the previous call,
@@ -1058,7 +1107,10 @@ class LocationManager: NSObject, ObservableObject {
             current = align[1] < 0.7 ? 1 : best
         }
         axisHeadingAxis = current
-        var h = bearing(current) + axisHeadingRebase + magneticDeclinationDegrees
+        var raw = (bearing(current) + axisHeadingRebase).truncatingRemainder(dividingBy: 360)
+        if raw < 0 { raw += 360 }
+        currentAxisHeadingUncorrected = raw
+        var h = bearing(current) + axisHeadingRebase + frameRotationDegrees
         h = h.truncatingRemainder(dividingBy: 360)
         if h < 0 { h += 360 }
         currentAxisHeading = h
@@ -1096,7 +1148,7 @@ class LocationManager: NSObject, ObservableObject {
         // Physical = -userAcceleration; east = -west.
         let magNorth = -north * standardGravity
         let magEast = west * standardGravity
-        let d = magneticDeclinationDegrees * .pi / 180
+        let d = frameRotationDegrees * .pi / 180
         return (magNorth * cos(d) - magEast * sin(d), magNorth * sin(d) + magEast * cos(d))
     }
 
@@ -1107,8 +1159,8 @@ class LocationManager: NSObject, ObservableObject {
         let w = referenceFrameAcceleration(from: motion)
         // A declination correction only means anything if the frame is anchored to magnetic
         // north in the first place.
-        guard motionReferenceFrameIsAbsolute, magneticDeclinationDegrees != 0 else { return w }
-        let d = magneticDeclinationDegrees * .pi / 180
+        guard motionReferenceFrameIsAbsolute, frameRotationDegrees != 0 else { return w }
+        let d = frameRotationDegrees * .pi / 180
         let c = cos(d), s = sin(d)
         // Rotate the horizontal vector by +declination (true bearing = magnetic + declination).
         return (north: w.north * c - w.east * s,
@@ -1223,7 +1275,7 @@ class LocationManager: NSObject, ObservableObject {
         // keep the last good value rather than injecting noise.
         guard north * north + west * west > 0.05 else { return nil }
         var heading = atan2(-west, north) * 180 / .pi   // east = −west axis
-        if motionReferenceFrameIsAbsolute { heading += magneticDeclinationDegrees }
+        if motionReferenceFrameIsAbsolute { heading += frameRotationDegrees }
         if heading < 0 { heading += 360 } else if heading >= 360 { heading -= 360 }
         return heading
     }
@@ -1356,6 +1408,7 @@ extension LocationManager: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
         guard heading >= 0 else { return }
+        latestCompassReading = (heading, newHeading.headingAccuracy, Date())
 
         // Core Motion's attitude reference frame is MAGNETIC north, but GPS course, the map,
         // and every saved coordinate are TRUE north. CLHeading reports both, so their
