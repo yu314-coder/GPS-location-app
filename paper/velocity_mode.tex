@@ -32,7 +32,7 @@ from its gyroscope and compass, and it never uses GPS after the first point. Thi
 the newest version of that system on a motorcycle, in a car, on foot and on a plane, by running it
 over every earlier recording and comparing the result with GPS recorded at the same time, used only
 as the answer key. Direction works in all four: it was within
-$30^\circ$ of GPS $73\%$ of the time on a motorcycle, $83\%$ in a car, $93\%$ on foot and $99\%$ on
+$30^\circ$ of GPS $73\%$ of the time on a motorcycle, $84\%$ in a car, $93\%$ on foot and $99\%$ on
 a flight. Over $74$ journeys ($20$~hours), distance came out $10\%$ short on a motorcycle and within
 $1\%$ in a car. Walking came
 out $4\%$ long. In the air the app measures the takeoff and holds the speed it reached, which
@@ -80,11 +80,12 @@ sit. The phone learns $\beta$ from the vehicle's own turns. In a turn the vehicl
 the inside of the curve, so the sideways push the phone feels, compared with which way the
 gyroscope says it is turning, shows where ``forward'' is. Written as complex numbers,
 \begin{equation}
-\hat\beta = \arg\left(\frac{\sum_{R} z_t}{\sum_{R} |v_t\omega_t|}+\frac{\sum_{L} z_t}{\sum_{L} |v_t\omega_t|}\right),
-\qquad z_t=\frac{a_t}{|a_t|}\,\overline{i\,v_t\,\omega_t}
+\hat\beta = \arg\left(\frac{\sum_{R} z_t}{\sum_{R} |s_t|}+\frac{\sum_{L} z_t}{\sum_{L} |s_t|}\right),
+\qquad z_t=\frac{a_t}{|a_t|}\,\overline{i\,s_t},\quad s_t=\operatorname{sgn}(\omega_t)\sqrt{v_t|\omega_t|}
 \end{equation}
 where $a_t$ is the sideways and forward acceleration measured relative to the compass, $v_t$ the
-speed, $\omega_t$ the turn rate, and $R$ and $L$ the seconds turning right and left. Braking into a
+speed, $\omega_t$ the turn rate, and $R$ and $L$ the seconds turning right and left. The square
+root lets the many ordinary bends count beside the few sharp corners. Braking into a
 corner and pulling away out of it lean the answer one way in right turns and the other way in left
 ones, so the two kinds are averaged apart. Only seconds above $14$~km/h count, and only when the
 turn explains at least a tenth of the push: otherwise the push is braking or throttle, and a
@@ -242,7 +243,7 @@ Direction holds up in every case (Figure~\ref{fig:direction}):
 \begin{itemize}\itemsep2pt
 \item \textbf{Motorcycle} ($40$ recordings): within $30^\circ$ $73\%$ of the time; middle error
 $16^\circ$.
-\item \textbf{Car} ($25$ recordings): within $30^\circ$ $83\%$ of the time; middle error $16^\circ$.
+\item \textbf{Car} ($25$ recordings): within $30^\circ$ $84\%$ of the time; middle error $14^\circ$.
 \item \textbf{Walking} (seven walks with the phone in a pocket): within $30^\circ$ $93\%$ of the
 time; middle error $10^\circ$.
 \item \textbf{Plane} (one flight): within $30^\circ$ $99\%$ of the time; middle error $6^\circ$.
@@ -269,7 +270,7 @@ per route, and the median.}
  & Distance & Direction within $30^\circ$ & Whole route turned\\
 \midrule
 Motorcycle & $10\%$ short; $79\%$ of journeys in $20\%$ & $73\%$ of the time & median $9^\circ$\\
-Car        & $0.3\%$ short; $65\%$ of journeys in $20\%$ & $83\%$ of the time & median $16^\circ$\\
+Car        & $0.3\%$ short; $65\%$ of journeys in $20\%$ & $84\%$ of the time & median $14^\circ$\\
 Walking    & $4\%$ long & $93\%$ of the time & ---\\
 Plane      & $45$ of $74$~km & $99\%$ of the time & ---\\
 \bottomrule
@@ -280,11 +281,11 @@ Figure~\ref{fig:routes} and Table~\ref{tab:summary} put speed and direction toge
 
 \begin{itemize}\itemsep2pt
 \item \textbf{Motorcycle} ($41$ routes, $351$~km, many with a walk at one end). The median route is
-turned $9^\circ$ and $83\%$ are within $30^\circ$. Routes come out small --- a median
+turned $9^\circ$ and $85\%$ are within $30^\circ$. Routes come out small --- a median
 $0.84$ of the real size --- partly because distance is short, and partly because small direction
 errors make the path fold. The drawn position drifts from GPS by a median of $17\%$ of the distance travelled.
-\item \textbf{Car} ($27$ routes, $146$~km). The median route is turned $16^\circ$ and $85\%$ are
-within $30^\circ$; the size is right (median $0.98$). The drift is $19\%$ of the distance travelled.
+\item \textbf{Car} ($27$ routes, $146$~km). The median route is turned $14^\circ$ and $89\%$ are
+within $30^\circ$; the size is right (median $0.97$). The drift is $18\%$ of the distance travelled.
 \item \textbf{Walking}. No route was more than half walking.
 \item \textbf{Plane}. Not compared as a route: its direction is in Section~3.5 and its distance in
 Figure~\ref{fig:distance}d.
