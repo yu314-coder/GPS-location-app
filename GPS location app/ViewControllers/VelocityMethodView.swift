@@ -130,18 +130,19 @@ struct VelocityMethodView: View {
                 SectionHeader(title: "3 · Direction",
                               subtitle: "gyroscope for turns, magnetometer for the datum") { EmptyView() }
                 Text("""
-                Turn angle comes from the gyroscope, accurate over seconds but drifting over \
-                minutes. Absolute direction comes from the magnetometer, which does not drift but \
-                is disturbed by steel. Each covers the other's weakness.
+                Turn angle comes from the gyroscope, accurate over seconds. Absolute direction comes \
+                from the phone's own heading, held to magnetic north by the magnetometer. In a car \
+                that hold is weak and the heading drifts slowly with the gyroscope's bias, so the \
+                drift is measured while the vehicle is stopped and the phone still, and taken off.
                 """)
                 .font(.callout)
                 Equation("eq_heading")
                 Text("""
-                β is the carry offset: the angle between where the phone points and where the body \
-                travels. It cannot be derived without an outside reference — estimating it from \
-                acceleration returns noise (concentration R = 0.15 against known answers). It is \
-                learned from GPS course over the first 180 seconds and then frozen, which is what \
-                physically happens on a flight: signal on the way to the aircraft, none after.
+                β is the carry offset: the angle between where the phone points and where the \
+                vehicle travels. It is learned with no GPS and no speed estimate, from the \
+                vehicle's own turns: the sideways push rises and falls with the turn rate, and \
+                where that push points, relative to the phone, says which way is forward. Walking \
+                uses the back-and-forth of the steps instead.
                 """)
                 .font(.footnote).foregroundStyle(.secondary)
             }
