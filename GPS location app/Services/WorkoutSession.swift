@@ -4501,7 +4501,9 @@ class WorkoutSession: ObservableObject {
             networkSpeed: bothSpeeds.network,
             storeSpeed: bothSpeeds.store,
             speedEngine: learnedSpeed.networkIsInUse(airborne: isAirborneForEstimation) ? "network" : "store",
-            launchSpeed: launchIntegrator.speed))
+            launchSpeed: launchIntegrator.speed,
+            networkFamiliarity: bothSpeeds.networkFamiliarity,
+            storeStatus: bothSpeeds.storeStatus))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist

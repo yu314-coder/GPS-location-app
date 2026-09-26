@@ -205,6 +205,15 @@ final class LearnedSpeedEstimator {
     /// Set by the last estimate() call: true when the answer came from within-session evidence
     /// rather than the store built on previous trips. The distinction has to reach the log,
     /// because only the second kind predicts what happens when GPS has been gone for hours.
+    /// Why the store's last lookup gave what it gave - for the log only, never read by the tick.
+    enum StoreStatus: String {
+        case answered = "answered"
+        case tooFewExamples = "too few examples"
+        case unlearnedRegime = "unlearned regime"
+        case noCloseMatch = "no close match"
+        case locallyUnreliable = "locally unreliable"
+    }
+    private(set) var lastStoreStatus: StoreStatus = .tooFewExamples
     /// The last estimate came from the bundled SpeedNetwork, not the store.
     private(set) var lastEstimateUsedNetwork = false
     /// Below this many ground observations the store is less accurate than the bundled network.
@@ -617,6 +626,7 @@ final class LearnedSpeedEstimator {
     /// The learned store's own answer for one fingerprint. Split out of estimate() so the log can
     /// record it every tick, even while the bundled network is the one being used.
     private func storeEstimate(_ f: [Double], airborne: Bool) -> Double? {
+        lastStoreStatus = .tooFewExamples
         guard featureMean.count == f.count else { return nil }
 
         // REFUSE TO ANSWER ABOUT A REGIME THIS WORKOUT HAS NEVER BEEN TAUGHT.
@@ -645,6 +655,7 @@ final class LearnedSpeedEstimator {
         // is no ground truth to have built fingerprints from in the first place.
         if !airborne, regimeIsUnlearned {
             lastEstimateDeclinedUnlearnedRegime = true
+            lastStoreStatus = .unlearnedRegime
             return nil
         }
 
@@ -681,6 +692,7 @@ final class LearnedSpeedEstimator {
             }
         }
         guard !best.isEmpty else { return nil }
+        lastStoreStatus = .noCloseMatch
 
         // REFUSE TO ANSWER FROM A DISTANT MATCH.
         //
@@ -724,6 +736,7 @@ final class LearnedSpeedEstimator {
         if let mae = localError(around: f, pool: pool), mae > MAX_LOCAL_ERROR {
             lastLocalError = mae
             lastEstimateDeclinedUnreliableLocally = true
+            lastStoreStatus = .locallyUnreliable
             return nil
         }
 
@@ -745,6 +758,7 @@ final class LearnedSpeedEstimator {
         // regime it has never seen, so the air answers raw until it has enough of its own.
         // The air curve is empty until the air partition has its own evidence, and calibrated()
         // returns the raw value unchanged in that case - so a first flight behaves as before.
+        lastStoreStatus = .answered
         return max(0, calibrated(num / den, airborne: airborne))
     }
 
@@ -754,17 +768,21 @@ final class LearnedSpeedEstimator {
     /// NETWORK_UNTIL_OBSERVATIONS, the store after - but a log that recorded only the one in use
     /// could never show how close the other would have come on the same seconds. This asks both,
     /// and leaves every flag the tick reads (declines, local error, neighbour weight, which engine
-    /// answered) exactly as the real estimate set them. The network does not answer in the air.
-    func bothAnswers(airborne: Bool) -> (network: Double?, store: Double?) {
+    /// answered) exactly as the real estimate set them.
+    func bothAnswers(airborne: Bool)
+        -> (network: Double?, networkFamiliarity: Double?, store: Double?, storeStatus: String) {
         let saved = (lastEstimateUsedNetwork, lastEstimateDeclinedUnlearnedRegime,
                      lastEstimateDeclinedUnreliableLocally, lastLocalError, lastNeighbourWeight)
         defer {
             (lastEstimateUsedNetwork, lastEstimateDeclinedUnlearnedRegime,
              lastEstimateDeclinedUnreliableLocally, lastLocalError, lastNeighbourWeight) = saved
         }
-        guard let f = currentFeatures() else { return (nil, nil) }
-        let network = airborne ? nil : SpeedNetwork.bundled?.speed(features: f)
-        return (network, storeEstimate(f, airborne: airborne))
+        guard let f = currentFeatures() else { return (nil, nil, nil, "no window yet") }
+        // The network is logged in the air as well: it never drives there, but what it would have
+        // said is exactly what a log is for.
+        let net = SpeedNetwork.bundled?.diagnose(features: f)
+        let store = storeEstimate(f, airborne: airborne)
+        return (net?.speed, net?.familiarity, store, lastStoreStatus.rawValue)
     }
 
     /// Whether estimate() would use the bundled network right now.

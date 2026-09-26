@@ -59,7 +59,11 @@ struct SpeedNetwork {
     }
 
     /// Speed in m/s for one fingerprint, or nil when the fingerprint is unlike the training data.
-    func speed(features f: [Double]) -> Double? {
+    func speed(features f: [Double]) -> Double? { diagnose(features: f)?.speed }
+
+    /// The speed (nil when refused) and how familiar the fingerprint is: distance to the nearest
+    /// training cluster over the refusal gate, so 1.0 or less answers and above 1.0 is refused.
+    func diagnose(features f: [Double]) -> (speed: Double?, familiarity: Double)? {
         guard f.count == 11 else { return nil }
         let z = (0..<11).map { (f[$0] - mean[$0]) / scale[$0] }
         var nearest = Double.greatestFiniteMagnitude
@@ -68,12 +72,13 @@ struct SpeedNetwork {
             for i in 0..<11 { let e = z[i] - c[i]; d += e * e }
             nearest = min(nearest, d)
         }
-        guard nearest <= gate else { return nil }
+        let familiarity = nearest / gate
+        guard nearest <= gate else { return (nil, familiarity) }
         let h1 = zip(w1, b1).map { row, b in max(0, zip(row, z).reduce(b) { $0 + $1.0 * $1.1 }) }
         let h2 = zip(w2, b2).map { row, b in max(0, zip(row, h1).reduce(b) { $0 + $1.0 * $1.1 }) }
         let o = zip(w3, h2).reduce(b3) { $0 + $1.0 * $1.1 }
         let raw = o > 20 ? o : log1p(exp(o))                     // softplus
-        return max(0, calibrated(raw))
+        return (max(0, calibrated(raw)), familiarity)
     }
 
     /// Monotone piecewise-linear map from the network's quantiles to the true speed quantiles,
