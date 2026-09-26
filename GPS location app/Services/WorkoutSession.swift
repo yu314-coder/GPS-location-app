@@ -3102,6 +3102,30 @@ class WorkoutSession: ObservableObject {
         }
     }
 
+    /// Force Velocity's replacement for confirmVehicleFromGPS: the same test, three consecutive
+    /// readings over 5.5 m/s with no walking in the last 20 s, but the reading is the speed model's
+    /// answer from the phone's own vibration rather than a satellite speed.
+    ///
+    /// Apple's classifier alone is too slow for this. It took 163 s to say "automotive" on one
+    /// pocket ride and never said it on another, and GPS had been covering the gap. Replayed on
+    /// every log without GPS, the classifier alone cost that first ride 40% of its distance; with
+    /// this evidence it lost 6%. Over 6094 walking ticks it never fired just before a walk,
+    /// because a counted step within 20 s vetoes it exactly as it vetoed the GPS version.
+    private var consecutiveVehicleModelTicks = 0
+    private func confirmVehicleFromModel() {
+        let stepping = lastStepIncrementTime.map { Date().timeIntervalSince($0) < 20.0 } ?? false
+        guard !stepping, !deviceIsBeingHandled,
+              let reading = learnedSpeed.estimate(airborne: isAirborneForEstimation),
+              reading > 5.5 else {
+            consecutiveVehicleModelTicks = 0
+            return
+        }
+        consecutiveVehicleModelTicks += 1
+        if consecutiveVehicleModelTicks >= 3 {
+            lastVehicleEvidenceTime = Date()
+        }
+    }
+
     /// Walking, confirmed by counted steps, revokes vehicle status. Nothing else could clear it,
     /// so a trip that briefly looked vehicular stayed that way even once plainly on foot.
     /// A FRESH SATELLITE SPEED NO ONE CAN WALK AT.
@@ -3802,7 +3826,9 @@ class WorkoutSession: ObservableObject {
                 // Prefer GPS COURSE (true direction of travel) over the compass: inside a
                 // vehicle — especially an aircraft — the magnetometer reads the metal shell
                 // and local EMI, not the heading, so course-over-ground is far more reliable.
-                anchor.flatMap { validCourse($0.course) }
+                // Except in Force Velocity, where the anchor fix gives the first point's
+                // position and nothing else: its course would be GPS direction.
+                (forceMotionFallback ? nil : anchor.flatMap { validCourse($0.course) })
                     ?? absoluteHeadingDatum
                     ?? locationManager.currentMotionDirectionDegrees
                     ?? 0.0
@@ -3814,6 +3840,7 @@ class WorkoutSession: ObservableObject {
         // selects "Walking" while sitting in an aircraft, where the pedometer counts zero
         // steps — routing on the label alone yields zero distance and NO TRACK.
         updateRampDetection(now: Date())
+        if forceMotionFallback { confirmVehicleFromModel() }
         var distance: Double
         var sourceTag = "DR"
         // VEHICLE-LAUNCH DETECTOR. A car or aircraft pulling away produces a large horizontal
@@ -4501,7 +4528,9 @@ class WorkoutSession: ObservableObject {
         // opening stretch of the route is then drawn in the wrong direction until the offset is
         // learned. That error is a CONSTANT rotation, so it can be undone retroactively once
         // the true heading is known (see correctUntrustedHeadingPrefix).
-        let measuredCourse = anchor.flatMap { validCourse($0.course) }
+        // Not in Force Velocity: its anchor is the one GPS fix allowed, for position only, and
+        // seeding the heading from its course would make the opening stretch GPS direction.
+        let measuredCourse = forceMotionFallback ? nil : anchor.flatMap { validCourse($0.course) }
         let course = measuredCourse
             ?? absoluteHeadingDatum
             ?? locationManager.currentMotionDirectionDegrees
@@ -4676,8 +4705,13 @@ class WorkoutSession: ObservableObject {
                                 // never reaches it. So it lifts the block.
                                 let automotiveRecently = self.lastAutomotiveClassificationTime
                                     .map { now.timeIntervalSince($0) < 120 } ?? false
+                                // Force Velocity reads no GPS, so a satellite speed cannot veto
+                                // the steps there. A model-speed veto was tried instead and
+                                // rejected: it would have blocked 5% of real walking seconds while
+                                // still letting a third of phantom-step moments through on rides.
+                                let gpsVetoesSteps = !self.forceMotionFallback && self.gpsSaysFasterThanWalking
                                 if self.stepCadence >= 1.0, !self.activityIsAutomotive,
-                                   !self.gpsSaysFasterThanWalking,
+                                   !gpsVetoesSteps,
                                    !automotiveRecently || self.handlingShowsDismount {
                                     self.lastStepIncrementTime = now
                                     // Counted steps at a walking cadence are direct evidence of
@@ -5247,7 +5281,15 @@ class WorkoutSession: ObservableObject {
             // engaged, which is exactly what "the last speed before signal loss" means. Enable
             // it while moving and it holds that speed; enable it while stopped and it holds
             // zero, which is honest — and the Known-speed field is there to say otherwise.
-            confirmVehicleFromGPS(location)
+            // NO GPS FOR THE WALKING-OR-RIDING DECISION EITHER.
+            //
+            // confirmVehicleFromGPS used to run here: three fixes over 5.5 m/s latched "vehicle"
+            // and renewed lastVehicleEvidenceTime, which is what vehicleContextIsCurrent reads.
+            // That decides between the walking and vehicle branches, so GPS was choosing how the
+            // route was drawn. In this mode the same evidence now comes from the speed model's own
+            // reading (confirmVehicleFromModel, once per tick). The vibration model below may still
+            // calibrate from GPS: its estimate branch is disabled and it only names the waiting
+            // state in the log, so it cannot change a single metre.
             if location.speed >= 0, !currentlyStepping,
                (vehicleLaunchDetected || activityIsAutomotive || vehicleConfirmedByGPSSpeed) {
                 vibrationSpeed.calibrate(withGPSSpeed: location.speed, horizontalAccuracy: location.horizontalAccuracy)

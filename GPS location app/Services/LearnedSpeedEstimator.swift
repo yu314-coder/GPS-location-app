@@ -486,11 +486,14 @@ final class LearnedSpeedEstimator {
         let observation = Observation(f: f, speed: gpsSpeed, airborne: airborne,
                                       t: isQuarantined ? Date() : nil,
                                       session: currentSession)
-        if !airborne { noteNaturalSpeed(gpsSpeed) }
         if isQuarantined {
+            // The speed tally waits for the quarantine too. Every answer weights its neighbours by
+            // how common their speed is in naturalSpeedCounts, so counting this fix now would pull
+            // Velocity Mode's answers toward the speeds GPS is measuring on this very trip.
             if quarantined.count < capacity { quarantined.append(observation) }
             return
         }
+        if !airborne { noteNaturalSpeed(gpsSpeed) }
         insert(observation)
         // Re-measure the model's own compression as evidence accumulates. Rare enough that the
         // leave-one-out pass costs nothing noticeable, often enough that a drive which visits
@@ -564,7 +567,10 @@ final class LearnedSpeedEstimator {
     func commitQuarantinedObservations() {
         guard !quarantined.isEmpty else { return }
         let count = quarantined.count
-        for var o in quarantined { o.t = nil; insert(o) }
+        for var o in quarantined {
+            if !o.airborne { noteNaturalSpeed(o.speed) }
+            o.t = nil; insert(o)
+        }
         quarantined.removeAll()
         observationsAtLastCalibration = 0
         recalibrate()
