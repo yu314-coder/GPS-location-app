@@ -4079,7 +4079,7 @@ class WorkoutSession: ObservableObject {
             // already relies on. A car does not stop because someone reached for their phone.
             let modelAnswered = !deviceIsBeingHandled
                 && learnedSpeed.estimate(airborne: isAirborneForEstimation) != nil
-            let warmup = modelAnswered && learnedSpeed.lastEstimateUsedWarmup
+            let fromNetwork = modelAnswered && learnedSpeed.lastEstimateUsedNetwork
             if modelAnswered {
                 // What was used, not what was read: a reading raised by a hand must not become
                 // the speed held once the phone counts as handled.
@@ -4087,7 +4087,7 @@ class WorkoutSession: ObservableObject {
                 lastLearnedAnswerTime = Date()
             }
             sourceTag = stoppedOnGround ? "LEARN(stopped)"
-                : (modelAnswered ? (warmup ? "LEARN(warmup)" : "LEARN")
+                : (modelAnswered ? (fromNetwork ? "LEARN(net)" : "LEARN")
                    : (deviceIsBeingHandled ? "LEARN(held in hand)" : "LEARN(held)"))
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)

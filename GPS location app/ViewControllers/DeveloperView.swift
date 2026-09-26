@@ -170,7 +170,7 @@ struct DeveloperView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("The model will have to relearn from GPS across future trips.")
+            Text("Velocity Mode keeps working from the built-in model while the phone relearns from GPS on future trips.")
         }
     }
 

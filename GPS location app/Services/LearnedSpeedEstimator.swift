@@ -205,7 +205,11 @@ final class LearnedSpeedEstimator {
     /// Set by the last estimate() call: true when the answer came from within-session evidence
     /// rather than the store built on previous trips. The distinction has to reach the log,
     /// because only the second kind predicts what happens when GPS has been gone for hours.
-    private(set) var lastEstimateUsedWarmup = false
+    /// The last estimate came from the bundled SpeedNetwork, not the store.
+    private(set) var lastEstimateUsedNetwork = false
+    /// Below this many ground observations the store is less accurate than the bundled network.
+    private let NETWORK_UNTIL_OBSERVATIONS = 3000
+    private var groundObservationCount: Int { observations.reduce(0) { $0 + ($1.airborne ? 0 : 1) } }
 
     /// Fingerprint distance beyond which this workout is a regime the model has never learned,
     /// and its answers about it should not be trusted however close the individual matches look.
@@ -378,28 +382,6 @@ final class LearnedSpeedEstimator {
             return false
         }
         return Date().timeIntervalSince(since) >= REGIME_CONFIRM_SECONDS
-    }
-
-    /// How stale a quarantined observation must be before the estimate may see it.
-    ///
-    /// Quarantine exists to stop the model answering from the fix it was just handed - the
-    /// window is 4 s, so an observation from the same window IS the GPS speed. Aging past that
-    /// removes the leak: at 120 s the two windows share no samples, and an answer built from
-    /// evidence two minutes old is a prediction, not an echo.
-    ///
-    /// This only ever applies when the committed store cannot answer at all. A warm model
-    /// ignores the quarantine entirely and the ground test stays honest.
-    private let WARMUP_AGE: TimeInterval = 120
-
-    private func warmupPool(airborne: Bool) -> [Observation] {
-        let cutoff = Date().addingTimeInterval(-WARMUP_AGE)
-        return quarantined.filter { $0.airborne == airborne && ($0.t ?? .distantFuture) <= cutoff }
-    }
-
-    private func poolIsUsable(_ pool: [Observation]) -> Bool {
-        guard pool.count >= MIN_OBSERVATIONS else { return false }
-        let speeds = pool.map(\.speed)
-        return (speeds.max()! - speeds.min()!) >= MIN_SPEED_SPREAD
     }
 
     /// Observations recorded while Velocity Mode was forced. Held apart from the searchable
@@ -651,12 +633,30 @@ final class LearnedSpeedEstimator {
     /// Speed in m/s from the closest signatures seen before, or nil when there is not enough
     /// evidence. Distance-weighted so a near-exact match dominates a merely similar one.
     func estimate(airborne: Bool = false) -> Double? {
-        lastEstimateUsedWarmup = false
+        lastEstimateUsedNetwork = false
         lastEstimateDeclinedUnlearnedRegime = false
         lastEstimateDeclinedUnreliableLocally = false
         lastLocalError = nil
         lastNeighbourWeight = nil
-        guard let f = currentFeatures(), featureMean.count == f.count else { return nil }
+        guard let f = currentFeatures() else { return nil }
+
+        // TOO LITTLE OF THE USER'S OWN DATA: THE BUNDLED NETWORK ANSWERS.
+        //
+        // Replayed on every recording, a store of 60 examples missed by 10.6 km/h a half-minute,
+        // 1,000 by 8.8 and 2,000 by 8.5, while the network - trained offline, scored only on
+        // recordings it never saw - missed by 8.3; the store draws level at about 3,000 (8.4).
+        // So until the ground store holds NETWORK_UNTIL_OBSERVATIONS of the user's own
+        // examples, the network answers; after that the store, which keeps adapting to this
+        // user's own vehicle and phone placement, takes over.
+        // It needs nothing from the current trip, which is what lets Velocity Mode stay free of
+        // GPS on a first install or after the store is cleared: the old fallback here answered
+        // from this trip's own GPS-labelled samples. Ground only; the air partition is its own.
+        if !airborne, groundObservationCount < NETWORK_UNTIL_OBSERVATIONS,
+           let network = SpeedNetwork.bundled {
+            lastEstimateUsedNetwork = true
+            return network.speed(features: f)
+        }
+        guard featureMean.count == f.count else { return nil }
 
         // REFUSE TO ANSWER ABOUT A REGIME THIS WORKOUT HAS NEVER BEEN TAUGHT.
         //
@@ -695,17 +695,11 @@ final class LearnedSpeedEstimator {
         // an empty model made the whole workout unrecordable, which is a worse failure than
         // the leak it was guarding against.
         //
-        // So the store answers whenever it can, exactly as before. Only when it cannot does
-        // the aged quarantine stand in, and the log says which happened.
-        let pool: [Observation]
-        if isUsable(airborne: airborne) {
-            pool = observations.filter { $0.airborne == airborne }
-        } else {
-            let warm = warmupPool(airborne: airborne)
-            guard poolIsUsable(warm) else { return nil }
-            pool = warm
-            lastEstimateUsedWarmup = true
-        }
+        // That case is now the network's (above). The aged quarantine that used to stand in here
+        // answered from this trip's own GPS-labelled samples, so it is gone: quarantined samples
+        // are never searched before the workout ends.
+        guard isUsable(airborne: airborne) else { return nil }
+        let pool = observations.filter { $0.airborne == airborne }
 
         var best = [(d: Double, s: Double)]()
         best.reserveCapacity(K + 1)
