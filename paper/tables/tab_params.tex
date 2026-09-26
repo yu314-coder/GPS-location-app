@@ -1,0 +1,26 @@
+\begin{tabular}{p{0.40\textwidth}p{0.52\textwidth}}
+\toprule
+Setting & Value\\
+\midrule
+\multicolumn{2}{l}{\emph{Speed}}\\
+Vibration window for one fingerprint & $5$~s at $50$~Hz, $11$ numbers\\
+Store of the phone's own examples & up to $4{,}000$\\
+Neighbours averaged & $12$\\
+Built-in network & $11 \to 32 \to 32 \to 1$; used until the store holds $3{,}000$\\
+Network refuses a fingerprint & farther from all training clusters than $99.5\%$ of training data\\
+Takeoff integration in the air & from the last still moment, up to $120$~s, then held\\
+\midrule
+\multicolumn{2}{l}{\emph{Direction}}\\
+Riding begins & $9$~km/h ($2.5$~m/s)\\
+Learning the phone's angle & above $14$~km/h ($4$~m/s); turn explains $\geq 10\%$ of the push\\
+First estimate & after $30$~s and a summed speed $\times$ turn rate of $20$~m/s$^2$\\
+Redrawing a ride & when the angle moves $\geq 3^\circ$, at most every $10$~s\\
+A new ride & after $20$~s without riding\\
+A phone taken out of the pocket & angle forgotten after $10$~s in the hand\\
+Drift measured at stops & stopped, turning $< 0.005$~rad/s, hand-rotation $< 0.2$~rad/s\\
+Drift estimate & after $30$ still seconds, $10$-minute memory, at most $3^\circ$/min\\
+Clean magnetic field & $25$--$65~\mu$T, strength and dip steady to $3$ over $60$~s\\
+Magnetometer correction & $60$ clean seconds in the last $20$~min, spread $< 15^\circ$\\
+Walking direction window & $4$~s\\
+\bottomrule
+\end{tabular}

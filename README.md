@@ -75,8 +75,8 @@ sits at is learned per ride: if the phone shifts in a pocket mid-ride without be
 rest of the ride is drawn off by roughly however far it moved.
 
 📄 **[Read the paper](https://github.com/yu314-coder/GPS-location-app/releases/tag/v1.0-paper)**
-— how it works, how accurate the current version is against GPS, where it goes wrong, and what
-did not work. Seven pages.
+— how it works, how accurate the current version is against GPS, what each part of the method adds,
+where it goes wrong, and what did not work, with every journey listed. Seventeen pages.
 [LaTeX source](paper/). The paper also ships inside the app: **Settings → Velocity Mode → Read the
 paper**, alongside an interactive version with the equations and error charts.
 

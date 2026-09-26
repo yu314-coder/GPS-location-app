@@ -1,0 +1,25 @@
+\begin{tabular}{p{0.28\textwidth}p{0.36\textwidth}p{0.24\textwidth}}
+\toprule
+Approach & Idea & Measured against GPS\\
+\midrule
+\multicolumn{3}{l}{\emph{Direction}}\\
+Push when speeding up or braking & In a straight line the push points forward & $44^\circ$ off\\
+Axis the motorcycle leans about & The lean axis follows the direction of travel & $25^\circ$ off\\
+Direction of the rider's thigh & The thigh points forward while seated & $73^\circ$ off\\
+Angle from turns without the speed & Weight each second by the change in turn rate & $15$--$40^\circ$ off on one drive\\
+Angle from full physics & Add the speed model's change in speed to the turn & cars $80\% \to 48\%$ within $30^\circ$\\
+Square-root turn weights & Let the many small bends count more & a tie over $66$ rides\\
+Median instead of mean for drift & Ignore short bursts at stops & walking $93\% \to 88\%$\\
+Looser stillness for drift & Measure drift at more stops & motorcycles $73\% \to 68\%$\\
+Car magnetism fitted as a circle & Remove the car's own field from the magnetometer & no stable fit\\
+\midrule
+\multicolumn{3}{l}{\emph{Walking, riding and the air}}\\
+Thigh swing for walking direction & Swing is sharper forwards than backwards & wrong more often than right\\
+Other riding-or-walking tests & A steady push; speed overruling steps & blocked $5\%$ of real walking\\
+Speed from turns in the air & Sideways push over turn rate & phone's turning hid the aircraft's\\
+Integrating the whole climb & Carry the takeoff integration on & worked for one setting only\\
+\midrule
+\multicolumn{3}{l}{\emph{Speed}}\\
+Last ten seconds into the network & More context for each answer & better per second, not per journey\\
+\bottomrule
+\end{tabular}
