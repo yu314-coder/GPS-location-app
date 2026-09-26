@@ -35,7 +35,8 @@ as the answer key. Direction works in all four: it was within $30^\circ$ of GPS 
 on a motorcycle, $69\%$ in a car, $93\%$ on foot and $99\%$ on a flight. Over $72$ journeys
 ($19$~hours), distance came out $10\%$ short on a motorcycle and $1\%$ short in a car. Walking came
 out $4\%$ long, and in the air speed cannot be measured at all. On a motorcycle, fast riding reads
-slow and slow riding reads fast.
+slow and slow riding reads fast. A phone with few examples of its own uses a small built-in network
+instead; on recordings it had never seen, it was as accurate as a phone with a full store.
 \end{abstract}
 
 \section{What the system does}
@@ -58,6 +59,12 @@ where $v_j$ is a stored speed and $d_j$ how far its fingerprint is from the curr
 the closest stored fingerprint is far away, the phone does not guess. Averaging tends to pull every
 answer toward the middle, so a correction learned from the stored examples stretches the answers
 back out.
+
+\paragraph{A starting model.} The stored examples come from the phone's own trips, so a new phone,
+or one whose store has been cleared, has none. Until it has $3000$, it uses a small network instead:
+the same eleven-number fingerprint goes in, a speed comes out. The network was trained on recorded
+trips and ships with the app, so it needs nothing from the current trip. Like the store, it declines
+a fingerprint unlike anything it was trained on.
 
 \paragraph{Direction from turns.} The gyroscope measures every turn precisely but does not know
 north; the compass knows north but measures where the \emph{phone} points, not where the vehicle
@@ -102,14 +109,18 @@ measured with its own GPS in the memory. On ten recent journeys the re-run came 
 shorter than what the app itself had drawn.
 \item \textbf{Direction.} The direction method, including the redrawing, was run again on the
 recorded rotation and orientation, with the re-run speed.
+\item \textbf{Starting network.} Each recording was measured by a network trained without it (the
+recordings were split into eight groups), and the store was tested holding only $60$ to $4000$
+examples.
 \item \textbf{Walking.} The app's step detector was run again on the recorded acceleration, with the
 stride the phone had learned. The phone's own step counter, which the app also consults, was not
 recorded; its share is taken from each journey's first walk, where it added about $2\%$ on
 average.
 \end{itemize}
 
-Three inputs are taken from the recordings as they were: whether each second was walking or riding,
-Apple's motion classifier, and the car-park ramp flag. Cabin pressure was not recorded, so on the
+Three inputs are taken from the recordings as they were: whether each second was walking or riding
+(which older versions decided partly with GPS help the current one no longer uses), Apple's motion
+classifier, and the car-park ramp flag. Cabin pressure was not recorded, so on the
 flight the app's switch to examples learned on earlier flights could not be re-run.
 
 Every result is split by what was moving. A motorcycle and a car were told apart from the sensors
@@ -278,6 +289,25 @@ aircraft was stopped or crawling before the runway, where the GPS track has no c
 end of the recording. Part of that may be wind, which pushes an aircraft sideways so that its nose
 and its track differ; GPS alone cannot tell the two apart.
 
+\subsection{A new phone}\label{sec:network}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig6_network.pdf}
+\caption{A phone that has learned only a few examples, against the built-in network. The store was
+tested holding $60$ to $4000$ examples; the network was measured only on recordings it had never
+seen. The dotted line is where the app hands over from the network to the store.}
+\label{fig:network}
+\end{figure}
+
+A phone with few examples of its own reads speed poorly: with $60$ stored examples the average error
+was $10.6$~km/h and only half of the journeys came within $20\%$. The built-in network, measured
+only on recordings it had never seen, averaged $8.3$~km/h, and $75\%$ of journeys were within
+$20\%$ --- as good as a full store of $4000$ examples ($8.4$~km/h, $69\%$). The store draws level at
+about $3000$ examples, so that is where the app hands over (Figure~\ref{fig:network}). On a
+motorcycle the network averaged $9.1$~km/h and in a car $7.2$~km/h, against $9.1$ and $7.5$ for a full
+store.
+
 \section{Where it goes wrong}\label{sec:wrong}
 
 \begin{itemize}\itemsep2pt
@@ -312,7 +342,10 @@ Many ideas were built and tested against GPS before the current version. The mos
 \begin{itemize}\itemsep2pt
 \item \textbf{Neural networks.} A network that reads $20$--$40$ seconds of fingerprints at once
 was more accurate on test data ($8.8$ against $10.6$~km/h) and ran in the app for a while, but
-after it was retrained it under-read a pocketed ride by a third, and it was removed.
+after it was retrained it under-read a pocketed ride by a third, and it was removed. The small
+network now used to start a new phone (Section~\ref{sec:network}) is different: it is never
+retrained on the phone, reads one fingerprint at a time, declines unfamiliar ones, and hands over to
+the store once the phone has learned enough of its own.
 \item \textbf{Direction from speeding up and braking.} The push when accelerating in a straight
 line points forward, so it should give direction. It was $44^\circ$ off; turns work far better.
 \item \textbf{Other direction ideas}: the axis the motorcycle leans about ($25^\circ$ off), the
@@ -347,7 +380,9 @@ compared with the riding they came from.
 \section*{Limits of this evaluation}
 
 All recordings were made by one person, on one iPhone, mostly in one city, by motorcycle, car,
-on foot and on only one flight; other people, phones and vehicles may behave differently. Most results come from running the
+on foot and on only one flight; other people, phones and vehicles may behave differently. That
+applies most to the starting network, which was tested on the same person's other recordings: on
+someone else's phone and vehicle it may do worse. Most results come from running the
 newest method again over earlier recordings rather than from live use, though on the journeys the
 app itself recorded, the re-run came out typically 5\% shorter than the app had drawn. GPS in a pocket is itself only accurate
 to tens of metres, so small errors cannot be measured reliably.

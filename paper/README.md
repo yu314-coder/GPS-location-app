@@ -16,8 +16,8 @@ Twice, so the figure references resolve. Requires a TeX distribution with `amsma
 | File | |
 |---|---|
 | `velocity_mode.tex` | Source |
-| `velocity_mode.pdf` | Compiled, 10 pages |
-| `figures/` | Five figures, each split into motorcycle, car, walking and plane |
+| `velocity_mode.pdf` | Compiled, 11 pages |
+| `figures/` | Six figures: five split into motorcycle, car, walking and plane, and the starting network |
 
 Every number in the paper compares the latest version with GPS recorded at the same time and used
 only as the answer key. Every recording was re-run through the latest app logic from its saved raw

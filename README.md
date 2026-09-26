@@ -53,6 +53,8 @@ recorded at the same time, used only as the answer key. Every number is the late
 | Direction within 30° of GPS | **72%** of the time | **69%** | **93%** (phone in a pocket) | **99%** |
 | Whole route turned | median **8°** (40 routes) | median **20°** (25 routes) | — | — |
 
+**A new phone** (or a cleared store) has no examples of its own, so until it has learned 3,000 it uses a small built-in network: the same vibration fingerprint in, speed out, and nothing from the current trip. Measured only on recordings it had never seen, it averaged 8.3 km/h error with 75% of journeys within 20%, as good as a full store (8.4 km/h, 69%); a store of 60 examples managed 10.6 km/h and 51%.
+
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
 varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured without
 GPS, because Core Motion's attitude filter absorbs a takeoff roll as a change in the gravity
