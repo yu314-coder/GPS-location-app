@@ -268,6 +268,8 @@ class WorkoutSession: ObservableObject {
     /// Infers flight phase from cabin pressure, giving an autonomous airliner speed. See
     /// FlightPhaseEstimator for why this is possible for flight and not for a car.
     private let flightPhase = FlightPhaseEstimator()
+    /// Speed gained since the phone was last still (strapdown), used in the air; see LaunchIntegrator.
+    private var launchIntegrator = LaunchIntegrator()
     /// Learns speed from the accelerometer's spectral signature, on-device, from GPS labels.
     /// Replaces the hand-crafted vibration model — see LearnedSpeedEstimator for the measurements
     /// showing why a learned lookup finds what five hand-built features could not.
@@ -1998,8 +2000,13 @@ class WorkoutSession: ObservableObject {
                                               at: Date())
         }
         // The unprocessed motion, recorded alongside this app's interpretation of it.
-        locationManager.onRawMotionSample = { [weak self] motion, _ in
+        locationManager.onRawMotionSample = { [weak self] motion, dt in
             guard let self else { return }
+            self.launchIntegrator.ingest(
+                userAcceleration: [motion.userAcceleration.x, motion.userAcceleration.y, motion.userAcceleration.z],
+                gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
+                rotation: [motion.rotationRate.x, motion.rotationRate.y, motion.rotationRate.z],
+                dt: dt, airborne: self.isAirborneForEstimation)
             self.sessionDiagnostics.noteDeviceMotion(
                 accelX: motion.userAcceleration.x, accelY: motion.userAcceleration.y,
                 accelZ: motion.userAcceleration.z,
@@ -2022,6 +2029,7 @@ class WorkoutSession: ObservableObject {
         workoutStartTime = Date()
         sessionDiagnostics.reset()
         flightPhase.reset()
+        launchIntegrator.reset()
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
 
         print("✅ Flight initialized at: \(startDate)")
@@ -4003,6 +4011,23 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
+        } else if isAirborneForEstimation, vehicleContextIsCurrent,
+                  learnedSpeed.estimate(airborne: true) == nil,
+                  let launch = launchIntegrator.speed, launch > 0 {
+            // IN THE AIR WITH NOTHING LEARNED FOR THE AIR: THE TAKEOFF, INTEGRATED.
+            //
+            // A smooth cabin reads as standing still to a vibration model, so without examples from
+            // an earlier flight this used to hold whatever the takeoff roll's vibration last said and
+            // then fall to zero: 1.8 km recorded of a 74 km flight. The takeoff itself is measurable -
+            // the strapdown integration since the last still moment reached 265 km/h at 40 s against
+            // GPS 266 - and holding what it reached at its two-minute horizon counts 45 km of the 74.
+            // Nothing here is a speed constant; the flight phase comes from cabin pressure.
+            estimatedFallbackSpeed = launch
+            distance = estimatedFallbackSpeed * dt
+            sourceTag = "LAUNCH"
+            let hr = motionHeadingDegrees * .pi / 180
+            motionVelNorth = estimatedFallbackSpeed * cos(hr)
+            motionVelEast = estimatedFallbackSpeed * sin(hr)
         } else if vehicleContextIsCurrent,
                   let learned = (deviceIsBeingHandled ? nil
                                  : learnedSpeed.estimate(airborne: isAirborneForEstimation))
@@ -4475,7 +4500,8 @@ class WorkoutSession: ObservableObject {
             altitude: locationManager.currentRelativeAltitude,
             networkSpeed: bothSpeeds.network,
             storeSpeed: bothSpeeds.store,
-            speedEngine: learnedSpeed.networkIsInUse(airborne: isAirborneForEstimation) ? "network" : "store"))
+            speedEngine: learnedSpeed.networkIsInUse(airborne: isAirborneForEstimation) ? "network" : "store",
+            launchSpeed: launchIntegrator.speed))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist
