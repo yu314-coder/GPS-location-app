@@ -34,7 +34,8 @@ over every earlier recording and comparing the result with GPS recorded at the s
 as the answer key. Direction works in all four: it was within $30^\circ$ of GPS $72\%$ of the time
 on a motorcycle, $69\%$ in a car, $93\%$ on foot and $99\%$ on a flight. Over $72$ journeys
 ($19$~hours), distance came out $10\%$ short on a motorcycle and within $1\%$ in a car. Walking came
-out $4\%$ long, and in the air speed cannot be measured at all. On a motorcycle, fast riding reads
+out $4\%$ long. In the air the app measures the takeoff and holds the speed it reached, which
+counted $61\%$ of a flight's distance. On a motorcycle, fast riding reads
 slow and slow riding reads fast. A phone with few examples of its own uses a small built-in network
 instead; on recordings it had never seen, it was as accurate as a phone with a full store.
 \end{abstract}
@@ -65,6 +66,11 @@ has none. Until it has $3000$, it uses a small network instead:
 the same eleven-number fingerprint goes in, a speed comes out. The network was trained on recorded
 trips and ships with the app, so it needs nothing from the current trip. Like the store, it declines
 a fingerprint unlike anything it was trained on.
+
+\paragraph{Speed in the air.} A smooth cabin reads as standing still, so in the air the app measures
+the takeoff instead. From the last moment the phone was still, it follows the phone's turning with
+the gyroscope and adds up the push the accelerometer feels, for up to two minutes; then it holds the
+speed it reached.
 
 \paragraph{Direction from turns.} The gyroscope measures every turn precisely but does not know
 north; the compass knows north but measures where the \emph{phone} points, not where the vehicle
@@ -120,8 +126,8 @@ average.
 
 Three inputs are taken from the recordings as they were: whether each second was walking or riding
 (which older versions decided partly with GPS help the current one no longer uses), Apple's motion
-classifier, and the car-park ramp flag. Cabin pressure was not recorded, so on the
-flight the app's switch to examples learned on earlier flights could not be re-run.
+classifier, and the car-park ramp flag. Cabin pressure was not recorded, so on the flight
+the moment the app would call it airborne was taken from the same integration's climb rate.
 
 Every result is split by what was moving. A motorcycle and a car were told apart from the sensors
 themselves: in a turn a motorcycle leans and the phone leans with it, while a car stays level and
@@ -158,7 +164,7 @@ Every graph is split by what was moving: a motorcycle, a car, a person walking, 
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.8\textwidth]{figures/fig1_speed.pdf}
+\includegraphics[width=0.76\textwidth]{figures/fig1_speed.pdf}
 \caption{Speed from the app against speed from GPS. (a,\,b)~Each dot is a half-minute of riding;
 the solid line is the middle of each $10$~km/h band and the shading holds the middle half. On the
 dashed line the two agree. (c)~Straight half-minutes of walking; triangles are the first minutes
@@ -177,15 +183,16 @@ $92$). The average error is $7.5$~km/h.
 \item \textbf{Walking} ($43$ straight half-minutes). About $5$~km/h where GPS measured about
 $4.5$, just after a ride as at any other time.
 \item \textbf{Plane} (one flight). While taxiing the app reads low (about $12$~km/h
-where GPS measured $18$). In the air the cabin is smooth, and the speed model reads it as almost
-standing still.
+where GPS measured $18$). In the air it measures the takeoff --- $265$~km/h forty seconds into the
+roll, where GPS measured $266$ --- and holds the $317$~km/h it reached; it does not see the aircraft
+keep speeding up to $680$~km/h in the climb.
 \end{itemize}
 
 \subsection{Distance}
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.8\textwidth]{figures/fig2_distance.pdf}
+\includegraphics[width=0.76\textwidth]{figures/fig2_distance.pdf}
 \caption{Distance by the app against GPS. (a,\,b)~Each dot is one journey with at least $1$~km that
 GPS could check; the shading is within $20\%$. (c)~Straight stretches of walking, added up.
 (d)~Distance so far on one flight.}
@@ -202,7 +209,7 @@ the $29$ journeys with at least $1$~km checked, the middle one was $1.5\%$ long 
 within $20\%$; the worst were $42\%$ short and $61\%$ long.
 \item \textbf{Walking}. Over straight stretches the app was $4\%$ long: $7\%$ long in the first
 minutes after a ride and $7\%$ short at other times.
-\item \textbf{Plane}. The speed model counted $1.8$~km of the $74$~km flown.
+\item \textbf{Plane}. The app counted $45$~km of the $74$~km flown ($61\%$).
 \end{itemize}
 
 Motorcycle and car together, the app added $303$~km where GPS measured $320$~km, $5.4\%$ short.
@@ -211,7 +218,7 @@ Motorcycle and car together, the app added $303$~km where GPS measured $320$~km,
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.8\textwidth]{figures/fig3_direction.pdf}
+\includegraphics[width=0.74\textwidth]{figures/fig3_direction.pdf}
 \caption{How often the direction is within a given angle of GPS, compared every second with a
 half-minute of GPS track (ten seconds for the plane).}
 \label{fig:direction}
@@ -251,7 +258,7 @@ per route, and the median.}
 Motorcycle & $10\%$ short; $74\%$ of journeys within $20\%$ & $72\%$ of the time & median $8^\circ$\\
 Car        & $0.4\%$ short; $66\%$ of journeys within $20\%$ & $69\%$ of the time & median $18^\circ$\\
 Walking    & $4\%$ long & $93\%$ of the time & ---\\
-Plane      & $1.8$ of $74$~km & $99\%$ of the time & ---\\
+Plane      & $45$ of $74$~km & $99\%$ of the time & ---\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -266,7 +273,8 @@ errors make the path fold. The drawn position drifts from GPS by a median of $17
 \item \textbf{Car} ($24$ routes, $123$~km). The median route is turned $18^\circ$ and $58\%$ are
 within $30^\circ$; the size is right (median $0.99$). The drift is $17\%$ of the distance travelled.
 \item \textbf{Walking}. Only one route was mostly walking, $2.5$~km long; it was turned $53^\circ$.
-\item \textbf{Plane}. No route can be drawn, because speed in the air is not measured.
+\item \textbf{Plane}. Not compared as a route: its direction is in Section~3.5 and its distance in
+Figure~\ref{fig:distance}d.
 \end{itemize}
 
 Eight routes are turned more than $45^\circ$. Six of them are short journeys, under $3$~km, with too
@@ -276,7 +284,7 @@ few turns to learn the pocket angle well.
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.8\textwidth]{figures/fig5_flight.pdf}
+\includegraphics[width=0.72\textwidth]{figures/fig5_flight.pdf}
 \caption{One flight, from the gate to the climb. (a)~The direction of travel from the GPS track
 (black) and from this method, which uses no GPS (purple). (b)~The aircraft's speed from GPS, to show
 where it was taxiing, taking off and climbing.}
@@ -313,7 +321,7 @@ distance and the main model $90.5\%$; $79\%$ and $74\%$ of journeys came within 
 \item \textbf{Car.} The network misses by $7.2$~km/h and the main model by $7.5$; they counted
 $102.2\%$ and $99.6\%$ of the distance, with $72\%$ and $66\%$ of journeys within $20\%$.
 \item \textbf{Walking.} The same, $103.8\%$: walking is counted by steps, not by either speed model.
-\item \textbf{Plane.} Both count almost nothing in the air: $1.9$ and $1.8$~km of $74$~km.
+\item \textbf{Plane.} The same, $61\%$: in the air both hand over to the measured takeoff.
 \end{itemize}
 
 A store that is still filling does worse (Figure~\ref{fig:network}d): with $60$ examples the average
@@ -345,11 +353,11 @@ about $115$~m.
 \item \textbf{Rides never recognised as driving.} Without GPS, the app knows it is in a vehicle
 from Apple's motion classifier or its own speed reading. On one short pocket ride the classifier
 never said ``driving'' and the step counter took the engine for footsteps: $59\%$ short.
-\item \textbf{Aircraft.} Speed cannot be measured in an aircraft. A speed model that has learned
-only from roads reads the smooth cabin as nearly standing still (Figure~\ref{fig:speed}d): $1.8$ of
-$74$~km. Once cabin pressure shows a climb the app uses only examples from earlier flights with GPS,
-which one recorded flight could not test, and the phone's orientation filter takes the steady push
-of a takeoff for a tilt~\cite{quatcf}. The direction still works (Figure~\ref{fig:flight}).
+\item \textbf{Aircraft after the takeoff.} The app holds the speed the takeoff reached, so it misses
+the speed-up in the climb: it held $317$~km/h while the aircraft reached $680$, and counted $61\%$ of
+the distance (Figure~\ref{fig:speed}d). The phone's own orientation filter takes a takeoff's steady
+push for a tilt~\cite{quatcf}, which is why the raw accelerometer is used. Examples learned on
+earlier flights with GPS would take over, which one flight could not test.
 \end{itemize}
 
 \section{What did not work}
@@ -362,12 +370,12 @@ line points forward, so it should give direction. It was $44^\circ$ off; turns w
 \item \textbf{Other direction ideas}: the axis the motorcycle leans about ($25^\circ$ off), the
 direction of the rider's thigh ($73^\circ$ off), and the swing of the thigh for telling forward
 from backward when walking (wrong more often than right).
-\item \textbf{A steady push as proof of a vehicle.} A vehicle pulling away pushes the phone one way
-for seconds, which should show that it is not walking. On the recordings the same test also fired
-while walking, so it is not used to decide between the two.
-\item \textbf{Letting the speed reading overrule counted steps.} It would have kept rides with
-phantom steps as rides, but it also blocked $5\%$ of real walking seconds and still let a third of
-the phantom-step moments through.
+\item \textbf{Other ways to tell riding from walking without GPS.} A steady push as proof of a
+vehicle also fired while walking. Letting the speed reading overrule counted steps blocked $5\%$ of
+real walking seconds and still let a third of the phantom-step moments through.
+\item \textbf{Following the rest of a flight.} Speed from turns (sideways push over turn rate) could
+not be tested: the phone's own turning ($0.4$--$1^\circ$/s) exceeded this flight's gentle turns.
+Integrating the whole climb worked for one setting only, which one flight cannot choose fairly.
 \item \textbf{A better starting network.} Adding the last ten seconds, or fitting its correction on
 unseen recordings, helped one fingerprint at a time ($6.3$ against $8.0$~km/h) but not over journeys.
 \end{itemize}
@@ -384,20 +392,18 @@ from GPS, yet it still used GPS to decide whether the phone was riding or walkin
 first heading. Only reading every place the mode touched GPS found them; both are gone.
 \item \textbf{A re-run must do everything the app does,} stops and a phone in the hand included;
 with those rules in, it comes within about $5\%$ of what the app drew.
-\item \textbf{GPS is not an answer key underground.} In a basement it kept reporting positions with a
-confident accuracy while it had none, so where a journey goes underground must be found from the
-barometer, not from GPS.
+\item \textbf{GPS is not an answer key underground.} In a basement it kept reporting confident
+positions it did not have; where a journey goes underground must come from the barometer.
 \item \textbf{Check what a counter stores while nothing reads it.} The step detector counted road
 bumps as steps all ride and only a walk emptied it, so the next walk came out twice its length.
 \end{itemize}
 
 \section*{Limits of this evaluation}
 
-All recordings were made by one person, on one iPhone, mostly in one city, by motorcycle, car, on
-foot and on only one flight; other people, phones and vehicles may behave differently. That applies
-most to the starting network, tested on the same person's other recordings. Most results come from
-re-running the newest method over earlier recordings rather than from live use, and GPS in a pocket
-is itself only accurate to tens of metres, so small errors cannot be measured reliably.
+All recordings come from one person and one iPhone, mostly in one city, with only one flight;
+other people, phones and vehicles may behave differently, the starting network most of all. Most
+results re-run the newest method on earlier recordings rather than coming from live use, and GPS in
+a pocket is only accurate to tens of metres, so small errors cannot be measured reliably.
 
 \begin{thebibliography}{9}
 \small\setlength{\itemsep}{1pt}\setlength{\parsep}{0pt}\setlength{\parskip}{0pt}

@@ -48,8 +48,8 @@ recorded at the same time, used only as the answer key. Every number is the late
 
 | | Motorcycle | Car | Walking | Plane |
 |---|---|---|---|---|
-| Distance vs GPS | **10%** short (39 journeys); 74% of journeys within 20% | **0.4%** short (33 journeys); 66% within 20% | **4%** long | 1.8 of 74 km — speed in the air is not measured |
-| Speed | average error 9 km/h; reads low above 40 km/h | average error 7.5 km/h; close up to 80 km/h | about 5 km/h where GPS says 4.5 | low while taxiing; reads almost still in the air |
+| Distance vs GPS | **10%** short (39 journeys); 74% of journeys within 20% | **0.4%** short (33 journeys); 66% within 20% | **4%** long | **61%** (45 of 74 km): the takeoff is measured, then held |
+| Speed | average error 9 km/h; reads low above 40 km/h | average error 7.5 km/h; close up to 80 km/h | about 5 km/h where GPS says 4.5 | takeoff measured (265 km/h at 40 s vs GPS 266), then held |
 | Direction within 30° of GPS | **72%** of the time | **69%** | **93%** (phone in a pocket) | **99%** |
 | Whole route turned | median **8°** (40 routes) | median **18°** (24 routes) | — | — |
 
@@ -60,14 +60,15 @@ recorded at the same time, used only as the answer key. Every number is the late
 | Motorcycle | 9.1 km/h error; 90.5% of the distance; 74% of journeys within 20% | 9.1 km/h; 91.3%; 79% |
 | Car | 7.5 km/h; 99.6%; 66% | 7.2 km/h; 102.2%; 72% |
 | Walking | 103.8% (counted by steps) | 103.8% |
-| Plane | 1.8 of 74 km | 1.9 of 74 km |
+| Plane | 45 of 74 km (61%) | 45 of 74 km (61%) |
 
 A store still filling up does worse (60 examples: 10.6 km/h), and draws level at about 3,000, where the app hands over.
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
-varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured without
-GPS, because Core Motion's attitude filter absorbs a takeoff roll as a change in the gravity
-direction. A vehicle the model has never learned reads wrong until it has. And the angle the phone
+varying with speed: measured flat from 10 to 65 km/h). In an aircraft only the takeoff is
+measured: the raw accelerometer is integrated from the last standstill (Core Motion's attitude
+filter would absorb the roll as tilt) and the speed reached is held, so the climb's speed-up is
+missed. A vehicle the model has never learned reads wrong until it has. And the angle the phone
 sits at is learned per ride: if the phone shifts in a pocket mid-ride without being taken out, the
 rest of the ride is drawn off by roughly however far it moved.
 
