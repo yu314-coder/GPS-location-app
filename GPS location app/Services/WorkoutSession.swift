@@ -1023,6 +1023,17 @@ class WorkoutSession: ObservableObject {
     /// through a turn and only briefly; an aircraft banks far more slowly than that. A phone
     /// held or fidgeted with sits well above it continuously.
     private let HANDLING_ROTATION_THRESHOLD = 0.40
+    /// The rotation level this phone normally shows while the vehicle is moving: a mount barely
+    /// turns (typically 0.04), a trouser pocket on a motorcycle turns a little all the time
+    /// (typically 0.15, 0.3 one tick in ten). The last 120 moving vehicle ticks.
+    private var movingHandlingLevels: [Double] = []
+    /// Rotation well above this phone's usual level on this trip: a hand is starting to move it,
+    /// even before the level reaches HANDLING_ROTATION_THRESHOLD.
+    private var handlingIsAboveUsual: Bool {
+        guard movingHandlingLevels.count >= 30 else { return false }
+        let median = movingHandlingLevels.sorted()[movingHandlingLevels.count / 2]
+        return handlingRotationLevel >= max(0.15, 3.0 * median)
+    }
 
     /// Vehicle evidence that is still current, rather than merely remembered from earlier in
     /// the trip. Vibration only describes a moving vehicle while we are actually in one.
@@ -4004,11 +4015,28 @@ class WorkoutSession: ObservableObject {
             // Apple's classifier confidently saying stationary. Never available airborne,
             // where a smooth cruise is quiet too.
             let stoppedOnGround = vehicleIsStoppedOnGround(correctedSpeed: estimatedFallbackSpeed)
+            // A HAND PICKING UP THE PHONE READS AS SPEED.
+            //
+            // A hand adds shaking, and more shaking is what faster looks like. On a car-park crawl
+            // at 13 km/h the phone was being lifted - rotation 0.31-0.39, still under the handling
+            // threshold - and the model answered 88 km/h; the handled hold then kept 88 for twenty
+            // seconds. Across every log, handled vehicle ticks draw about three times the excess
+            // distance of steady ones. So while rotation is well above what this phone normally
+            // shows on this trip, the model may lower the speed but not raise it. Replayed on all
+            // logs: that drive +6% -> -4%, the worst handled ride +98% -> +10%, and no recent
+            // recording worse by more than a point. The threshold is relative because a pocket on
+            // a motorcycle turns more than a mount ever does.
+            let handlingRaised = handlingIsAboveUsual
+            let target = handlingRaised ? min(learned, estimatedFallbackSpeed) : learned
             if stoppedOnGround {
                 estimatedFallbackSpeed = 0
             } else {
                 let blend = min(dt / (1.5 + dt), 1.0)
-                estimatedFallbackSpeed += (learned - estimatedFallbackSpeed) * blend
+                estimatedFallbackSpeed += (target - estimatedFallbackSpeed) * blend
+                if estimatedFallbackSpeed > 3.0 {
+                    movingHandlingLevels.append(handlingRotationLevel)
+                    if movingHandlingLevels.count > 120 { movingHandlingLevels.removeFirst() }
+                }
             }
             distance = estimatedFallbackSpeed * dt
             // A HAND ON THE PHONE IS NOT A STOP.
@@ -4026,7 +4054,9 @@ class WorkoutSession: ObservableObject {
                 && learnedSpeed.estimate(airborne: isAirborneForEstimation) != nil
             let warmup = modelAnswered && learnedSpeed.lastEstimateUsedWarmup
             if modelAnswered {
-                lastLearnedAnswer = learned
+                // What was used, not what was read: a reading raised by a hand must not become
+                // the speed held once the phone counts as handled.
+                lastLearnedAnswer = target
                 lastLearnedAnswerTime = Date()
             }
             sourceTag = stoppedOnGround ? "LEARN(stopped)"
@@ -4506,6 +4536,7 @@ class WorkoutSession: ObservableObject {
         stepDetectArmed = true
         lastFallbackPedometerDistanceForStride = nil
         heldSpeedCorrection = 0
+        movingHandlingLevels = []
         takeoffSpeedGain = 0
         takeoffQuietFor = 0
         takeoffDetected = false
@@ -4752,6 +4783,7 @@ class WorkoutSession: ObservableObject {
         stepDetectArmed = true
         lastFallbackPedometerDistanceForStride = nil
         heldSpeedCorrection = 0
+        movingHandlingLevels = []
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
     }
