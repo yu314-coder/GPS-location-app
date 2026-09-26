@@ -32,7 +32,7 @@ from its gyroscope and compass, and it never uses GPS after the first point. Thi
 the newest version of that system on a motorcycle, in a car, on foot and on a plane, by running it
 over every earlier recording and comparing the result with GPS recorded at the same time, used only
 as the answer key. Direction works in all four: it was within
-$30^\circ$ of GPS $73\%$ of the time on a motorcycle, $80\%$ in a car, $93\%$ on foot and $99\%$ on
+$30^\circ$ of GPS $73\%$ of the time on a motorcycle, $83\%$ in a car, $93\%$ on foot and $99\%$ on
 a flight. Over $74$ journeys ($20$~hours), distance came out $10\%$ short on a motorcycle and within
 $1\%$ in a car. Walking came
 out $4\%$ long. In the air the app measures the takeoff and holds the speed it reached, which
@@ -104,7 +104,9 @@ scattered by about $1^\circ$ a minute in the same position.
 
 In a car the heading also drifts with the gyroscope's own small bias: $42^\circ$ in $25$~minutes
 on one drive, the phone fixed. A stopped car does not turn, so the phone measures the heading's
-turning while stopped and still, as a rate (at most $3^\circ$ a minute), and takes it off.
+turning while stopped and still, as a rate (at most $3^\circ$ a minute), and takes it off. Core
+Motion also sets north once, often wrongly in a car, so while the field looks like Earth's
+($25$--$65~\mu$T, steady for a minute) the phone corrects that start from the magnetometer.
 
 \paragraph{Only the first point uses GPS.} After that, each step is laid down from the previous
 point, along the current direction, for the distance the speed covers in that second.
@@ -175,7 +177,7 @@ Every graph is split by what was moving: a motorcycle, a car, a person walking, 
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.72\textwidth]{figures/fig1_speed.pdf}
+\includegraphics[width=0.68\textwidth]{figures/fig1_speed.pdf}
 \caption{Speed from the app against speed from GPS. (a,\,b)~Each dot is a half-minute of riding;
 the solid line is the middle of each $10$~km/h band and the shading holds the middle half. On the
 dashed line the two agree. (c)~Straight half-minutes of walking; triangles are the first minutes
@@ -203,7 +205,7 @@ keep speeding up to $680$~km/h in the climb.
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.72\textwidth]{figures/fig2_distance.pdf}
+\includegraphics[width=0.68\textwidth]{figures/fig2_distance.pdf}
 \caption{Distance by the app against GPS. (a,\,b)~Each dot is one journey with at least $1$~km that
 GPS could check; the shading is within $20\%$. (c)~Straight stretches of walking, added up.
 (d)~Distance so far on one flight.}
@@ -240,7 +242,7 @@ Direction holds up in every case (Figure~\ref{fig:direction}):
 \begin{itemize}\itemsep2pt
 \item \textbf{Motorcycle} ($40$ recordings): within $30^\circ$ $73\%$ of the time; middle error
 $16^\circ$.
-\item \textbf{Car} ($25$ recordings): within $30^\circ$ $80\%$ of the time; middle error $17^\circ$.
+\item \textbf{Car} ($25$ recordings): within $30^\circ$ $83\%$ of the time; middle error $16^\circ$.
 \item \textbf{Walking} (seven walks with the phone in a pocket): within $30^\circ$ $93\%$ of the
 time; middle error $10^\circ$.
 \item \textbf{Plane} (one flight): within $30^\circ$ $99\%$ of the time; middle error $6^\circ$.
@@ -250,7 +252,7 @@ time; middle error $10^\circ$.
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.84\textwidth]{figures/fig4_routes.pdf}
+\includegraphics[width=0.8\textwidth]{figures/fig4_routes.pdf}
 \caption{Routes drawn by the app, compared with GPS. (a,\,d)~How far each whole route is turned from
 the GPS track; the dotted line is $30^\circ$. (b,\,e)~Its size relative to the GPS track.
 (c,\,f)~How far the drawn position is from the GPS position as the journey goes on: one thin line
@@ -267,7 +269,7 @@ per route, and the median.}
  & Distance & Direction within $30^\circ$ & Whole route turned\\
 \midrule
 Motorcycle & $10\%$ short; $79\%$ of journeys in $20\%$ & $73\%$ of the time & median $9^\circ$\\
-Car        & $0.3\%$ short; $65\%$ of journeys in $20\%$ & $80\%$ of the time & median $17^\circ$\\
+Car        & $0.3\%$ short; $65\%$ of journeys in $20\%$ & $83\%$ of the time & median $16^\circ$\\
 Walking    & $4\%$ long & $93\%$ of the time & ---\\
 Plane      & $45$ of $74$~km & $99\%$ of the time & ---\\
 \bottomrule
@@ -281,7 +283,7 @@ Figure~\ref{fig:routes} and Table~\ref{tab:summary} put speed and direction toge
 turned $9^\circ$ and $83\%$ are within $30^\circ$. Routes come out small --- a median
 $0.84$ of the real size --- partly because distance is short, and partly because small direction
 errors make the path fold. The drawn position drifts from GPS by a median of $17\%$ of the distance travelled.
-\item \textbf{Car} ($27$ routes, $146$~km). The median route is turned $17^\circ$ and $85\%$ are
+\item \textbf{Car} ($27$ routes, $146$~km). The median route is turned $16^\circ$ and $85\%$ are
 within $30^\circ$; the size is right (median $0.98$). The drift is $19\%$ of the distance travelled.
 \item \textbf{Walking}. No route was more than half walking.
 \item \textbf{Plane}. Not compared as a route: its direction is in Section~3.5 and its distance in
@@ -312,7 +314,7 @@ no clear direction. In the climb the error stays small, about $1^\circ$ by the e
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.8\textwidth]{figures/fig6_network.pdf}
+\includegraphics[width=0.76\textwidth]{figures/fig6_network.pdf}
 \caption{The built-in network (blue) next to the main model with a full store (grey), measured on
 the same journeys; the network only on recordings it had never seen. (a)~Share of the GPS distance
 counted. (b)~Average speed error. (c)~Journeys within $20\%$ of GPS. (d)~A store that is still
@@ -361,8 +363,8 @@ $2$~m. A car crawling up a concrete ramp shakes like one driving at $40$~km/h, s
 counted while climbing and turning together; once that test fired on an ordinary road and lost
 about $115$~m.
 \item \textbf{A magnet beside the phone.} By a car's MagSafe charger the phone read up to
-$2{,}600~\mu$T, fifty times Earth's field, yet called its compass well calibrated. No compass works
-then: the iPhone's own Compass drifted $49^\circ$ with the gyroscope, as the app did.
+$2{,}600~\mu$T, fifty times Earth's field, yet called its compass well calibrated. The iPhone's own
+Compass then drifted $49^\circ$ with the gyroscope; the app ignores such a field.
 \item \textbf{Rides never recognised as driving.} Without GPS, the app knows it is in a vehicle
 from Apple's motion classifier or its own speed reading. On one short pocket ride the classifier
 never said ``driving'' and the step counter took the engine for footsteps: $59\%$ short.
@@ -385,12 +387,10 @@ $15$--$40^\circ$ off on one drive, as braking into and out of corners added up.
 \item \textbf{Other direction ideas}: the axis the motorcycle leans about ($25^\circ$ off), the
 direction of the rider's thigh ($73^\circ$ off), and the swing of the thigh for telling forward
 from backward when walking (wrong more often than right).
-\item \textbf{Other ways to tell riding from walking}: a steady push also fired while walking, and
-letting the speed overrule steps blocked $5\%$ of real walking.
+\item \textbf{Other riding-or-walking tests} (a steady push; speed overruling steps) misfired.
 \item \textbf{Following the rest of a flight.} Speed from turns: the phone's own turning
 ($0.4$--$1^\circ$/s) hid the gentle turns. Integrating the whole climb: one setting only.
-\item \textbf{A better starting network.} Adding the last ten seconds helped one fingerprint at a
-time ($6.3$ against $8.0$~km/h) but not over journeys.
+\item \textbf{A better starting network}: the last ten seconds as input did not help.
 \end{itemize}
 
 \section{Lessons}\label{sec:lessons}

@@ -442,10 +442,57 @@ class WorkoutSession: ObservableObject {
     /// Replayed on 65 rides: typical error 17.2 -> 16.8 degrees, no ride worse by a degree.
     private let DRIFT_MAX_RATE = 3.0 / 60         // degrees per second
 
-    /// Once per fallback tick, after its speed and source are decided. See headingDriftDegrees.
+    // THE MAGNETOMETER, WHEN IT CAN BE BELIEVED (build 58).
+    //
+    // The stop-measured drift cannot see the heading's starting error: Core Motion sets north once,
+    // often from a field distorted by the car, and then follows the gyro. On the 26 Sep 20:00 drive
+    // it began 20-26 degrees off while the magnetometer, read directly, put the phone's edge within
+    // 1-5 degrees of the truth - in the minutes when the field looked like Earth's. So whenever it
+    // does - 25 to 65 microtesla (Earth's range anywhere) and steady in strength and dip to 3 over
+    // the last minute - the difference between the magnetometer's bearing and the attitude's is kept,
+    // less the drift the stops have measured so far; with a minute of such readings in the last
+    // twenty, their median replaces the heading's starting point. Otherwise, and whenever the field
+    // is not Earth's (the MagSafe charger read 100-2,600 and turned the dip upside down), nothing
+    // changes from build 57. On that drive, as the phone logged it: within 30 degrees 37% -> 92%.
+    // It is the only drive recorded with the raw magnetometer so far.
+    private var driftFromStops = 0.0
+    private var driftMotionSession = -1
+    private var recentFieldStrength: [Double] = []
+    private var recentFieldDip: [Double] = []
+    private var magnetometerAnchors: [(time: Date, value: Double)] = []
+    /// For the diagnostics columns.
+    private var lastMagnetometerTick: (offset: Double, field: Double, dip: Double)?
+    private var lastMagnetometerClean = false
+    private var magnetometerAnchor: Double?
+    private let MAG_FIELD_RANGE = 25.0...65.0        // microtesla
+    private let MAG_STEADY_SECONDS = 60
+    private let MAG_STEADY_FIELD = 3.0                // microtesla, interquartile range over the minute
+    private let MAG_STEADY_DIP = 3.0                  // degrees, likewise
+    private let MAG_MIN_CLEAN = 60                    // clean seconds before the anchor is used
+    private let MAG_KEEP: TimeInterval = 1200
+    private let MAG_MAX_SPREAD = 15.0                 // degrees, interquartile range of the anchors
+
+    /// numpy's default (linear) percentile, so the app and the replay agree exactly.
+    private static func percentile(_ values: [Double], _ p: Double) -> Double {
+        let v = values.sorted()
+        guard v.count > 1 else { return v.first ?? .nan }
+        let x = p / 100 * Double(v.count - 1)
+        let i = Int(x.rounded(.down)), f = x - Double(i)
+        return i + 1 < v.count ? v[i] + (v[i + 1] - v[i]) * f : v[i]
+    }
+    private static func median(_ values: [Double]) -> Double { percentile(values, 50) }
+
+    /// Once per fallback tick, after its speed and source are decided. See stillHeadingRates.
     private func updateHeadingDrift(dt: TimeInterval, source: String) {
         let rotation = locationManager.takeMeanVerticalRotation()
         let raw = locationManager.currentAxisHeadingUncorrected
+        if locationManager.motionSession != driftMotionSession {
+            // A new reference frame: what was measured against the old one starts afresh. The bias
+            // rate itself belongs to the gyro, so it is kept.
+            driftMotionSession = locationManager.motionSession
+            driftFromStops = 0; magnetometerAnchors = []; recentFieldStrength = []; recentFieldDip = []
+            previousUncorrectedDatum = nil
+        }
         let step = min(max(dt, 0.5), 2.0)
         let decay = exp(-step / DRIFT_MEMORY)
         headingDriftDegrees *= decay
@@ -463,7 +510,39 @@ class WorkoutSession: ObservableObject {
         previousUncorrectedDatum = raw
         let measured = headingDriftSeconds > DRIFT_MIN_STILL ? headingDriftDegrees / headingDriftSeconds : 0
         headingDriftRate = min(max(measured, -DRIFT_MAX_RATE), DRIFT_MAX_RATE)
-        locationManager.headingDriftCorrection += headingDriftRate * step
+        driftFromStops += headingDriftRate * step
+        // The magnetometer anchor; see driftFromStops.
+        let now = Date()
+        let mag = locationManager.takeMagnetometerTick()
+        lastMagnetometerTick = mag
+        recentFieldStrength.append(mag?.field ?? .nan)
+        recentFieldDip.append(mag?.dip ?? .nan)
+        if recentFieldStrength.count > MAG_STEADY_SECONDS { recentFieldStrength.removeFirst(recentFieldStrength.count - MAG_STEADY_SECONDS) }
+        if recentFieldDip.count > MAG_STEADY_SECONDS { recentFieldDip.removeFirst(recentFieldDip.count - MAG_STEADY_SECONDS) }
+        func steady(_ window: [Double], _ limit: Double) -> Bool {
+            let v = window.filter { $0.isFinite }
+            guard v.count >= MAG_STEADY_SECONDS / 2 else { return false }
+            return Self.percentile(v, 75) - Self.percentile(v, 25) < limit
+        }
+        lastMagnetometerClean = false
+        if let mag, mag.offset.isFinite, MAG_FIELD_RANGE.contains(mag.field),
+           steady(recentFieldStrength, MAG_STEADY_FIELD), steady(recentFieldDip, MAG_STEADY_DIP) {
+            lastMagnetometerClean = true
+            magnetometerAnchors.append((now, -mag.offset - driftFromStops))
+        }
+        magnetometerAnchors.removeAll { now.timeIntervalSince($0.time) > MAG_KEEP }
+        var correction = driftFromStops
+        magnetometerAnchor = nil
+        if magnetometerAnchors.count >= MAG_MIN_CLEAN {
+            let radians = magnetometerAnchors.map { $0.value * .pi / 180 }
+            let centre = atan2(Self.median(radians.map(sin)), Self.median(radians.map(cos))) * 180 / .pi
+            let deviations = magnetometerAnchors.map { normalizedSignedAngle($0.value - centre) }
+            if Self.percentile(deviations, 75) - Self.percentile(deviations, 25) < MAG_MAX_SPREAD {
+                correction = driftFromStops + centre
+                magnetometerAnchor = centre
+            }
+        }
+        locationManager.headingDriftCorrection = correction
     }
 
     /// Whether riding has settled the offset, by either route. Once it has, walking may no
@@ -2137,6 +2216,9 @@ class WorkoutSession: ObservableObject {
         flightPhase.reset()
         launchIntegrator.reset()
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
+        driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
+        lastMagnetometerTick = nil; lastMagnetometerClean = false; magnetometerAnchor = nil
+        driftMotionSession = -1
         previousUncorrectedDatum = nil
         locationManager.headingDriftCorrection = 0
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
@@ -4620,7 +4702,12 @@ class WorkoutSession: ObservableObject {
             phoneCompass: locationManager.latestCompassReading.flatMap { now.timeIntervalSince($0.time) <= 5 ? $0.heading : nil },
             phoneCompassAccuracy: locationManager.latestCompassReading.flatMap { now.timeIntervalSince($0.time) <= 5 ? $0.accuracy : nil },
             magAccuracy: locationManager.magnetometerAccuracy,
-            magField: locationManager.magneticFieldStrength))
+            magField: locationManager.magneticFieldStrength,
+            magOffset: lastMagnetometerTick?.offset,
+            magDip: lastMagnetometerTick?.dip,
+            magClean: lastMagnetometerClean,
+            magAnchor: magnetometerAnchor,
+            driftFromStops: driftFromStops))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist

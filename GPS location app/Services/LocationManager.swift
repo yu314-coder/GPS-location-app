@@ -132,6 +132,14 @@ class LocationManager: NSObject, ObservableObject {
     /// strength in microtesla, for the diagnostics log.
     private(set) var magnetometerAccuracy: Int?
     private(set) var magneticFieldStrength: Double?
+    /// Since the last takeMagnetometerTick(): the magnetometer's own bearing of the axis the heading
+    /// is taken from, minus the attitude's bearing of it (summed as sine and cosine), with the field
+    /// strength (microtesla) and dip (degrees, down positive). See WorkoutSession.updateHeadingDrift.
+    private var magOffsetSin = 0.0, magOffsetCos = 0.0, magFieldSum = 0.0, magDipSum = 0.0
+    private var magSamples = 0
+    /// Counts motion-tracking starts. A pause and resume restarts Core Motion with a fresh reference
+    /// frame, so a correction measured against the old one no longer applies.
+    private(set) var motionSession = 0
     private var axisHeadingGravity: (x: Double, y: Double, z: Double)?
     private var axisHeadingAxis: Int?          // 0 = +X, 1 = +Y, 2 = +Z
     private var axisHeadingRebase: Double = 0
@@ -793,6 +801,7 @@ class LocationManager: NSObject, ObservableObject {
         }
 
         motionManager.deviceMotionUpdateInterval = 0.5
+        motionSession += 1
         lastMotionSampleTimestamp = nil
         lastRawYawForAccumulation = nil
         verticalGyroBias = 0
@@ -803,6 +812,7 @@ class LocationManager: NSObject, ObservableObject {
         currentAxisHeadingUncorrected = nil; headingDriftCorrection = 0
         tickVerticalRateSum = 0; tickVerticalRateSamples = 0
         magnetometerAccuracy = nil; magneticFieldStrength = nil
+        magOffsetSin = 0; magOffsetCos = 0; magFieldSum = 0; magDipSum = 0; magSamples = 0
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
@@ -1012,6 +1022,7 @@ class LocationManager: NSObject, ObservableObject {
         currentAxisHeadingUncorrected = nil; headingDriftCorrection = 0
         tickVerticalRateSum = 0; tickVerticalRateSamples = 0
         magnetometerAccuracy = nil; magneticFieldStrength = nil
+        magOffsetSin = 0; magOffsetCos = 0; magFieldSum = 0; magDipSum = 0; magSamples = 0
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         DispatchQueue.main.async { [weak self] in
@@ -1029,6 +1040,15 @@ class LocationManager: NSObject, ObservableObject {
             self?.currentMotionDirectionDegrees = nil
         }
         print("📈 Stopped device-motion acceleration recording")
+    }
+
+    /// The magnetometer's bearing of the heading axis minus the attitude's (degrees), the field
+    /// strength (microtesla) and its dip (degrees) since the previous call, or nil if none arrived.
+    func takeMagnetometerTick() -> (offset: Double, field: Double, dip: Double)? {
+        defer { magOffsetSin = 0; magOffsetCos = 0; magFieldSum = 0; magDipSum = 0; magSamples = 0 }
+        guard magSamples > 0 else { return nil }
+        let n = Double(magSamples)
+        return (atan2(magOffsetSin, magOffsetCos) * 180 / .pi, magFieldSum / n, magDipSum / n)
     }
 
     /// Mean |vertical rotation rate| in rad/s since the previous call, or nil with too few samples.
@@ -1107,6 +1127,28 @@ class LocationManager: NSObject, ObservableObject {
             current = align[1] < 0.7 ? 1 : best
         }
         axisHeadingAxis = current
+        // THE SAME EDGE BY THE MAGNETOMETER ALONE, no gyro in it: the horizontal part of the field is
+        // magnetic north, and east is down x north. Only its difference from the attitude's bearing
+        // is kept; WorkoutSession decides whether the field is clean enough to believe it.
+        let fv = motion.magneticField.field
+        let fieldStrength = sqrt(fv.x * fv.x + fv.y * fv.y + fv.z * fv.z)
+        let gl = sqrt(g.x * g.x + g.y * g.y + g.z * g.z)
+        if fieldStrength > 1, gl > 0.5 {
+            let dn = [g.x / gl, g.y / gl, g.z / gl], f = [fv.x, fv.y, fv.z]
+            let along = f[0] * dn[0] + f[1] * dn[1] + f[2] * dn[2]
+            let h = (0..<3).map { f[$0] - along * dn[$0] }
+            let hl = sqrt(h[0] * h[0] + h[1] * h[1] + h[2] * h[2])
+            if hl > 1e-6 {
+                let nv = h.map { $0 / hl }
+                let ev = [dn[1] * nv[2] - dn[2] * nv[1], dn[2] * nv[0] - dn[0] * nv[2], dn[0] * nv[1] - dn[1] * nv[0]]
+                let magBearing = atan2(ev[current], nv[current]) * 180 / .pi
+                let offset = (magBearing - bearing(current)) * .pi / 180
+                magOffsetSin += sin(offset); magOffsetCos += cos(offset)
+                magFieldSum += fieldStrength
+                magDipSum += asin(max(-1, min(1, along / fieldStrength))) * 180 / .pi
+                magSamples += 1
+            }
+        }
         var raw = (bearing(current) + axisHeadingRebase).truncatingRemainder(dividingBy: 360)
         if raw < 0 { raw += 360 }
         currentAxisHeadingUncorrected = raw

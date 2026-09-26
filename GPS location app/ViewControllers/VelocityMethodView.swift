@@ -133,7 +133,9 @@ struct VelocityMethodView: View {
                 Turn angle comes from the gyroscope, accurate over seconds. Absolute direction comes \
                 from the phone's own heading, held to magnetic north by the magnetometer. In a car \
                 that hold is weak and the heading drifts slowly with the gyroscope's bias, so the \
-                drift is measured while the vehicle is stopped and the phone still, and taken off.
+                drift is measured while the vehicle is stopped and the phone still, and taken off; \
+                and while the field looks like Earth's, the magnetometer is read directly to correct \
+                where the heading started.
                 """)
                 .font(.callout)
                 Equation("eq_heading")

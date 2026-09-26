@@ -177,6 +177,14 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         /// the field strength in microtesla (Earth's is about 25-65; far outside that is a magnet).
         let magAccuracy: Int?
         let magField: Double?
+        /// The magnetometer's own bearing of the heading axis minus the attitude's (degrees), the
+        /// field's dip, whether the field counted as clean this second, the anchor in use (blank when
+        /// none), and the drift measured at stops. See WorkoutSession's magnetometer anchor.
+        let magOffset: Double?
+        let magDip: Double?
+        let magClean: Bool
+        let magAnchor: Double?
+        let driftFromStops: Double
     }
 
     /// ~4 hours at 1 Hz. Oldest rows are dropped rather than growing without bound.
@@ -554,7 +562,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         // Appended at the end so every existing column keeps its position.
         out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter,"
         out += "net_speed_ms,store_speed_ms,speed_engine,launch_speed_ms,net_familiarity,store_status,"
-        out += "heading_drift_deg,drift_rate_dpm,datum_raw_deg,phone_compass_deg,phone_compass_acc_deg,mag_accuracy,mag_field_ut\n"
+        out += "heading_drift_deg,drift_rate_dpm,datum_raw_deg,phone_compass_deg,phone_compass_acc_deg,mag_accuracy,mag_field_ut,"
+        out += "mag_offset_deg,mag_dip_deg,mag_clean,mag_anchor_deg,drift_stops_deg\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -588,7 +597,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + ","
             out += Self.fmt(r.networkSpeed) + "," + Self.fmt(r.storeSpeed) + "," + Self.csvField(r.speedEngine) + "," + Self.fmt(r.launchSpeed) + "," + Self.fmt(r.networkFamiliarity, 3) + "," + Self.csvField(r.storeStatus) + ","
             out += Self.fmt(r.headingDrift, 2) + "," + Self.fmt(r.driftRate, 3) + "," + Self.fmt(r.datumUncorrected, 2) + ","
-            out += Self.fmt(r.phoneCompass, 1) + "," + Self.fmt(r.phoneCompassAccuracy, 1) + "," + (r.magAccuracy.map(String.init) ?? "") + "," + Self.fmt(r.magField, 1) + "\n"
+            out += Self.fmt(r.phoneCompass, 1) + "," + Self.fmt(r.phoneCompassAccuracy, 1) + "," + (r.magAccuracy.map(String.init) ?? "") + "," + Self.fmt(r.magField, 1) + ","
+            out += Self.fmt(r.magOffset, 2) + "," + Self.fmt(r.magDip, 2) + "," + (r.magClean ? "1" : "0") + "," + Self.fmt(r.magAnchor, 2) + "," + Self.fmt(r.driftFromStops, 2) + "\n"
         }
         return out
     }
