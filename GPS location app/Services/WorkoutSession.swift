@@ -381,6 +381,12 @@ class WorkoutSession: ObservableObject {
     /// it a car is crawling or reversing, the push is braking rather than turning, and a reversing
     /// car's push points backwards; those seconds do not count.
     private let TURN_OFFSET_MIN_SPEED = 4.0   // m/s, ~14 km/h
+    /// A second counts only if a turn at this speed could make at least this share of the push felt
+    /// (speed x turn rate against the push). A push ten times what the turn explains is braking or
+    /// throttle: an aircraft taxiing, re-run, learned -43 degrees from such seconds and the whole
+    /// flight was drawn a third right (36% within 30 degrees); with this check it is 99%. Replayed on
+    /// 66 rides it changed riding error nowhere (76% within 30 degrees either way).
+    private let TURN_MIN_SHARE_OF_PUSH = 0.1
     /// Handled this long, the phone has been out of the pocket and will not go back at the same
     /// angle, so what was learned no longer applies.
     private let TURN_OFFSET_RESET_HANDLING: TimeInterval = 10
@@ -563,6 +569,7 @@ class WorkoutSession: ObservableObject {
         guard magnitude > 1e-3 else { return }
         // Direction only: one pothole must not outvote a minute of corners.
         let m = estimatedFallbackSpeed * (turn * .pi / 180) / dt
+        guard abs(m) >= TURN_MIN_SHARE_OF_PUSH * magnitude else { return }
         turnOffsetRe += m * right / magnitude
         turnOffsetIm -= m * forward / magnitude
         turnOffsetEvidence += abs(m)

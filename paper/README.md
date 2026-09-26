@@ -25,8 +25,7 @@ sensor readings (acceleration, rotation and orientation angles at 50 Hz):
 - speed: the model rebuilt as the app builds it, with a memory drawn from every other journey, plus
   its rules for stops, a handled phone and holding the last answer;
 - walking: the step detector and its bookkeeping;
-- direction and routes: the direction method, which uses no speed estimate, with the compass drift
-  measured at stops taken off.
+- direction and routes: the direction method, with the heading drift measured at stops taken off.
 
 Three inputs come from the recordings as they were: walking or riding, Apple's motion classifier,
 and the car-park ramp flag. The phone's step counter and cabin pressure were not recorded. The paper

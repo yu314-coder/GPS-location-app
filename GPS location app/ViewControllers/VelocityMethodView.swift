@@ -139,10 +139,10 @@ struct VelocityMethodView: View {
                 Equation("eq_heading")
                 Text("""
                 β is the carry offset: the angle between where the phone points and where the \
-                vehicle travels. It is learned with no GPS and no speed estimate, from the \
-                vehicle's own turns: the sideways push rises and falls with the turn rate, and \
-                where that push points, relative to the phone, says which way is forward. Walking \
-                uses the back-and-forth of the steps instead.
+                vehicle travels. It is learned with no GPS, from the vehicle's own turns: the push \
+                toward the inside of a curve is speed times turn rate, and where it points, relative \
+                to the phone, says which way is forward. Right and left turns are averaged apart so \
+                braking into corners cancels. Walking uses the back-and-forth of the steps instead.
                 """)
                 .font(.footnote).foregroundStyle(.secondary)
             }

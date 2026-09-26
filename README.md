@@ -48,19 +48,19 @@ recorded at the same time, used only as the answer key. Every number is the late
 
 | | Motorcycle | Car | Walking | Plane |
 |---|---|---|---|---|
-| Distance vs GPS | **7%** short (39 journeys); 74% of journeys within 20% | **0.8%** long (34 journeys); 63% within 20% | **4%** long | **61%** (45 of 74 km): the takeoff is measured, then held |
-| Speed | average error 9 km/h; reads low above 40 km/h | average error 7.6 km/h; close up to 80 km/h | about 5 km/h where GPS says 4.6 | takeoff measured (265 km/h at 40 s vs GPS 266), then held |
-| Direction within 30° of GPS | **73%** of the time | **77%** | **93%** (phone in a pocket) | **99%** |
-| Whole route turned | median **13°**; 88% within 30° (41 routes) | median **15°**; 81% within 30° (26 routes) | — | — |
+| Distance vs GPS | **10%** short (39 journeys); 79% of journeys within 20% | **0.3%** short (35 journeys); 65% within 20% | **4%** long | **61%** (45 of 74 km): the takeoff is measured, then held |
+| Speed | average error 9 km/h; reads low above 40 km/h | average error 7.3 km/h; close up to 60 km/h | about 5 km/h where GPS says 4.6 | takeoff measured (265 km/h at 40 s vs GPS 266), then held |
+| Direction within 30° of GPS | **73%** of the time | **80%** | **93%** (phone in a pocket) | **99%** |
+| Whole route turned | median **9°**; 83% within 30° (41 routes) | median **17°**; 85% within 30° (27 routes) | — | — |
 
-**Direction uses no speed estimate.** The phone learns how it sits from the vehicle's turns alone, and the compass's slow drift in a car (the gyroscope's own bias) is measured at stops and taken off.
+**Direction uses no GPS.** The phone learns how it sits from the vehicle's turns, and the heading's slow drift in a car (the gyroscope's own bias) is measured at stops and taken off. Keep the phone away from magnets: beside a MagSafe charger no compass works, the iPhone's own included.
 
 **A new phone** has no examples of its own, so until it has learned 3,000 it uses a small built-in network: the same vibration fingerprint in, speed out, and nothing from the current trip. Measured only on recordings it had never seen, next to the main model with a full store:
 
 | | Main model (full store) | Built-in network |
 |---|---|---|
-| Motorcycle | 9.1 km/h error; 92.9% of the distance; 74% of journeys within 20% | 9.1 km/h; 91.5%; 79% |
-| Car | 7.6 km/h; 100.8%; 63% | 7.0 km/h; 101.9%; 73% |
+| Motorcycle | 9.0 km/h error; 90.0% of the distance; 79% of journeys within 20% | 9.1 km/h; 91.5%; 79% |
+| Car | 7.3 km/h; 99.7%; 65% | 6.7 km/h; 101.7%; 74% |
 | Walking | 103.7% (counted by steps) | 103.7% |
 | Plane | 45 of 74 km (61%) | 45 of 74 km (61%) |
 
