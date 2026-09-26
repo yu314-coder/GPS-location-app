@@ -4406,6 +4406,8 @@ class WorkoutSession: ObservableObject {
                   : "✅ Speed model back within a learned regime")
         }
         learnOffsetFromTurns(dt: dt, source: sourceTag)
+        // Both engines, whichever is driving, so a log can compare them on the same seconds.
+        let bothSpeeds = learnedSpeed.bothAnswers(airborne: isAirborneForEstimation)
         sessionDiagnostics.record(.init(
             t: now,
             source: sourceTag,
@@ -4470,7 +4472,10 @@ class WorkoutSession: ObservableObject {
             pitch: locationManager.currentPitch,
             roll: locationManager.currentRoll,
             yaw: locationManager.currentYaw,
-            altitude: locationManager.currentRelativeAltitude))
+            altitude: locationManager.currentRelativeAltitude,
+            networkSpeed: bothSpeeds.network,
+            storeSpeed: bothSpeeds.store,
+            speedEngine: learnedSpeed.networkIsInUse(airborne: isAirborneForEstimation) ? "network" : "store"))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist

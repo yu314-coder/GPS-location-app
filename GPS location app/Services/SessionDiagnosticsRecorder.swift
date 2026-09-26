@@ -148,6 +148,13 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let rotationRate: Double?
         let pitch: Double?, roll: Double?, yaw: Double?
         let altitude: Double?
+        /// Both speed engines at this tick, whichever was driving: the bundled network and the
+        /// learned store, in m/s, blank when that engine declined or cannot answer. speed_engine
+        /// names the one the estimate used ("network" or "store"), so a log can compare the other
+        /// on exactly the same seconds.
+        let networkSpeed: Double?
+        let storeSpeed: Double?
+        let speedEngine: String
     }
 
     /// ~4 hours at 1 Hz. Oldest rows are dropped rather than growing without bound.
@@ -510,7 +517,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "learn_obs,learn_max_kmh,learn_slope,"
         out += "gps_speed_ms,gps_accuracy_m,lat,lon,truth_lat,truth_lon,"
         // Appended at the end so every existing column keeps its position.
-        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter\n"
+        out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter,"
+        out += "net_speed_ms,store_speed_ms,speed_engine\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -541,7 +549,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.pitch) + "," + Self.fmt(r.roll) + "," + Self.fmt(r.yaw) + ","
-            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + "\n"
+            out += Self.fmt(r.altitude) + "," + Self.fmt(r.gpsAge, 2) + ",\(r.regimeObservations)," + Self.fmt(r.priorWeight, 3) + ",\(r.thermalState),\(r.lowPowerMode ? 1 : 0),\(r.wifiFallback ? 1 : 0)," + Self.fmt(r.gpsSpeedAccuracy, 2) + ",\(r.accuracyReduced ? 1 : 0),\(r.inBackground ? 1 : 0)," + Self.fmt(r.requestedAccuracy, 0) + "," + Self.fmt(r.requestedDistanceFilter, 0) + ","
+            out += Self.fmt(r.networkSpeed) + "," + Self.fmt(r.storeSpeed) + "," + Self.csvField(r.speedEngine) + "\n"
         }
         return out
     }

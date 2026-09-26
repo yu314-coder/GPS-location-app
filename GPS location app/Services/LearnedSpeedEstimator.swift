@@ -611,6 +611,12 @@ final class LearnedSpeedEstimator {
             lastEstimateUsedNetwork = true
             return network.speed(features: f)
         }
+        return storeEstimate(f, airborne: airborne)
+    }
+
+    /// The learned store's own answer for one fingerprint. Split out of estimate() so the log can
+    /// record it every tick, even while the bundled network is the one being used.
+    private func storeEstimate(_ f: [Double], airborne: Bool) -> Double? {
         guard featureMean.count == f.count else { return nil }
 
         // REFUSE TO ANSWER ABOUT A REGIME THIS WORKOUT HAS NEVER BEEN TAUGHT.
@@ -740,6 +746,30 @@ final class LearnedSpeedEstimator {
         // The air curve is empty until the air partition has its own evidence, and calibrated()
         // returns the raw value unchanged in that case - so a first flight behaves as before.
         return max(0, calibrated(num / den, airborne: airborne))
+    }
+
+    /// BOTH ENGINES, FOR THE LOG.
+    ///
+    /// Only one of them drives the speed at a time - the network until the store holds
+    /// NETWORK_UNTIL_OBSERVATIONS, the store after - but a log that recorded only the one in use
+    /// could never show how close the other would have come on the same seconds. This asks both,
+    /// and leaves every flag the tick reads (declines, local error, neighbour weight, which engine
+    /// answered) exactly as the real estimate set them. The network does not answer in the air.
+    func bothAnswers(airborne: Bool) -> (network: Double?, store: Double?) {
+        let saved = (lastEstimateUsedNetwork, lastEstimateDeclinedUnlearnedRegime,
+                     lastEstimateDeclinedUnreliableLocally, lastLocalError, lastNeighbourWeight)
+        defer {
+            (lastEstimateUsedNetwork, lastEstimateDeclinedUnlearnedRegime,
+             lastEstimateDeclinedUnreliableLocally, lastLocalError, lastNeighbourWeight) = saved
+        }
+        guard let f = currentFeatures() else { return (nil, nil) }
+        let network = airborne ? nil : SpeedNetwork.bundled?.speed(features: f)
+        return (network, storeEstimate(f, airborne: airborne))
+    }
+
+    /// Whether estimate() would use the bundled network right now.
+    func networkIsInUse(airborne: Bool) -> Bool {
+        !airborne && groundObservationCount < NETWORK_UNTIL_OBSERVATIONS && SpeedNetwork.bundled != nil
     }
 
     /// Mean absolute error of predicting each of the nearest few observations from the others.
