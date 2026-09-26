@@ -334,21 +334,26 @@ class WorkoutSession: ObservableObject {
     //
     //     acceleration felt  =  e^(i * offset) * (i * speed * turn rate)
     //
-    // - the gyro says which way and how hard it is turning, and the direction the acceleration
-    // actually points, relative to the compass, is the offset.
+    // - the gyro says which way and how hard it is turning, the app's own speed says how fast,
+    // and the direction the acceleration actually points, relative to the compass, is the
+    // offset. Least squares over every riding second gives offset = arg(sum a * conj(i v w)).
     //
-    // NO SPEED IN IT (build 54). Until build 53 each second was weighted by the app's own speed
-    // times the turn rate, so the angle leaned on the speed engines. It no longer reads them. As a
-    // turn tightens and eases the sideways push rises and falls WITH the gyro's turn rate, while
-    // braking and pulling away do not follow the turn rate at all; so each riding second
-    // contributes (turn rate - its 4 s mean) x (push - its 4 s mean), and the true speed appears on
-    // its own as the size of that product. Replayed on 65 rides against GPS (GPS for grading only),
-    // with the drift correction below: typical riding error 18.8 -> 16.8 degrees, routes turned
-    // within 30 degrees 73% -> 89%, routes off by more than 45 degrees 9 -> 4. Feeding the old
-    // learner GPS's own speed instead of the app's did not help it (riding within 30 degrees 70%
-    // against 74%), so an accurate speed was never what it lacked.
+    // WHY THE SPEED STAYS IN IT. Build 54 took it out (each second weighted by the change in turn
+    // rate against the change in push) and a 26 Sep car drive came out 15-40 degrees wrong where
+    // this learner was within 5 (GPS physics, for grading only, said -4; this said +0.6). A car
+    // brakes into a corner and pulls away out of it; the turn-rate CHANGE flips sign between the
+    // two, so the braking and the pulling away added up instead of cancelling. The turn rate itself
+    // does not flip within a corner, and weighting by speed as well trusts fast corners, where the
+    // sideways push dwarfs braking - the matched weight for a push that is speed x turn rate. The
+    // speed's own errors hardly matter: fed GPS's speed instead, this learner was no better.
     //
-    // The numbers below describe the build 39 learner this replaced.
+    // LEFT AND RIGHT TURNS ARE AVERAGED SEPARATELY (build 56). Whatever braking leaks through leans
+    // the answer one way in right turns and the other way in left ones, so a drive with more of one
+    // kind is pulled off. Averaging each kind on its own and then the two cancels it. Replayed on
+    // 66 rides with the drift correction: riding within 30 degrees 71% -> 74%, routes turned over
+    // 45 degrees 10 -> 6.
+    //
+    // The numbers below describe the build 39 learner.
     //
     // Scored against GPS on all 27 forced rides on record (GPS used only to grade it):
     //
@@ -362,23 +367,20 @@ class WorkoutSession: ObservableObject {
     // sat anywhere from -150 to +60 degrees off the road across those rides.
     private var turnOffsetRe = 0.0
     private var turnOffsetIm = 0.0
-    private var turnOffsetEvidence = 0.0      // sum of |w'| |a'|, (rad/s)(m/s^2) x ticks
+    private var turnOffsetEvidence = 0.0      // sum of |v w|, m/s^2 x ticks
     private var turnOffsetTicks = 0
-    /// The last TURN_WINDOW vehicle seconds: turn rate (rad/s, clockwise) and the push forward and
-    /// to the right of the compass (m/s²). Emptied by anything that is not a vehicle second.
-    private var turnWindow: [(rate: Double, forward: Double, right: Double)] = []
-    /// Replayed at 2, 3, 4, 5, 6, 8, 15, 30 and 60 s: 4 was best on riding error and on routes.
-    private let TURN_WINDOW = 4
-    /// A second whose turn rate is this close to its window's mean says nothing about the angle.
-    private let TURN_MIN_RATE_CHANGE = 0.02      // rad/s
+    /// The same sums for right turns (index 0) and left turns (index 1) apart: re, im, weight.
+    private var turnSides: [[Double]] = [[0, 0, 0], [0, 0, 0]]
     /// The learned value while it is in charge, for the diagnostics column.
     private var turnOffset: Double?
     /// Thirty riding seconds: replayed on 27 rides the first estimate was 11.0 degrees off at 30,
     /// 11.2 at 60, and a short hop - 37 riding seconds on 23 Sep - never reached 60 at all.
     private let TURN_OFFSET_MIN_TICKS = 30
-    /// Evidence needed, in summed |turn-rate change| x |push change|; replayed at 0.5, 1, 3 and 10,
-    /// 1 was best.
-    private let TURN_OFFSET_MIN_EVIDENCE = 1.0
+    private let TURN_OFFSET_MIN_EVIDENCE = 20.0
+    /// A tick counts as riding for learning at or above this (the app's own speed, not GPS). Below
+    /// it a car is crawling or reversing, the push is braking rather than turning, and a reversing
+    /// car's push points backwards; those seconds do not count.
+    private let TURN_OFFSET_MIN_SPEED = 4.0   // m/s, ~14 km/h
     /// Handled this long, the phone has been out of the pocket and will not go back at the same
     /// angle, so what was learned no longer applies.
     private let TURN_OFFSET_RESET_HANDLING: TimeInterval = 10
@@ -388,8 +390,7 @@ class WorkoutSession: ObservableObject {
     /// A vehicle tick this fast is riding. Until build 42 riding began at the learner's 4 m/s and
     /// the first seconds of every ride were still drawn on the walking heading and walking
     /// offset: 24 Sep 07:58 rolled off at 9-12 km/h for ten seconds, about 40 m, pointing the way
-    /// the walk had. Replayed on every session, 1.5-4 m/s made no difference anywhere else. It is
-    /// the only thing the cornering learner takes from the speed engines: whether a ride is on.
+    /// the walk had. Replayed on every session, 1.5-4 m/s made no difference anywhere else.
     private let RIDE_START_SPEED = 2.5          // m/s, ~9 km/h
     /// Gyro turn over the most recent heading tick, degrees clockwise.
     private var lastTickGyroTurn: Double?
@@ -405,10 +406,17 @@ class WorkoutSession: ObservableObject {
     // stops (the vehicle stopped, the phone not rotating, not in a hand), as a rate, and take the
     // accumulated drift off every bearing (LocationManager.headingDriftCorrection).
     //
-    // Replayed on 65 rides (GPS for grading only), together with the cornering learner below:
-    // cars' riding stretches within 30 degrees 69% -> 76% and their routes drawn within 30
-    // degrees 56% -> 88%; that drive 71% -> 98%. Motorcycles, whose stops rarely hold the phone
-    // still enough to measure, change little. It reads no speed engine beyond "stopped".
+    // Replayed on 66 rides (GPS for grading only), with the balanced cornering learner: cars'
+    // riding stretches within 30 degrees 65% -> 77% and their routes within 30 degrees 69% -> 85%;
+    // that drive 57% -> 98%. Motorcycles, whose stops rarely hold the phone still enough to
+    // measure, change little. It reads no speed engine beyond "stopped".
+    //
+    // WHAT IT CANNOT FIX. On another drive the phone sat by a MagSafe charger: the field read 100 to
+    // 2,600 microtesla (Earth's is about 45) and even turned upside down, while Core Motion still
+    // reported its calibration as high. Then no compass works - iOS's own Compass (CLHeading)
+    // drifted 49 degrees with the gyro, exactly like the attitude - and the heading had already
+    // started about 15 degrees off. A heading taken from a disturbed magnetometer at the start of
+    // a drive is only as good as that magnetometer.
     private var headingDriftDegrees = 0.0     // heading change over still seconds, decayed
     private var headingDriftSeconds = 0.0     // still seconds, decayed
     private var headingDriftRate = 0.0        // degrees per second in force
@@ -489,36 +497,13 @@ class WorkoutSession: ObservableObject {
         let accel = locationManager.takeTurnAcceleration()
         if continuousHandlingDuration > TURN_OFFSET_RESET_HANDLING, turnOffsetTicks > 0 {
             turnOffsetRe = 0; turnOffsetIm = 0; turnOffsetEvidence = 0; turnOffsetTicks = 0
+            turnSides = [[0, 0, 0], [0, 0, 0]]
             turnOffset = nil
         }
         // Against the attitude heading, the same one the route is steered by (absoluteHeadingDatum
         // falls back to CLHeading or Core Motion's heading only when it is unavailable, and one
         // accumulator must not mix sources).
-        let axis = locationManager.currentAxisHeading ?? locationManager.currentMotionHeading
-        // Every vehicle second goes into the window; see turnOffsetRe.
-        let vehicleSecond = !source.hasPrefix("PDR") && !source.contains("in hand") && !deviceIsBeingHandled
-        if vehicleSecond, let accel, let axis, let turn = lastTickGyroTurn, dt > 0.2 {
-            let h = axis * .pi / 180
-            turnWindow.append((rate: (turn * .pi / 180) / min(max(dt, 0.5), 2.0),
-                               forward: accel.north * cos(h) + accel.east * sin(h),
-                               right: -accel.north * sin(h) + accel.east * cos(h)))
-            if turnWindow.count > TURN_WINDOW { turnWindow.removeFirst(turnWindow.count - TURN_WINDOW) }
-        } else {
-            turnWindow = []
-        }
-        if turnWindow.count == TURN_WINDOW, estimatedFallbackSpeed >= RIDE_START_SPEED, let last = turnWindow.last {
-            let n = Double(TURN_WINDOW)
-            let rate = last.rate - turnWindow.reduce(0) { $0 + $1.rate } / n
-            let forward = last.forward - turnWindow.reduce(0) { $0 + $1.forward } / n
-            let right = last.right - turnWindow.reduce(0) { $0 + $1.right } / n
-            if abs(rate) > TURN_MIN_RATE_CHANGE {
-                turnOffsetRe += rate * right
-                turnOffsetIm -= rate * forward
-                turnOffsetEvidence += abs(rate) * (forward * forward + right * right).squareRoot()
-                turnOffsetTicks += 1
-            }
-        }
-        guard let compass = axis,
+        guard let compass = locationManager.currentAxisHeading ?? locationManager.currentMotionHeading,
               estimatedFallbackSpeed >= RIDE_START_SPEED,
               !source.hasPrefix("PDR"), !deviceIsBeingHandled else { return }
         // A GPS-measured riding offset, when there is one (GPS lost mid-ride outside Velocity
@@ -568,9 +553,32 @@ class WorkoutSession: ObservableObject {
             lastRedrawTime = nil
             untrustedHeadingPrefixStart = nil
         }
-        guard accel != nil, turnOffsetTicks >= TURN_OFFSET_MIN_TICKS,
+        // Riding has begun; learning needs more speed than that. See TURN_OFFSET_MIN_SPEED.
+        guard let accel, let turn = lastTickGyroTurn, dt > 0.2,
+              estimatedFallbackSpeed >= TURN_OFFSET_MIN_SPEED else { return }
+        let h = compass * .pi / 180
+        let forward = accel.north * cos(h) + accel.east * sin(h)
+        let right = -accel.north * sin(h) + accel.east * cos(h)
+        let magnitude = sqrt(forward * forward + right * right)
+        guard magnitude > 1e-3 else { return }
+        // Direction only: one pothole must not outvote a minute of corners.
+        let m = estimatedFallbackSpeed * (turn * .pi / 180) / dt
+        turnOffsetRe += m * right / magnitude
+        turnOffsetIm -= m * forward / magnitude
+        turnOffsetEvidence += abs(m)
+        turnOffsetTicks += 1
+        let side = m > 0 ? 0 : 1
+        turnSides[side][0] += m * right / magnitude
+        turnSides[side][1] -= m * forward / magnitude
+        turnSides[side][2] += abs(m)
+        guard turnOffsetTicks >= TURN_OFFSET_MIN_TICKS,
               turnOffsetEvidence >= TURN_OFFSET_MIN_EVIDENCE else { return }
-        let learned = atan2(turnOffsetIm, turnOffsetRe) * 180 / .pi
+        // Each kind of turn averaged on its own, then the two together; one kind alone until the
+        // other has been seen.
+        let r = turnSides[0], l = turnSides[1]
+        let learned = r[2] > 0 && l[2] > 0
+            ? atan2(r[1] / r[2] + l[1] / l[2], r[0] / r[2] + l[0] / l[2]) * 180 / .pi
+            : atan2(turnOffsetIm, turnOffsetRe) * 180 / .pi
         let firstEstimate = turnOffset == nil
         turnOffset = learned
         guard !gpsRidingConsensus else { return }
@@ -4913,7 +4921,7 @@ class WorkoutSession: ObservableObject {
         offsetSource = .none
         turnOffsetRe = 0; turnOffsetIm = 0; turnOffsetEvidence = 0; turnOffsetTicks = 0
         turnOffset = nil
-        turnWindow = []
+        turnSides = [[0, 0, 0], [0, 0, 0]]
         lastTickGyroTurn = nil
         previousUncorrectedDatum = nil
         lastRidingTickTime = nil
