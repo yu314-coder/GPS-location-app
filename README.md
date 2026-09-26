@@ -53,7 +53,16 @@ recorded at the same time, used only as the answer key. Every number is the late
 | Direction within 30° of GPS | **72%** of the time | **69%** | **93%** (phone in a pocket) | **99%** |
 | Whole route turned | median **8°** (40 routes) | median **20°** (25 routes) | — | — |
 
-**A new phone** (or a cleared store) has no examples of its own, so until it has learned 3,000 it uses a small built-in network: the same vibration fingerprint in, speed out, and nothing from the current trip. Measured only on recordings it had never seen, it averaged 8.3 km/h error with 75% of journeys within 20%, as good as a full store (8.4 km/h, 69%); a store of 60 examples managed 10.6 km/h and 51%.
+**A new phone** has no examples of its own, so until it has learned 3,000 it uses a small built-in network: the same vibration fingerprint in, speed out, and nothing from the current trip. Measured only on recordings it had never seen, next to the main model with a full store:
+
+| | Main model (full store) | Built-in network |
+|---|---|---|
+| Motorcycle | 9.1 km/h error; 90.5% of the distance; 74% of journeys within 20% | 9.1 km/h; 91.3%; 79% |
+| Car | 7.5 km/h; 99.2%; 63% | 7.2 km/h; 101.8%; 70% |
+| Walking | 103.8% (counted by steps) | 103.8% |
+| Plane | 1.8 of 74 km | 1.9 of 74 km |
+
+A store still filling up does worse (60 examples: 10.6 km/h), and draws level at about 3,000, where the app hands over.
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
 varying with speed: measured flat from 10 to 65 km/h). Aircraft speed cannot be measured without

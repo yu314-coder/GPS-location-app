@@ -60,8 +60,8 @@ the closest stored fingerprint is far away, the phone does not guess. Averaging 
 answer toward the middle, so a correction learned from the stored examples stretches the answers
 back out.
 
-\paragraph{A starting model.} The stored examples come from the phone's own trips, so a new phone,
-or one whose store has been cleared, has none. Until it has $3000$, it uses a small network instead:
+\paragraph{A starting model.} The stored examples come from the phone's own trips, so a new phone
+has none. Until it has $3000$, it uses a small network instead:
 the same eleven-number fingerprint goes in, a speed comes out. The network was trained on recorded
 trips and ships with the app, so it needs nothing from the current trip. Like the store, it declines
 a fingerprint unlike anything it was trained on.
@@ -274,7 +274,7 @@ few turns to learn the pocket angle well.
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.85\textwidth]{figures/fig5_flight.pdf}
+\includegraphics[width=0.8\textwidth]{figures/fig5_flight.pdf}
 \caption{One flight, from the gate to the climb. (a)~The direction of travel from the GPS track
 (black) and from this method, which uses no GPS (purple). (b)~The aircraft's speed from GPS, to show
 where it was taxiing, taking off and climbing.}
@@ -293,20 +293,31 @@ and its track differ; GPS alone cannot tell the two apart.
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.85\textwidth]{figures/fig6_network.pdf}
-\caption{A phone that has learned only a few examples, against the built-in network. The store was
-tested holding $60$ to $4000$ examples; the network was measured only on recordings it had never
-seen. The dotted line is where the app hands over from the network to the store.}
+\includegraphics[width=0.84\textwidth]{figures/fig6_network.pdf}
+\caption{The built-in network (blue) next to the main model with a full store (grey), measured on
+the same journeys; the network only on recordings it had never seen. (a)~Share of the GPS distance
+counted. (b)~Average speed error. (c)~Journeys within $20\%$ of GPS. (d)~A store that is still
+filling up, against the network; the dotted line is where the app hands over.}
 \label{fig:network}
 \end{figure}
 
-A phone with few examples of its own reads speed poorly: with $60$ stored examples the average error
-was $10.6$~km/h and only half of the journeys came within $20\%$. The built-in network, measured
-only on recordings it had never seen, averaged $8.3$~km/h, and $75\%$ of journeys were within
-$20\%$ --- as good as a full store of $4000$ examples ($8.4$~km/h, $69\%$). The store draws level at
-about $3000$ examples, so that is where the app hands over (Figure~\ref{fig:network}). On a
-motorcycle the network averaged $9.1$~km/h and in a car $7.2$~km/h, against $9.1$ and $7.5$ for a full
-store.
+A new phone has no examples of its own, so it starts with the built-in network.
+Figure~\ref{fig:network} puts it next to the main model with a full store, kind of travel by kind of
+travel:
+
+\begin{itemize}\itemsep2pt
+\item \textbf{Motorcycle.} Both miss by $9.1$~km/h on average. The network counted $91.3\%$ of the
+distance and the main model $90.5\%$; $79\%$ and $74\%$ of journeys came within $20\%$.
+\item \textbf{Car.} The network misses by $7.2$~km/h and the main model by $7.5$; they counted
+$101.8\%$ and $99.2\%$ of the distance, with $70\%$ and $63\%$ of journeys within $20\%$.
+\item \textbf{Walking.} The same, $103.8\%$: walking is counted by steps, not by either speed model.
+\item \textbf{Plane.} Both count almost nothing in the air: $1.9$ and $1.8$~km of $74$~km.
+\end{itemize}
+
+A store that is still filling does worse (Figure~\ref{fig:network}d): with $60$ examples the average
+error was $10.6$~km/h, with $1000$ it was $8.8$, and it draws level with the network ($8.3$) at about
+$3000$. That is where the app hands over from the network to the store, which then keeps adapting to
+the phone's own vehicle and pocket.
 
 \section{Where it goes wrong}\label{sec:wrong}
 
@@ -340,12 +351,13 @@ direction still works (Figure~\ref{fig:flight}).
 Many ideas were built and tested against GPS before the current version. The most instructive:
 
 \begin{itemize}\itemsep2pt
-\item \textbf{Neural networks.} A network that reads $20$--$40$ seconds of fingerprints at once
-was more accurate on test data ($8.8$ against $10.6$~km/h) and ran in the app for a while, but
-after it was retrained it under-read a pocketed ride by a third, and it was removed. The small
-network now used to start a new phone (Section~\ref{sec:network}) is different: it is never
-retrained on the phone, reads one fingerprint at a time, declines unfamiliar ones, and hands over to
-the store once the phone has learned enough of its own.
+\item \textbf{Neural networks.} A network that reads $20$--$40$ seconds of fingerprints at once was
+more accurate on test data ($8.8$ against $10.6$~km/h) and ran in the app for a while, but after it
+was retrained it under-read a pocketed ride by a third, and it was removed. The small network that
+now starts a new phone (Section~\ref{sec:network}) is never retrained, declines unfamiliar
+fingerprints and hands over to the store. Giving it the last ten seconds as well, or fitting its
+correction on unseen recordings, looked better one fingerprint at a time ($6.3$ against
+$8.0$~km/h) but not over whole journeys, where the app's own smoothing already does most of it.
 \item \textbf{Direction from speeding up and braking.} The push when accelerating in a straight
 line points forward, so it should give direction. It was $44^\circ$ off; turns work far better.
 \item \textbf{Other direction ideas}: the axis the motorcycle leans about ($25^\circ$ off), the
