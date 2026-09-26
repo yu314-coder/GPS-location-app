@@ -50,8 +50,8 @@ recorded at the same time, used only as the answer key. Every number is the late
 |---|---|---|---|---|
 | Distance vs GPS | **10%** short (39 journeys); 79% of journeys within 20% | **0.3%** short (35 journeys); 65% within 20% | **4%** long | **61%** (45 of 74 km): the takeoff is measured, then held |
 | Speed | average error 9 km/h; reads low above 40 km/h | average error 7.3 km/h; close up to 60 km/h | about 5 km/h where GPS says 4.6 | takeoff measured (265 km/h at 40 s vs GPS 266), then held |
-| Direction within 30° of GPS | **73%** of the time | **84%** | **93%** (phone in a pocket) | **99%** |
-| Whole route turned | median **9°**; 85% within 30° (41 routes) | median **14°**; 89% within 30° (27 routes) | — | — |
+| Direction within 30° of GPS | **73%** of the time | **83%** | **93%** (phone in a pocket) | **99%** |
+| Whole route turned | median **9°**; 83% within 30° (41 routes) | median **16°**; 85% within 30° (27 routes) | — | — |
 
 **Direction uses no GPS.** The phone learns how it sits from the vehicle's turns; the heading's slow drift in a car (the gyroscope's own bias) is measured at stops and taken off; and whenever the magnetic field looks like Earth's, the magnetometer corrects where the heading started. Keep the phone away from magnets: beside a MagSafe charger no compass works, the iPhone's own included.
 

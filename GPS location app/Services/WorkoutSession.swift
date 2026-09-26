@@ -659,20 +659,15 @@ class WorkoutSession: ObservableObject {
         let magnitude = sqrt(forward * forward + right * right)
         guard magnitude > 1e-3 else { return }
         // Direction only: one pothole must not outvote a minute of corners.
-        let push = estimatedFallbackSpeed * (turn * .pi / 180) / dt
-        guard abs(push) >= TURN_MIN_SHARE_OF_PUSH * magnitude else { return }
-        // BY THE SQUARE ROOT OF THE TURN (build 60). Weighted by speed x turn rate itself, a few
-        // sharp corners outvoted every gentle bend; their push is the largest but so is the
-        // braking in and out of them. The square root still favours real turns and lets the many
-        // ordinary ones be heard. Replayed on 66 rides: riding within 30 degrees 76% -> 77% (cars
-        // 80% -> 83%), routes turned within 30 degrees 84% -> 87% (cars 85% -> 89%); walking and the
-        // flight (99%) unchanged. Powers 0.3-0.7 all did about as well; 1 and 2 did worse.
-        let m = push >= 0 ? push.squareRoot() : -(-push).squareRoot()
+        let m = estimatedFallbackSpeed * (turn * .pi / 180) / dt
+        guard abs(m) >= TURN_MIN_SHARE_OF_PUSH * magnitude else { return }
+        // Weighting each second by the square root of this instead (build 60) was a tie over 66
+        // rides - learned angle against physics 9.5 vs 9.2 degrees median, no difference anywhere
+        // near significance - and it drew motorcycle routes worse from the speeds phones logged
+        // (86% -> 76% within 30 degrees). The plain weight stays.
         turnOffsetRe += m * right / magnitude
         turnOffsetIm -= m * forward / magnitude
-        // Evidence is the turning actually seen, in speed x turn rate, whatever the weight: counted
-        // in square roots, a taxiing aircraft's small turns reached it in seconds and set a wrong angle.
-        turnOffsetEvidence += abs(push)
+        turnOffsetEvidence += abs(m)
         turnOffsetTicks += 1
         let side = m > 0 ? 0 : 1
         turnSides[side][0] += m * right / magnitude
