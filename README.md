@@ -44,21 +44,21 @@ allowed to refuse: if nothing it has stored resembles the present signature, it 
 than guessing.
 
 **Measured accuracy** — the newest version, run over every earlier recording and compared with GPS
-recorded at the same time, used only as the answer key. Every number is the latest version re-run on the recorded sensor data, split by what was moving.
+recorded at the same time, used only as the answer key. Every number is the latest version re-run on the recorded sensor data, split by what was moving. Stretches in underground car parks are left out: GPS there kept reporting positions it did not have.
 
 | | Motorcycle | Car | Walking | Plane |
 |---|---|---|---|---|
-| Distance vs GPS | **10%** short (39 journeys); 74% of journeys within 20% | **1%** short (33 journeys); 63% within 20% | **4%** long | 1.8 of 74 km — speed in the air is not measured |
+| Distance vs GPS | **10%** short (39 journeys); 74% of journeys within 20% | **0.4%** short (33 journeys); 66% within 20% | **4%** long | 1.8 of 74 km — speed in the air is not measured |
 | Speed | average error 9 km/h; reads low above 40 km/h | average error 7.5 km/h; close up to 80 km/h | about 5 km/h where GPS says 4.5 | low while taxiing; reads almost still in the air |
 | Direction within 30° of GPS | **72%** of the time | **69%** | **93%** (phone in a pocket) | **99%** |
-| Whole route turned | median **8°** (40 routes) | median **20°** (25 routes) | — | — |
+| Whole route turned | median **8°** (40 routes) | median **18°** (24 routes) | — | — |
 
 **A new phone** has no examples of its own, so until it has learned 3,000 it uses a small built-in network: the same vibration fingerprint in, speed out, and nothing from the current trip. Measured only on recordings it had never seen, next to the main model with a full store:
 
 | | Main model (full store) | Built-in network |
 |---|---|---|
 | Motorcycle | 9.1 km/h error; 90.5% of the distance; 74% of journeys within 20% | 9.1 km/h; 91.3%; 79% |
-| Car | 7.5 km/h; 99.2%; 63% | 7.2 km/h; 101.8%; 70% |
+| Car | 7.5 km/h; 99.6%; 66% | 7.2 km/h; 102.2%; 72% |
 | Walking | 103.8% (counted by steps) | 103.8% |
 | Plane | 1.8 of 74 km | 1.9 of 74 km |
 
