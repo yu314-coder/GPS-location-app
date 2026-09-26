@@ -178,6 +178,16 @@ class WorkoutSession: ObservableObject {
     /// clears the runtime flag without erasing the user's choice for the next one.
     @Published var forceMotionFallback = false {
         didSet {
+            // NO ANGLE LEARNED FROM GPS SURVIVES INTO VELOCITY MODE. Switched on mid-workout, the
+            // pocket offset may have been measured from GPS bearings a moment ago
+            // (learnCompassMisalignment); used here it would make every later heading partly a
+            // GPS measurement. Forget it, and let the turns and the steps learn it again.
+            if forceMotionFallback, !oldValue {
+                ridingOffsetSamples = []
+                lastMisalignmentFix = nil
+                compassMisalignment = nil
+                offsetSource = .none
+            }
             guard persistForceMotionFallback else { return }
             UserDefaults.standard.set(forceMotionFallback, forKey: "velocityModeEnabled")
         }
@@ -491,6 +501,7 @@ class WorkoutSession: ObservableObject {
             // rate itself belongs to the gyro, so it is kept.
             driftMotionSession = locationManager.motionSession
             driftFromStops = 0; magnetometerAnchors = []; recentFieldStrength = []; recentFieldDip = []
+            magnetometerAnchor = nil
             previousUncorrectedDatum = nil
         }
         let step = min(max(dt, 0.5), 2.0)
@@ -531,18 +542,19 @@ class WorkoutSession: ObservableObject {
             magnetometerAnchors.append((now, -mag.offset - driftFromStops))
         }
         magnetometerAnchors.removeAll { now.timeIntervalSince($0.time) > MAG_KEEP }
-        var correction = driftFromStops
-        magnetometerAnchor = nil
+        // HELD, NOT DROPPED. The anchor measures where Core Motion started, which does not expire;
+        // when its readings age out (twenty minutes by a MagSafe charger, say) the last value
+        // stands until clean readings replace it. Dropping it put the heading's starting error
+        // back just when drift had grown largest: replayed, 94% -> 96% within 30 degrees.
         if magnetometerAnchors.count >= MAG_MIN_CLEAN {
             let radians = magnetometerAnchors.map { $0.value * .pi / 180 }
             let centre = atan2(Self.median(radians.map(sin)), Self.median(radians.map(cos))) * 180 / .pi
             let deviations = magnetometerAnchors.map { normalizedSignedAngle($0.value - centre) }
             if Self.percentile(deviations, 75) - Self.percentile(deviations, 25) < MAG_MAX_SPREAD {
-                correction = driftFromStops + centre
                 magnetometerAnchor = centre
             }
         }
-        locationManager.headingDriftCorrection = correction
+        locationManager.headingDriftCorrection = driftFromStops + (magnetometerAnchor ?? 0)
     }
 
     /// Whether riding has settled the offset, by either route. Once it has, walking may no
@@ -2215,6 +2227,7 @@ class WorkoutSession: ObservableObject {
         sessionDiagnostics.reset()
         flightPhase.reset()
         launchIntegrator.reset()
+        locationManager.freezeDeclination = false   // this trip's own, until its first point
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
         driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
         lastMagnetometerTick = nil; lastMagnetometerClean = false; magnetometerAnchor = nil
@@ -4029,7 +4042,8 @@ class WorkoutSession: ObservableObject {
                 // position and nothing else: its course would be GPS direction.
                 (forceMotionFallback ? nil : anchor.flatMap { validCourse($0.course) })
                     ?? absoluteHeadingDatum
-                    ?? locationManager.currentMotionDirectionDegrees
+                    // currentMotionDirectionDegrees prefers the GPS course when there is one.
+                    ?? (forceMotionFallback ? nil : locationManager.currentMotionDirectionDegrees)
                     ?? 0.0
               )
 
@@ -4621,6 +4635,9 @@ class WorkoutSession: ObservableObject {
                   ? "🤷 Speed model out of its depth (regime distance \(learnedSpeed.regimeDistanceCached.map { String(format: "%.2f", $0) } ?? "?")) — holding last GPS speed"
                   : "✅ Speed model back within a learned regime")
         }
+        // THE DECLINATION IS THE FIRST POINT'S. iOS recomputes true north from the current GPS
+        // position; in Velocity Mode it is taken once, where the route begins, and held.
+        locationManager.freezeDeclination = forceMotionFallback && gpsFixesInRoute >= 1
         updateHeadingDrift(dt: dt, source: sourceTag)
         learnOffsetFromTurns(dt: dt, source: sourceTag)
         // Both engines, whichever is driving, so a log can compare them on the same seconds.
@@ -4770,7 +4787,8 @@ class WorkoutSession: ObservableObject {
         let measuredCourse = forceMotionFallback ? nil : anchor.flatMap { validCourse($0.course) }
         let course = measuredCourse
             ?? absoluteHeadingDatum
-            ?? locationManager.currentMotionDirectionDegrees
+            // currentMotionDirectionDegrees prefers the GPS course when there is one.
+            ?? (forceMotionFallback ? nil : locationManager.currentMotionDirectionDegrees)
             ?? 0.0
         headingSeedWasMeasured = (measuredCourse != nil)
         untrustedHeadingPrefixStart = headingSeedWasMeasured ? nil : flight.locations.count

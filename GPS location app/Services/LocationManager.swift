@@ -73,6 +73,9 @@ class LocationManager: NSObject, ObservableObject {
     /// Local magnetic declination (true − magnetic), learned from CLHeading. Used to rotate
     /// Core Motion's magnetic-north-referenced acceleration into the true-north frame.
     private(set) var magneticDeclinationDegrees: Double = 0
+    /// Hold the declination where it is (Velocity Mode, once the route's first point exists):
+    /// CLHeading's true north is recomputed from the current position, which is GPS.
+    var freezeDeclination = false
     /// How far Core Motion's heading has drifted clockwise since motion tracking started, in
     /// degrees, as measured at stops by WorkoutSession (see updateHeadingDrift there). Subtracted
     /// from every bearing that comes out of the attitude - the axis heading, Core Motion's
@@ -1448,7 +1451,12 @@ extension LocationManager: CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
-        let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        let heading: Double
+        if freezeDeclination, newHeading.magneticHeading >= 0 {
+            heading = (newHeading.magneticHeading + magneticDeclinationDegrees + 360).truncatingRemainder(dividingBy: 360)
+        } else {
+            heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        }
         guard heading >= 0 else { return }
         latestCompassReading = (heading, newHeading.headingAccuracy, Date())
 
@@ -1461,7 +1469,7 @@ extension LocationManager: CLLocationManagerDelegate {
             var d = newHeading.trueHeading - newHeading.magneticHeading
             if d > 180 { d -= 360 } else if d < -180 { d += 360 }
             // Declination is a smooth geographic field; reject nonsense from a bad calibration.
-            if abs(d) <= 45 { magneticDeclinationDegrees = d }
+            if abs(d) <= 45, !freezeDeclination { magneticDeclinationDegrees = d }
         }
 
         // TRUST THE MAGNETOMETER ONLY WHEN IT SAYS IT IS TRUSTWORTHY.
