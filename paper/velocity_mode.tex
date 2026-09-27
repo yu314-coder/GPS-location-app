@@ -55,7 +55,8 @@ air, and the median route was turned $11\dg$ on a motorcycle and $16\dg$ in a ca
 $12\%$ short on a motorcycle, within $1\%$ in a car and $4\%$ long on foot. In the air, a network
 trained on $302$ airline flights from NASA's public flight recorder data, reading only the time since
 the takeoff roll and the phone's tilt, raised the flight's distance from $61\%$ to $103\%$, and a store
-of examples from the same data to $99\%$. A phone with no examples of its own starts with a small
+of examples from the same data to $100\%$; drawn with no GPS after the first point, the flight ended
+$14.7$~km from where GPS did. A phone with no examples of its own starts with a small
 built-in network, which on recordings it had never seen was a little more accurate than a full store. We also report what
 each part of the direction method adds, where the system fails, and the approaches that did not work.
 
@@ -403,8 +404,8 @@ On a motorcycle the app added $156$~km where GPS measured $177$~km, $12\%$ short
 high speed outweighs what is gained at low speed. In a car it added $163$~km of $165$~km, $1\%$ short.
 Journey by journey the spread is wider (Table~\ref{tab:distance}): $82\%$ of motorcycle journeys and
 $62\%$ of car journeys came within $20\%$ of GPS. Walking came out $4\%$ long, $7\%$ long in the first minutes after
-a ride and $7\%$ short at other times. The flight counted $76$ of $74$~km, where holding the takeoff
-speed had counted $45$. Motorcycle and car together,
+a ride and $7\%$ short at other times. The flight counted $76.5$ of $74.1$~km, where holding the
+takeoff speed had counted $45.5$. Motorcycle and car together,
 the app added $318$~km where GPS measured $341$~km, $6.7\%$ short.
 
 \subsection{Direction}
@@ -548,9 +549,9 @@ average km/h in the air (per flight, the median over flights).}
 
 Speed in the air is where the flight engines come in (Figure~\ref{fig:flightengines},
 Table~\ref{tab:flight}). On the recorded flight the takeoff measurement reached $317$~km/h and, held,
-counted $45$ of the $74$~km: the aircraft kept speeding up to $680$~km/h. From two minutes into the roll
+counted $45.5$ of the $74.1$~km: the aircraft kept speeding up to $680$~km/h. From two minutes into the roll
 the flight network read the climb from the phone's tilt and the time since the roll, and the flight
-counted $76.1$~km ($103\%$); with the flight store, $73.5$~km ($99\%$). The average speed error in the air
+counted $76.5$~km ($103\%$); with the flight store, $73.9$~km ($100\%$). The average speed error in the air
 fell from $196$~km/h to $38$ and $37$. The network reads high by about $50$~km/h early in the climb, where
 this aircraft gained speed more slowly than the NASA jet typically did, and matches GPS near the end.
 
@@ -558,6 +559,23 @@ On NASA's flights, each measured without its own data, holding the takeoff speed
 $68\%$ of the distance and came within $10\%$ on $7\%$ of flights. The network counted a median $102\%$
 and came within $10\%$ on $68\%$ of flights; the store $104\%$ and $65\%$. The two engines agree
 closely; the network, being smaller to ship and a little closer, is the one the app uses.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig10_flightroute.pdf}
+\caption{The whole flight drawn with no GPS after the first point. (a)~GPS (black), the flight network
+(purple) and the flight store (orange, dashed). Like the routes in Figure~\ref{fig:gallery} it is turned by
+an arbitrary angle so as not to show where it was recorded; the inset enlarges the taxi. (b)~The distance
+between each drawn position and GPS's; grey is the taxi, blue the measured takeoff.}
+\label{fig:flightroute}
+\end{figure}
+
+Figure~\ref{fig:flightroute} puts speed and direction together: the whole flight drawn from the first
+GPS point with nothing but what the phone senses. Both versions stay within about a kilometre of GPS
+through the taxi and the takeoff, a median $0.8$~km over the whole recording. In the air the direction
+settles about $10\dg$ to one side of the track, and that, more than the speed, carries the drawn ends
+$14.7$~km (network) and $14.3$~km (store) from where GPS ended, a fifth of the distance flown. The two
+versions draw nearly the same route: they share the direction and differ in speed by $3\%$.
 
 \subsection{A new phone}\label{sec:network}
 
@@ -587,7 +605,7 @@ with $60$ examples, $8.5$ with $1{,}000$ and $8.1$ with $4{,}000$, still a littl
 $7.9$. The app hands over to the store at $3{,}000$ examples all the same, because the store keeps
 adapting to the phone's own vehicle and pocket, an advantage these recordings, made with the same few
 vehicles the network was trained on, cannot show.
-Walking ($103.7\%$) and the flight ($102.8\%$ and $102.9\%$) are nearly the same with either, since they
+Walking ($103.7\%$) and the flight ($103.2\%$ and $103.3\%$) are nearly the same with either, since they
 are counted by steps and, in the air, by the flight engines.
 
 \clearpage
@@ -683,7 +701,7 @@ learned from the vehicle's turns on a heading kept honest by its stops and, when
 magnetometer, it stays within $30\dg$ of GPS most of the time on every kind of travel measured. Speed
 from vibration is close in a car and on foot but compressed on a motorcycle. In the air, the takeoff
 measured by the phone and then a network trained on public airline flight data counted the flight's
-distance to within $3\%$, where the takeoff alone counted $61\%$. The largest remaining error is where the heading starts, which only a
+distance to within $4\%$, where the takeoff alone counted $61\%$. The largest remaining error is where the heading starts, which only a
 clean magnetic field can fix.
 
 \paragraph{Code and data.} The app, including the method described here, is open source at

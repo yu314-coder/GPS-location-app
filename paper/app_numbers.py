@@ -82,6 +82,33 @@ add('    static let flight: [FlightPoint] = [')
 add(',\n'.join(f'        .init(point: {q(f["label"])}, errorPercent: {f["error_pct"]})' for f in J['flight']))
 add('    ]')
 
+add('')
+add('    /// The recorded flight drawn with no GPS after the first point, turned by an arbitrary angle so it does')
+add('    /// not show where it was recorded (the paper\'s Figure 10), km. Every 6 s.')
+add('    static let flightRoute: [RoutePoint] = [')
+rows = []
+for name, label in (('gps', 'GPS'), ('neural', 'Neural'), ('algorithm', 'Algorithm')):
+    for i, (x, y) in enumerate(J['flight_route'][name]):
+        rows.append(f'        .init(line: "{label}", order: {i}, x: {x}, y: {y})')
+add(',\n'.join(rows))
+add('    ]')
+add(f'    static let flightTakeoff = (x: {J["flight_route"]["takeoff"][0]}, y: {J["flight_route"]["takeoff"][1]})')
+FS = J['flight_route_stats']
+add(f'    static let flightRouteStats = (neuralKm: {FS["neural"]["km"]}, algorithmKm: {FS["algorithm"]["km"]}, '
+    f'neuralEndKm: {FS["neural"]["end_km"]}, algorithmEndKm: {FS["algorithm"]["end_km"]}, medianKm: {FS["neural"]["median_km"]}, '
+    f'airOffsetDeg: {abs(J["flight_phases"]["air_offset_deg"])})')
+add('')
+add('    /// Speed through the flight, km/h, every 8 s: GPS (the answer key), then the two versions.')
+add('    static let flightSpeed: [SpeedPoint] = [')
+rows = []
+for m, g, n, a in J['flight_speed']:
+    if g is not None: rows.append(f'        .init(minute: {m}, line: "GPS", kmh: {g})')
+    rows.append(f'        .init(minute: {m}, line: "Neural", kmh: {n})')
+    rows.append(f'        .init(minute: {m}, line: "Algorithm", kmh: {a})')
+add(',\n'.join(rows))
+add('    ]')
+add(f'    static let flightPhases = (airborneMinute: {J["flight_phases"]["t_air_min"]}, enginesMinute: {J["flight_phases"]["t_engine_min"]})')
+
 src = open(SWIFT).read()
 a, b = src.index(BEGIN) + len(BEGIN), src.index(END)
 open(SWIFT, 'w').write(src[:a] + '\n'.join(lines) + '\n' + src[b:])
