@@ -48,15 +48,15 @@ the route it travels. This paper describes a system that reads \emph{speed} from
 shakes and \emph{direction} from the phone's gyroscope, accelerometer and magnetometer, using GPS for
 nothing but the first point, and measures it against GPS on a motorcycle, in a car, on foot and on a
 plane. Every recording was replayed through the newest version from its raw sensor data, with GPS
-used only as the answer key: $75$ motorcycle and car journeys ($20$~hours, $341$~km that GPS could
+used only as the answer key: $76$ motorcycle and car journeys ($20$~hours, $343$~km that GPS could
 check), $45$ straight stretches and seven longer walks on foot, and one flight. Direction was within
-$30\dg$ of GPS $74\%$ of the time on a motorcycle, $81\%$ in a car, $93\%$ on foot and $99\%$ on the
+$30\dg$ of GPS $75\%$ of the time on a motorcycle, $81\%$ in a car, $93\%$ on foot and $99\%$ on the
 plane, and the median route was turned $11\dg$ on a motorcycle and $16\dg$ in a car. Distance came out
 $12\%$ short on a motorcycle, within $1\%$ in a car and $4\%$ long on foot. In the air, a network
 trained on $302$ airline flights from NASA's public flight recorder data, reading only the time since
 the takeoff roll and the phone's tilt, raised the flight's distance from $61\%$ to $103\%$, and a store
-of examples from the same data to $100\%$; drawn with no GPS after the first point, the flight ended
-$14.7$~km from where GPS did. A phone with no examples of its own starts with a small
+of examples from the same data to $99\%$; drawn with no GPS after the first point, the flight ended
+$16.1$~km from where GPS did. A phone with no examples of its own starts with a small
 built-in network, which on recordings it had never seen was a little more accurate than a full store. We also report what
 each part of the direction method adds, where the system fails, and the approaches that did not work.
 
@@ -302,7 +302,7 @@ and the same rules for stops, a phone in the hand, and holding the last answer. 
 $4{,}000$ examples drawn at random from every \emph{other} journey, so no journey is measured with its
 own GPS in the store. Each example keeps the same chance of being drawn whatever recordings are added,
 so a new recording changes the other journeys' stores only by its own examples. On twelve recent
-journeys the replay came out typically $5\%$ shorter than what the app itself had drawn.
+journeys the replay came out typically $6\%$ shorter than what the app itself had drawn.
 \item \textbf{Direction:} the heading reference, drift correction, magnetometer correction (where the
 magnetic field was recorded), the angle learned from turns and the redrawing, with the replayed speed.
 \item \textbf{Starting network:} each recording measured by a network trained without it (the
@@ -331,14 +331,15 @@ straight stretches between fixes better than $25$~m are used.
 \item \textbf{Direction} is compared every second: the bearing from the GPS position $15$~s earlier to
 the one $15$~s later, against the system's heading over the same half-minute ($10$~s for the plane).
 \item \textbf{Whole routes} are compared by finding the rotation and the size change that best lay the
-drawn route over the GPS track, pinned at the shared start. The rotation is how far the route is
+drawn route over the GPS track, pinned at the shared start, for routes of at least $1$~km. The
+rotation is how far the route is
 turned; the size change how much too big or small it is; the drift is how far the drawn end lies from
 GPS's, as a share of the distance travelled.
 \end{itemize}
 
 \subsection{Stretches left out}\label{sec:leftout}
 
-Five car journeys went into, started in or ended in underground car parks. There GPS kept claiming
+Six car journeys went into, started in or ended in underground car parks. There GPS kept claiming
 $10$~m accuracy for positions it did not have --- frozen while parked, wandering on the ramps --- so
 those stretches, found from the barometer, are left out of every comparison. So are half-minutes that
 mix walking and riding, and those in which the app counted steps while GPS showed riding speed.
@@ -367,15 +368,15 @@ average error (km/h).}
 Figure~\ref{fig:speed} and Table~\ref{tab:speed} compare speed half-minute by half-minute.
 \begin{itemize}
 \item \textbf{Motorcycle} ($818$ half-minutes). The app squeezes the range: $10$--$20$~km/h reads about
-$19$, $20$--$30$~km/h is close, and above that it reads ever lower: about $30$ at $30$--$40$~km/h and
-about $40$ where GPS measured $66$ at $60$--$80$~km/h. The
+$18$, $20$--$30$~km/h is close, and above that it reads ever lower: about $31$ at $30$--$40$~km/h and
+about $39$ where GPS measured $66$ at $60$--$80$~km/h. The
 squeeze comes from the averaging: when a fingerprint could belong to several speeds, the average
 lands in the middle. The average error is $9.0$~km/h.
-\item \textbf{Car} ($747$ half-minutes). Much closer: from $10$ to $60$~km/h the middle reading is within
-about $2$~km/h of GPS. Above that it reads low ($62$ where GPS measured $69$, and $71$ where it measured
-$87$). The average error is $7.0$~km/h.
+\item \textbf{Car} ($757$ half-minutes). Much closer: from $10$ to $60$~km/h the middle reading is within
+about $2$~km/h of GPS. Above that it reads low ($62$ where GPS measured $69$, and $72$ where it measured
+$87$). The average error is $6.9$~km/h.
 \item \textbf{Walking} ($45$ straight half-minutes). About $5.0$~km/h where GPS measured $4.6$.
-\item \textbf{Plane.} While taxiing the app reads about $15$~km/h where GPS measured $18$. In the air it
+\item \textbf{Plane.} While taxiing the app reads about $13$~km/h where GPS measured $18$. In the air it
 measures the takeoff --- $265$~km/h forty seconds into the roll, where GPS measured $266$ --- and after two
 minutes the flight network takes over, reading about $570$~km/h where GPS measured $510$ three minutes
 later and $675$ where it measured $670$ near the end (Section~\ref{sec:flight}).
@@ -402,12 +403,12 @@ and $20\%$, and the range use journeys with at least $1$~km checked.}
 \end{table}
 
 On a motorcycle the app added $156$~km where GPS measured $177$~km, $12\%$ short: the distance lost at
-high speed outweighs what is gained at low speed. In a car it added $163$~km of $165$~km, $1\%$ short.
-Journey by journey the spread is wider (Table~\ref{tab:distance}): $82\%$ of motorcycle journeys and
-$62\%$ of car journeys came within $20\%$ of GPS. Walking came out $4\%$ long, $7\%$ long in the first minutes after
-a ride and $7\%$ short at other times. The flight counted $76.5$ of $74.1$~km, where holding the
-takeoff speed had counted $45.5$. Motorcycle and car together,
-the app added $318$~km where GPS measured $341$~km, $6.7\%$ short.
+high speed outweighs what is gained at low speed. In a car it added $167$~km of $166$~km, $0.3\%$ long.
+Journey by journey the spread is wider (Table~\ref{tab:distance}): $74\%$ of motorcycle journeys and
+$67\%$ of car journeys came within $20\%$ of GPS. Walking came out $4\%$ long, $7\%$ long in the first minutes after
+a ride and $7\%$ short at other times. The flight counted $76.2$ of $74.1$~km, where holding the
+takeoff speed had counted $45.2$. Motorcycle and car together,
+the app added $323$~km where GPS measured $343$~km, $5.8\%$ short.
 
 \subsection{Direction}
 
@@ -429,9 +430,9 @@ graded seconds within $15\dg$, $30\dg$ and $45\dg$.}
 \end{table}
 
 Direction holds up in every case (Figure~\ref{fig:direction}, Table~\ref{tab:direction}). The median
-error is $17\dg$ on a motorcycle, $16\dg$ in a car and $10\dg$ on foot and in the air; $74\%$, $81\%$,
+error is $17\dg$ on a motorcycle, $16\dg$ in a car, $10\dg$ on foot and $11\dg$ on the plane; $75\%$, $81\%$,
 $93\%$ and $99\%$ of seconds are within $30\dg$. The tails differ: one motorcycle second in ten is off
-by more than $61\dg$, against $56\dg$ in a car, because a phone in a trouser pocket moves as the
+by more than $61\dg$, against $57\dg$ in a car, because a phone in a trouser pocket moves as the
 rider shifts.
 
 Figure~\ref{fig:learning} follows the error through a ride. In the first minutes the angle of the
@@ -469,10 +470,10 @@ journey goes on: one thin line per route, and the median.}
 
 Figure~\ref{fig:routes} and Table~\ref{tab:routes} put speed and direction together. The median
 motorcycle route is turned $11\dg$ and $85\%$ are within $30\dg$; the median car route is turned
-$16\dg$ and $79\%$ are within $30\dg$. Motorcycle routes come out small --- a median $0.80$ of the real
+$15\dg$ and $79\%$ are within $30\dg$. Motorcycle routes come out small --- a median $0.83$ of the real
 size --- partly because distance is short and partly because small direction errors fold the path; car
-routes have the right size (median $0.97$). The drawn end lies a median $18\%$ (motorcycle) and $15\%$
-(car) of the distance travelled from GPS's. Five routes are turned more than $45\dg$; four of them are
+routes have the right size (median $0.97$). The drawn end lies a median $18\%$ (motorcycle) and $14\%$
+(car) of the distance travelled from GPS's. Six routes are turned more than $45\dg$; five of them are
 under $3$~km, with too few turns to learn the angle of the phone well.
 
 Figure~\ref{fig:gallery} shows eight routes, chosen across the range of accuracy rather than the best
@@ -492,19 +493,18 @@ leaves the comparison unchanged.}
 
 Table~\ref{tab:ablation} replays every recording with the direction method built up one part at a time,
 graded exactly as above. For cars, drift measured at stops and the averaging of right and left turns
-matter most: together they take the share of seconds within $30\dg$ from $65\%$ to $78\%$ and routes
-within $30\dg$ from $64\%$ to $79\%$, and halve the routes turned more than $45\dg$; the magnetometer
-adds three more points of seconds. For motorcycles every version is within a point or two. The check
-that a turn explains the push changes nothing measurable on these recordings. The flight, replayed
-with the speed the app has in the air, is within $30\dg$ $94\%$ of the time with the first version
-and $99\%$ once drift is measured at stops.
+matter most: together they take the share of seconds within $30\dg$ from $66\%$ to $77\%$ and routes
+within $30\dg$ from $71\%$ to $79\%$, and cut the routes turned more than $45\dg$ from eight to six; the
+check that a turn explains the push adds a point and the magnetometer three more. For motorcycles every
+version is within a point or two. The flight, replayed with the speed the app has in the air, is
+within $30\dg$ $88\%$ of the time with the first version and $99\%$ once drift is measured at stops.
 
 \begin{table}[t]
 \centering\small
 \caption{What each part of the direction method adds: the share of graded seconds and of whole routes
 within $30\dg$, routes turned more than $45\dg$, and the flight's seconds within $30\dg$. Each row adds
-one part to the row above. The magnetometer applies only where the magnetic field was recorded (two
-car drives so far; on the second it was never clean for long enough).}
+one part to the row above. The magnetometer applies only where the magnetic field was recorded (three
+car drives so far; only on the first was it clean for long enough).}
 \label{tab:ablation}
 \setlength{\tabcolsep}{4.5pt}
 \input{tables/tab_ablation.tex}
@@ -522,7 +522,7 @@ from this method, which uses no GPS (purple). (b)~The aircraft's speed from GPS.
 
 Figure~\ref{fig:flight} follows the flight with the same direction method as on the road, fed the
 speed the app itself has: the speed model on the ground, then the measured takeoff and the flight
-network. While taxiing the median error was $8\dg$ and in the air $11\dg$. Eleven seconds were more than
+network. While taxiing the median error was $9\dg$ and in the air $12\dg$. Eleven seconds were more than
 $30\dg$ off: one in the pushback, when the aircraft moves tail first while the method gives the way the
 nose points, and ten around the runway, stopped or just starting the roll, where the GPS track has no
 clear direction. In the climb the error grows slowly, to about $15\dg$ by the end of the recording.
@@ -550,9 +550,9 @@ average km/h in the air (per flight, the median over flights).}
 
 Speed in the air is where the flight engines come in (Figure~\ref{fig:flightengines},
 Table~\ref{tab:flight}). On the recorded flight the takeoff measurement reached $317$~km/h and, held,
-counted $45.5$ of the $74.1$~km: the aircraft kept speeding up to $680$~km/h. From two minutes into the roll
+counted $45.2$ of the $74.1$~km: the aircraft kept speeding up to $680$~km/h. From two minutes into the roll
 the flight network read the climb from the phone's tilt and the time since the roll, and the flight
-counted $76.5$~km ($103\%$); with the flight store, $73.9$~km ($100\%$). The average speed error in the air
+counted $76.2$~km ($103\%$); with the flight store, $73.6$~km ($99\%$). The average speed error in the air
 fell from $196$~km/h to $38$ and $37$. The network reads high by about $50$~km/h early in the climb, where
 this aircraft gained speed more slowly than the NASA jet typically did, and matches GPS near the end.
 
@@ -573,10 +573,10 @@ between each drawn position and GPS's; grey is the taxi, blue the measured takeo
 
 Figure~\ref{fig:flightroute} puts speed and direction together: the whole flight drawn from the first
 GPS point with nothing but what the phone senses. Both versions stay within about a kilometre of GPS
-through the taxi and the takeoff, a median $0.8$~km over the whole recording. In the air the direction
-settles about $10\dg$ to one side of the track, and that, more than the speed, carries the drawn ends
-$14.7$~km (network) and $14.3$~km (store) from where GPS ended, a fifth of the distance flown. The two
-versions draw nearly the same route: they share the direction and differ in speed by $3\%$.
+through the taxi and the takeoff, a median $0.9$~km over the whole recording. In the air the direction
+settles about $11\dg$ to one side of the track, and that, more than the speed, carries the drawn ends
+$16.1$~km (network) and $15.5$~km (store) from where GPS ended, about a fifth of the distance flown. The
+two versions draw nearly the same route: they share the direction and differ in speed by $3.5\%$.
 
 \subsection{A new phone}\label{sec:network}
 
@@ -599,14 +599,14 @@ together, with each journey's own examples left out.}
 \end{table}
 
 A new phone starts with the built-in network. On recordings it had never seen it missed by $9.1$~km/h
-on a motorcycle and $6.7$~km/h in a car, against $9.0$ and $7.0$ for the main model with a full store,
-and counted $91.5\%$ and $101.6\%$ of the distance against $88.3\%$ and $99.0\%$
+on a motorcycle and $6.6$~km/h in a car, against $9.0$ and $6.9$ for the main model with a full store,
+and counted $91.5\%$ and $101.6\%$ of the distance against $88.6\%$ and $100.3\%$
 (Figure~\ref{fig:network}). A store still filling up does worse (Table~\ref{tab:network}): $11.1$~km/h
-with $60$ examples, $8.5$ with $1{,}000$ and $8.1$ with $4{,}000$, still a little behind the network's
+with $60$ examples, $8.5$ with $1{,}000$ and $8.0$ with $4{,}000$, still a little behind the network's
 $7.9$. The app hands over to the store at $3{,}000$ examples all the same, because the store keeps
 adapting to the phone's own vehicle and pocket, an advantage these recordings, made with the same few
 vehicles the network was trained on, cannot show.
-Walking ($103.7\%$) and the flight ($103.2\%$ and $103.3\%$) are nearly the same with either, since they
+Walking ($103.7\%$) and the flight ($102.9\%$ and $103.0\%$) are nearly the same with either, since they
 are counted by steps and, in the air, by the flight engines.
 
 \clearpage
@@ -619,10 +619,10 @@ are counted by steps and, in the air, by the flight engines.
 speed is under two-thirds of the true value (Table~\ref{tab:speed}). Over a journey the two partly
 cancel, but a journey that is mostly fast comes out short.
 \item \textbf{A constant turn over a whole drive.} Much of the remaining direction error is one angle that
-lasts the whole drive: $26$ of the $66$ graded motorcycle and car recordings are turned by more than
+lasts the whole drive: $26$ of the $67$ graded motorcycle and car recordings are turned by more than
 $15\dg$ on average. Removing one such turn per drive --- which needs GPS, so it only bounds what is
-possible --- would raise the share of seconds within $30\dg$ from $77\%$ to $88\%$ and halve the median
-error, from $17\dg$ to $8\dg$. It comes from where the heading started and from the angle learned for
+possible --- would raise the share of seconds within $30\dg$ from $77\%$ to $88\%$ and more than halve
+the median error, from $16.5\dg$ to $7.5\dg$. It comes from where the heading started and from the angle learned for
 the phone, and the replay cannot separate the two. On the one drive with a clean magnetic field the
 magnetometer cut it from $29\dg$ to $18\dg$, and the seconds within $30\dg$ rose from $64\%$ to $96\%$.
 \item \textbf{The first minute of a ride.} Until the angle of the phone is learned the direction comes
@@ -652,8 +652,8 @@ typically has at that point of a flight, not a measurement of this one. A headwi
 faster or slower aircraft, a long hold or a short hop will make them read high or low: on NASA's
 flights the middle $80\%$ counted $91$ to $118\%$ of the distance. Examples learned on the phone's own
 earlier flights with GPS take over when there are some, which one flight could not test. The
-direction in the air settled about $10\dg$ off the track, which carried the drawn end of the flight
-$14.7$~km from GPS's (Figure~\ref{fig:flightroute}).
+direction in the air settled about $11\dg$ off the track, which carried the drawn end of the flight
+$16.1$~km from GPS's (Figure~\ref{fig:flightroute}).
 \end{itemize}
 
 \subsection{What did not work}
@@ -696,10 +696,11 @@ starved the angle learner, and the result in the air swung between $4\dg$ and $2
 the replay's random choices; with the app's own speed it holds at $10$--$13\dg$.
 \item \textbf{A replay's own randomness can move results.} When a recording was added, drawing every
 journey's store afresh moved numbers that had nothing to do with it by several points. Each example now
-keeps its own fixed chance of being drawn, so a new recording changes only what it should.
+keeps its own fixed chance of being drawn, so a new recording changes each store only by its own
+examples --- which, small as they are, still move single journeys (Section~\ref{sec:limits}).
 \end{itemize}
 
-\section{Limitations}
+\section{Limitations}\label{sec:limits}
 
 All recordings come from one person and one iPhone, mostly in one city, with a single flight; other
 people, phones and vehicles may behave differently, the starting network most of all. The flight
@@ -707,10 +708,16 @@ engines learned from one aircraft of one regional jet type and were checked on t
 flight of another; the phone measures tilt from gravity, which a steady push can bend, while the
 recorder measured the aircraft's attitude. Most results replay the newest method on earlier recordings
 rather than coming from live use, with a speed store drawn from the same person's other journeys; on a
-short drive the replayed and the live speeds can teach different angles (Section~\ref{sec:wrong}). GPS in a pocket is
+short drive the replayed and the live speeds can teach different angles (Section~\ref{sec:wrong}).
+Single journeys depend on the store's exact contents: adding the newest eight-minute drive changed
+about $1\%$ of each journey's store and moved single journeys' distance by a median $3.6$ points (up to
+$14$), and the motorcycle and car totals by $0.3$ and $1.3$ points, so the shares of journeys within
+$20\%$ move by several journeys from one re-run to the next. GPS in a pocket is
 accurate only to tens of metres, so small errors cannot be measured reliably. The magnetic field was
-recorded on two drives so far, both with a MagSafe charger near the phone; on the second the field was
-clean for $46$ seconds, short of the minute the correction needs.
+recorded on three drives so far. On the first a MagSafe charger sat near the phone for part of the
+drive, on the second for all of it, and the field was clean for only $46$ seconds, short of the minute
+the correction needs; on the third, with the phone placed away from the charger, the field still swung
+between $32$ and $74~\mu$T from minute to minute and was never clean.
 
 \section{Conclusion}
 
