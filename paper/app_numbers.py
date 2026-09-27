@@ -84,7 +84,7 @@ add('    ]')
 
 add('')
 add('    /// The recorded flight drawn with no GPS after the first point, turned by an arbitrary angle so it does')
-add('    /// not show where it was recorded (the paper\'s Figure 10), km. Every 6 s.')
+add('    /// not show where it was recorded (the paper\'s figure of the whole flight), km. Every 6 s.')
 add('    static let flightRoute: [RoutePoint] = [')
 rows = []
 for name, label in (('gps', 'GPS'), ('neural', 'Neural'), ('algorithm', 'Algorithm')):

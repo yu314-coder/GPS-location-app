@@ -450,7 +450,7 @@ struct VelocityMethodView: View {
     // MARK: - The flight, drawn
 
     /// The whole flight drawn from the first GPS point with nothing but what the phone senses, the
-    /// same picture as the paper's Figure 10 and turned by the same arbitrary angle, so it shows how
+    /// same picture as the paper's figure of the whole flight and turned by the same arbitrary angle, so it shows how
     /// the drawing goes wrong without showing where it was recorded.
     private var flightRoute: some View {
         let s = VelocityMethodData.flightRouteStats
@@ -797,7 +797,7 @@ enum VelocityMethodData {
     ]
 
     /// The recorded flight drawn with no GPS after the first point, turned by an arbitrary angle so it does
-    /// not show where it was recorded (the paper's Figure 10), km. Every 6 s.
+    /// not show where it was recorded (the paper's figure of the whole flight), km. Every 6 s.
     static let flightRoute: [RoutePoint] = [
         .init(line: "GPS", order: 0, x: -0.0, y: 0.0),
         .init(line: "GPS", order: 1, x: 0.0, y: -0.01),

@@ -1,0 +1,58 @@
+% The two built-in networks, drawn layer by layer. Written by hand; the sizes match
+% SpeedNetwork.swift / speed_network.json and FlightSpeedEngines.swift / flight_network.json.
+\begin{tikzpicture}[x=1cm, y=1cm, font=\scriptsize,
+  neuron/.style={circle, draw=black!55, fill=#1, minimum size=2.9mm, inner sep=0pt},
+  neuron/.default=white,
+  box/.style={draw=black!55, rounded corners=2pt, fill=#1, align=flush center, inner sep=2.2pt},
+  box/.default=white,
+  arr/.style={-{Stealth[length=1.5mm]}, black!65},
+  link/.style={black!18, line width=0.25pt}]
+% ---------------- (a) the speed network
+\node[anchor=west, font=\small\bfseries] at (-0.35, 1.05) {(a) Speed network, for a phone with fewer than $3{,}000$ examples};
+\node[box=blue!8, text width=20mm] (acc) at (0.75, -2.35) {Up-and-down\\acceleration,\\$5$~s at $50$~Hz};
+\foreach \i/\lab in {1/{$0.4$--$0.8$~Hz}, 2/{$0.8$--$1.6$}, 3/{$1.6$--$2.5$}, 4/{$2.5$--$4$}, 5/{$4$--$6$}, 6/{$6$--$9$},
+                     7/{$9$--$13$}, 8/{$13$--$18$}, 9/{$18$--$24$~Hz}, 10/{strength}, 11/{roughness}} {
+  \node[neuron=orange!18] (i\i) at (3.75, -0.42*\i) {};
+  \node[anchor=east, font=\tiny] at (3.53, -0.42*\i) {\lab};
+}
+\draw[arr] (acc.east) -- (2.45, -2.35);
+\foreach \j in {1,...,6} { \node[neuron=gray!12] (h\j) at (5.4, -0.25 - 0.72*\j) {}; \node[neuron=gray!12] (k\j) at (6.9, -0.25 - 0.72*\j) {}; }
+\node at (5.4, -4.85) {$\vdots$}; \node at (6.9, -4.85) {$\vdots$};
+\foreach \i in {1,...,11} \foreach \j in {1,...,6} \draw[link] (i\i) -- (h\j);
+\foreach \i in {1,...,6} \foreach \j in {1,...,6} \draw[link] (h\i) -- (k\j);
+\node[neuron=green!15] (o) at (8.4, -2.77) {};
+\foreach \j in {1,...,6} \draw[link] (k\j) -- (o);
+\node[align=center] at (3.75, 0.2) {$11$ inputs,\\standardised};
+\node[align=center] at (5.4, 0.0) {$32$, ReLU};
+\node[align=center] at (6.9, 0.0) {$32$, ReLU};
+\node[align=center] at (8.4, -2.2) {$1$, softplus};
+\node[box=green!10, text width=25mm] (cal) at (10.5, -2.77) {Calibration: $21$\\quantiles stretch\\the answer};
+\node[box=yellow!15, text width=11mm] (v) at (12.55, -2.77) {Speed};
+\draw[arr] (o) -- (cal); \draw[arr] (cal) -- (v);
+\node[box=red!7, text width=52mm] (gate) at (9.9, -5.45) {Farther from all $32$ training clusters\\than $99.5\%$ of the training data:\\no answer rather than a guess};
+\draw[arr, dashed] (i11.south) -- (3.75, -5.45) -- (gate.west);
+\draw[arr, dashed] (gate.east) -| (v.south);
+% ---------------- (b) the flight network
+\begin{scope}[yshift=-7.45cm]
+\node[anchor=west, font=\small\bfseries] at (-0.35, 0.75) {(b) Flight network, in the air after the measured takeoff};
+\node[box=blue!8, text width=35mm] (gr) at (-1.25, -1.05) {Gravity once a second,\\against the still moment\\before the takeoff roll};
+\foreach \i/\lab in {1/{minutes since the roll}, 2/{tilt, last $60$~s}, 3/{tilt, last $300$~s}, 4/{tilt added up}} {
+  \node[neuron=orange!18] (f\i) at (3.75, -0.42*\i) {};
+  \node[anchor=east, font=\tiny] at (3.53, -0.42*\i) {\lab};
+}
+\draw[arr] (gr.east) -- (1.25, -1.05);
+\foreach \j in {1,...,4} { \node[neuron=gray!12] (p\j) at (5.4, 0.05 - 0.42*\j) {}; \node[neuron=gray!12] (q\j) at (6.9, 0.05 - 0.42*\j) {}; }
+\node at (5.4, -1.95) {$\vdots$}; \node at (6.9, -1.95) {$\vdots$};
+\foreach \i in {1,...,4} \foreach \j in {1,...,4} \draw[link] (f\i) -- (p\j);
+\foreach \i in {1,...,4} \foreach \j in {1,...,4} \draw[link] (p\i) -- (q\j);
+\node[neuron=green!15] (fo) at (8.4, -1.0) {};
+\foreach \j in {1,...,4} \draw[link] (q\j) -- (fo);
+\node[align=center] at (3.75, 0.1) {$4$ inputs, held in range};
+\node[align=center] at (5.4, -2.45) {$32$, ReLU};
+\node[align=center] at (6.9, -2.45) {$32$, ReLU};
+\node[align=center] at (8.4, -0.45) {$1$};
+\node[box=green!10, text width=25mm] (sc) at (10.5, -1.0) {$\times 100$~km/h};
+\node[box=yellow!15, text width=11mm] (fv) at (12.55, -1.0) {Ground\\speed};
+\draw[arr] (fo) -- (sc); \draw[arr] (sc) -- (fv);
+\end{scope}
+\end{tikzpicture}
