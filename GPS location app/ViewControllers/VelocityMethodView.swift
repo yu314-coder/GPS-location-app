@@ -3,15 +3,17 @@ import Charts
 
 /// How Velocity Mode works, and how well — written for the person using it.
 ///
-/// Every number here is measured against GPS recorded at the same moment as the estimate. Nothing
-/// is modelled, simulated or extrapolated, and where the method fails it says so with a magnitude.
+/// Every number here is the newest version re-run on recorded sensor data and compared with GPS
+/// recorded at the same moment, used only as the answer key: the numbers in the paper
+/// (paper/velocity_mode.tex), which this page must match. Where the method fails it says so with a
+/// magnitude.
 struct VelocityMethodView: View {
     /// AT ACCESSIBILITY TEXT SIZES A CHART IS WORSE THAN NO CHART.
     ///
-    /// These are horizontal bars with a journey name inside each band. When the label grows and
-    /// the plot does not, the name lands on top of its own bar — measured at accessibility-medium,
-    /// where "Suburban, 12 min" had the bar drawn straight through it. The tables carry every
-    /// number the charts do, so above xxxLarge the charts step aside rather than overlap.
+    /// When a label grows and the plot does not, the label lands on top of its own bar — measured
+    /// at accessibility-medium, where a journey name had its bar drawn straight through it. The
+    /// tables carry every number the charts do, so above xxxLarge the charts step aside rather
+    /// than overlap.
     @Environment(\.dynamicTypeSize) private var typeSize
     private var chartsFit: Bool { typeSize <= .xxxLarge }
 
@@ -24,12 +26,11 @@ struct VelocityMethodView: View {
                     stageTwo
                     stageThree
                     stageFour
-                    roadResults.id("road")
-                    slowSpeed
-                    headingResults.id("heading")
+                    distanceResults.id("road")
+                    speedResults.id("speed")
+                    directionResults.id("heading")
                     basement.id("basement")
                     flight.id("flight")
-                    pocket.id("pocket")
                     limits.id("limits")
                 }
                 .padding(16)
@@ -59,12 +60,13 @@ struct VelocityMethodView: View {
                 Text("""
                 Satellite positioning fails in the places people most want a route: tunnels, car \
                 parks, dense city streets, aircraft cabins. Velocity Mode records the journey \
-                without it — speed from how the vehicle shakes, direction from the magnetometer \
-                and gyroscope, and position projected forward from a single starting fix.
+                without it — speed from how the vehicle shakes, direction from the gyroscope, \
+                accelerometer and magnetometer, and position projected forward from a single \
+                starting fix.
                 """)
                 .font(.callout)
                 Divider()
-                Text("Only the first point of the route comes from GPS. Every point after it is dead-reckoned.")
+                Text("Only the first point of the route comes from GPS. Every point after it, and every direction, is dead-reckoned.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
@@ -75,12 +77,12 @@ struct VelocityMethodView: View {
     private var stageOne: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "1 · Vibration into a signature",
+                SectionHeader(title: "1 · Vibration into a fingerprint",
                               subtitle: "50 Hz accelerometer → 11 numbers") { EmptyView() }
                 Text("""
-                Road and engine vibration carry speed, but not in any single property — five \
-                hand-built features were tried and failed. What works is the whole spectrum. Four \
-                seconds of vertical acceleration are windowed and transformed:
+                Road and engine vibration carry speed, but not in any single property. What works \
+                is the whole spectrum. Every second, the last five seconds of up-and-down \
+                acceleration (256 readings) are windowed and transformed:
                 """)
                 .font(.callout)
                 Equation("eq_window")
@@ -88,11 +90,11 @@ struct VelocityMethodView: View {
                 Text("Energy is summed into nine log-spaced bands at 0.4, 0.8, 1.6, 2.5, 4, 6, 9, 13, 18 and 24 Hz:")
                     .font(.callout)
                 Equation("eq_band")
-                Text("Two time-domain terms complete the signature:").font(.callout)
+                Text("Two measures of the overall strength complete the fingerprint:").font(.callout)
                 Equation("eq_tail")
                 Text("""
-                Four seconds was measured against one and eight. One is too little signal; eight \
-                blurs across changes in speed, raising low-speed bias from +1.0 to +6.0 km/h.
+                Eleven numbers a second. A vehicle shakes differently at different speeds, and \
+                the fingerprint captures that without assuming how.
                 """)
                 .font(.footnote).foregroundStyle(.secondary)
             }
@@ -102,22 +104,30 @@ struct VelocityMethodView: View {
     private var stageTwo: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "2 · Signature into speed",
-                              subtitle: "nearest neighbours over GPS-labelled examples") { EmptyView() }
+                SectionHeader(title: "2 · Fingerprint into speed",
+                              subtitle: "the phone's own trips, or a built-in network") { EmptyView() }
                 Text("""
-                Nothing is assumed about how shaking relates to speed. The app stores signature \
-                and measured-speed pairs whenever GPS supplies a speed, then answers by locality.
+                Whenever GPS supplies a speed, the phone stores the fingerprint with it, keeping up \
+                to 4,000. In Velocity Mode those examples join the store only when the workout \
+                ends, so the route being drawn never uses them. Without GPS it averages the 12 \
+                stored fingerprints closest to the current one, nearer ones counting more:
                 """)
                 .font(.callout)
                 Equation("eq_dist")
                 Equation("eq_knn")
-                Text("It is allowed to refuse, which is where its worst readings used to come from:")
+                Text("If even the closest is far away, it gives no answer rather than a guess:")
                     .font(.callout)
                 Equation("eq_reject")
                 Text("""
-                Error scales directly with match distance: 5.3 km/h mean error when the nearest \
-                stored signature is within d² = 1.03, rising to 16.9 km/h in the range 2.12–4.36. \
-                Refusing a distant match removes the worst answers.
+                Averaging pulls every answer toward the middle, so a correction learned from the \
+                stored examples stretches the answers back out. A new phone has no examples, so \
+                until it holds 3,000 it uses a small network trained on recorded trips and shipped \
+                with the app: on recordings it had never seen, 9.1 km/h average error on a \
+                motorcycle and 6.7 in a car, against 9.0 and 7.3 for a full store.
+
+                A stopped vehicle is recognised from the absence of shaking, not from the speed \
+                model, which would read an idling engine as a crawl. A hand on the phone shakes \
+                it, so while the phone is being handled the speed may fall but not rise.
                 """)
                 .font(.footnote).foregroundStyle(.secondary)
             }
@@ -131,11 +141,12 @@ struct VelocityMethodView: View {
                               subtitle: "gyroscope for turns, magnetometer for the datum") { EmptyView() }
                 Text("""
                 Turn angle comes from the gyroscope, accurate over seconds. Absolute direction comes \
-                from the phone's own heading, held to magnetic north by the magnetometer. In a car \
-                that hold is weak and the heading drifts slowly with the gyroscope's bias, so the \
-                drift is measured while the vehicle is stopped and the phone still, and taken off; \
-                and while the field looks like Earth's, the magnetometer is read directly to correct \
-                where the heading started.
+                from the phone's orientation, read along whichever edge of the phone lies closest to \
+                level: with the phone head-down in a trouser pocket the built-in heading scattered \
+                by about 49° a minute, this one by about 1°. In a car the heading drifts slowly \
+                with the gyroscope's bias, so the drift is measured while the vehicle is stopped \
+                and the phone still, and taken off; and while the field looks like Earth's, the \
+                magnetometer is read directly to correct where the heading started.
                 """)
                 .font(.callout)
                 Equation("eq_heading")
@@ -144,7 +155,9 @@ struct VelocityMethodView: View {
                 vehicle travels. It is learned with no GPS, from the vehicle's own turns: the push \
                 toward the inside of a curve is speed times turn rate, and where it points, relative \
                 to the phone, says which way is forward. Right and left turns are averaged apart so \
-                braking into corners cancels. Walking uses the back-and-forth of the steps instead.
+                braking into corners cancels, and a turn counts only if it explains at least a \
+                tenth of the push. Walking uses the back-and-forth of the steps instead. No GPS \
+                reaches the direction: not the first heading, not the angle.
                 """)
                 .font(.footnote).foregroundStyle(.secondary)
             }
@@ -158,128 +171,173 @@ struct VelocityMethodView: View {
                               subtitle: "projection from one frozen anchor") { EmptyView() }
                 Equation("eq_project")
                 Text("""
-                Distance is withheld on a car-park ramp — climbing steadily while turning \
-                continuously the same way, which a road does not do.
+                When the learned angle moves by 3° or more, the saved route is redrawn with it, at \
+                most every 10 seconds. Distance is withheld on a car-park ramp: climbing steadily \
+                while turning continuously the same way, which a road does not do.
                 """)
                 .font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
 
-    // MARK: - Road results
+    // MARK: - Distance
 
-    private var roadResults: some View {
+    private var distanceResults: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "Measured on the road",
-                              subtitle: "recorded distance against GPS, same moment") { EmptyView() }
+                SectionHeader(title: "Distance against GPS",
+                              subtitle: "the newest version, re-run on every recording") { EmptyView() }
+                Text("""
+                Every recording was replayed through the current method from its raw sensor data, \
+                with GPS recorded alongside and used only as the answer key. The distance counted, \
+                as a share of what GPS measured:
+                """)
+                .font(.callout)
                 if chartsFit {
+                // The GPS line goes under the bars and each label inside its own bar: every bar ends
+                // within a few percent of 100, so labels beside the bars sat on the line.
                 Chart {
-                    ForEach(VelocityMethodData.journeys) { j in
-                        BarMark(x: .value("Distance", j.trueM), y: .value("Journey", j.name))
-                            .position(by: .value("Source", "GPS truth"))
-                            .foregroundStyle(by: .value("Source", "GPS truth"))
-                        BarMark(x: .value("Distance", j.recordedM), y: .value("Journey", j.name))
-                            .position(by: .value("Source", "recorded"))
-                            .foregroundStyle(by: .value("Source", "recorded"))
-                            .annotation(position: .trailing, spacing: 3) {
-                                Text(String(format: "%+.0f%%", j.errorPercent))
-                                    .font(.system(size: 9, weight: .medium))
-                                    .foregroundStyle(j.errorPercent > 30 ? Color.red
-                                                     : (j.errorPercent > 10 ? Color.orange : Color.green))
+                    RuleMark(x: .value("GPS", 100))
+                        .foregroundStyle(Color.primary.opacity(0.45))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    ForEach(VelocityMethodData.distance) { c in
+                        BarMark(x: .value("Counted", 100 + c.errorPercent), y: .value("Travel", c.name))
+                            .foregroundStyle(AppTheme.distance.gradient)
+                            .annotation(position: .overlay, alignment: .trailing) {
+                                Text(String(format: "%+.1f%%", c.errorPercent))
+                                    .font(.caption2.weight(.semibold)).foregroundStyle(.white)
+                                    .padding(.trailing, 4)
                             }
                     }
                 }
-                .chartForegroundStyleScale([
-                    "recorded": Color.accentColor,
-                    "GPS truth": Color(.systemGray3)
-                ])
-                .chartXAxisLabel("metres travelled")
-                .chartXScale(domain: 0...17500)
-                // NO VERTICAL GRIDLINES. The journey names are drawn inside the plot area, and
-                // the dashed lines at 5,000 and 10,000 ran straight through the middle of
-                // "Suburban, 12 min" and "Motorcycle, 20 min". The axis values below carry the
-                // scale on their own.
-                .chartXAxis { AxisMarks { AxisValueLabel() } }
+                .chartXScale(domain: 0...125)
+                .chartXAxisLabel("distance counted, % of GPS (dashed)")
+                .chartXAxis { AxisMarks(values: [0, 25, 50, 75, 100]) { AxisValueLabel() } }
                 .chartYAxis { AxisMarks(position: .leading) { AxisValueLabel() } }
-                .chartLegend(position: .top, alignment: .leading)
-                .frame(height: 330)
+                .frame(height: 170)
                 }
 
                 Divider()
                 VStack(spacing: 0) {
-                    ForEach(Array(VelocityMethodData.journeys.enumerated()), id: \.element.id) { i, j in
+                    ForEach(Array(VelocityMethodData.distance.enumerated()), id: \.element.id) { i, c in
                         if i > 0 { Divider() }
-                        JourneyRow(name: j.name,
-                                   recorded: "\(j.recordedM)\u{00A0}m",
-                                   truth: "\(j.trueM)\u{00A0}m",
-                                   error: String(format: "%+.0f%%", j.errorPercent),
-                                   detail: String(format: "%.0f km/h average", j.avgKmh))
+                        JourneyRow(name: c.name,
+                                   recorded: Self.km(c.appKm),
+                                   truth: Self.km(c.gpsKm),
+                                   error: String(format: "%+.1f%%", c.errorPercent),
+                                   detail: c.detail,
+                                   emphasise: abs(c.errorPercent) >= 10)
                     }
                 }
-            }
-        }
-    }
-
-    private var slowSpeed: some View {
-        AppCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("Why slow journeys read long")
                 Text("""
-                The absolute error is one to two km/h at any speed. That is 2% of a motorway pace \
-                and over 40% of a crawl, so the same estimator looks excellent on an open road and \
-                poor in traffic.
-                """)
-                .font(.callout)
-                if chartsFit {
-                Chart(VelocityMethodData.speedBias) { b in
-                    BarMark(x: .value("Speed", b.band), y: .value("Bias", b.biasKmh))
-                        .foregroundStyle(Color.accentColor.gradient)
-                        .annotation(position: .top) {
-                            Text(String(format: "+%.1f", b.biasKmh))
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                }
-                .chartYAxisLabel("over-read, km/h")
-                .chartXAxisLabel("true speed, km/h")
-                .chartYScale(domain: 0...2.2)
-                .frame(height: 180)
-                } else {
-                    BiasTable()
-                }
-                Text("""
-                Leave-one-out over 4,178 stored observations from matched journeys. Adding other \
-                carry positions and vehicles to the same store roughly doubles these figures.
+                Journey by journey the spread is wider: 79% of motorcycle journeys and 65% of car \
+                journeys came within 20% of GPS. On foot, 7% long in the first minutes after a ride \
+                and 7% short at other times.
                 """)
                 .font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
 
-    private var headingResults: some View {
+    private static func km(_ v: Double) -> String {
+        String(format: v < 10 ? "%.2f\u{00A0}km" : "%.1f\u{00A0}km", v)
+    }
+
+    // MARK: - Speed
+
+    private var speedResults: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("Direction, before and after the carry offset")
+                SectionHeader(title: "Speed, band by band",
+                              subtitle: "each half-minute of riding against GPS") { EmptyView() }
+                Text("""
+                In a car the middle reading is within about 2 km/h of GPS from 10 to 60 km/h, and \
+                reads low above that. On a motorcycle, with the phone in a trouser pocket, the range \
+                is squeezed: slow riding reads fast and fast riding reads slow. When a fingerprint \
+                could belong to several speeds, the average lands in the middle.
+                """)
+                .font(.callout)
                 if chartsFit {
-                Chart(VelocityMethodData.heading) { h in
-                    BarMark(x: .value("Journey", h.label), y: .value("Error", h.degrees))
-                        .foregroundStyle(h.afterFix ? Color.green : Color.red)
+                Chart {
+                    ForEach([0.0, 80.0], id: \.self) { v in
+                        LineMark(x: .value("GPS", v), y: .value("App", v),
+                                 series: .value("Line", "Same as GPS"))
+                            .foregroundStyle(by: .value("Line", "Same as GPS"))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    }
+                    ForEach(VelocityMethodData.speedBands.filter(\.plotted)) { b in
+                        LineMark(x: .value("GPS", b.motorcycleGPS), y: .value("App", b.motorcycleApp),
+                                 series: .value("Line", "Motorcycle"))
+                            .foregroundStyle(by: .value("Line", "Motorcycle"))
+                            .symbol(.circle)
+                        LineMark(x: .value("GPS", b.carGPS), y: .value("App", b.carApp),
+                                 series: .value("Line", "Car"))
+                            .foregroundStyle(by: .value("Line", "Car"))
+                            .symbol(.square)
+                    }
+                }
+                .chartForegroundStyleScale([
+                    "Motorcycle": AppTheme.distance,
+                    "Car": AppTheme.pace,
+                    "Same as GPS": Color.primary.opacity(0.35)
+                ])
+                .chartXScale(domain: 0...80)
+                .chartYScale(domain: 0...80)
+                .chartXAxisLabel("GPS, km/h")
+                .chartYAxisLabel("the app, km/h")
+                .chartLegend(position: .top, alignment: .leading)
+                .frame(height: 260)
+                }
+                Divider()
+                SpeedBandTable()
+                Text("""
+                The table gives the app's middle reading over GPS's, in each band of GPS speed; \
+                above 80 km/h there are too few half-minutes to plot (3 on a motorcycle). Average error 9.0 km/h on a motorcycle \
+                (818 half-minutes) and 7.3 in a car (733). On foot, about 5.0 km/h where GPS \
+                measured 4.6.
+                """)
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Direction
+
+    private var directionResults: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "Direction against GPS",
+                              subtitle: "graded every second, no GPS used") { EmptyView() }
+                Text("""
+                Each second the app's direction of travel is compared with the way GPS moved over \
+                the surrounding half-minute (ten seconds for the plane). The share of seconds \
+                within 30°:
+                """)
+                .font(.callout)
+                if chartsFit {
+                Chart(VelocityMethodData.direction) { d in
+                    BarMark(x: .value("Travel", d.name), y: .value("Within 30°", d.within30))
+                        .foregroundStyle(Color.green.gradient)
                         .annotation(position: .top) {
-                            Text(String(format: "%.1f°", h.degrees))
-                                .font(.caption2).foregroundStyle(.secondary)
+                            Text("\(d.within30)%").font(.caption2).foregroundStyle(.secondary)
                         }
                 }
-                .chartYAxisLabel("mean direction error, °")
-                .chartYScale(domain: 0...42)
+                .chartYScale(domain: 0...110)
+                .chartYAxis { AxisMarks(values: [0, 25, 50, 75, 100]) }
                 .frame(height: 180)
                 } else {
-                    HeadingTable()
+                    DirectionTable()
                 }
                 Text("""
-                Red: the route came out correctly shaped but pivoted about its start. On one 15 km \
-                journey the recorded net displacement matched the true one to within 8 m of length \
-                while pointing 26° wrong, finishing 4,174 m from the real endpoint. With the offset \
-                applied that becomes 366 m — 2.4% of the distance travelled.
+                Median error 16° on a motorcycle and in a car, 10° on foot and 6° in the air. \
+                Whole routes, laid over the GPS track from the shared start: the median route was \
+                turned 9° on a motorcycle (41 routes) and 16° in a car (27), and 83% and 85% came \
+                within 30°.
+
+                In cars, measuring the drift at stops took the seconds within 30° from 64% to 72%, \
+                averaging right and left turns apart to 80%, and the clean-field magnetometer to 83%. \
+                On the flight, learning only from turns that explain the push the phone feels took \
+                it from 36% to 99%.
                 """)
                 .font(.caption2).foregroundStyle(.secondary)
             }
@@ -292,27 +350,20 @@ struct VelocityMethodView: View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Underground car parks",
-                              subtitle: "where the method is worst, and why") { EmptyView() }
+                              subtitle: "where GPS is wrong too") { EmptyView() }
                 Text("""
-                A car crawling up a concrete spiral shakes as hard as one doing 40 km/h on a road. \
-                Split by the barometer and gyroscope, the same journeys separate cleanly:
+                A car crawling up a concrete spiral shakes as hard as one doing 40 km/h on a road, \
+                and shaking is all the speed model has. So distance is withheld where the barometer \
+                shows a sustained climb above 0.08 m/s and the gyroscope shows more than 150° of \
+                same-direction turning over 30 seconds. A helical ramp does both; a hill or a \
+                junction does only one.
                 """)
                 .font(.callout)
-                VStack(spacing: 0) {
-                    ForEach(Array(VelocityMethodData.rampSplit.enumerated()), id: \.element.id) { i, r in
-                        if i > 0 { Divider() }
-                        JourneyRow(name: r.name, recorded: "\(r.recordedM)\u{00A0}m",
-                                   truth: "\(r.trueM)\u{00A0}m",
-                                   error: String(format: "%+.0f%%", r.errorPercent),
-                                   detail: r.phase == "ramp" ? "on the ramp" : "on the road",
-                                   emphasise: r.phase == "ramp")
-                    }
-                }
                 Text("""
-                Ramps read 169% to 297% long; the road between them reads 17% to 23%. Distance is \
-                now withheld where the barometer shows a sustained climb above 0.08 m/s and the \
-                gyroscope shows more than 150° of same-direction turning over 30 seconds — a \
-                helical ramp does both, a hill or a junction does only one.
+                The test has fired once on an ordinary road, losing about 115 m. And GPS is no \
+                answer key underground: on four car journeys it kept claiming 10 m accuracy for \
+                positions it did not have, frozen while parked and wandering on the ramps. Those \
+                stretches, found from the barometer, are left out of every number on this page.
                 """)
                 .font(.caption2).foregroundStyle(.secondary)
             }
@@ -367,83 +418,28 @@ struct VelocityMethodView: View {
         }
     }
 
-    // MARK: - Where it fails completely
-
-    /// The worst measured result, kept in the app rather than only in the paper.
-    ///
-    /// Every other failure here is a matter of degree — too high, too low, right about the wrong
-    /// regime. This one is different: on a motorcycle with the phone in a pocket the input signal
-    /// contains no speed at all, so the estimate is flat. Showing it matters more than the
-    /// flattering cases do, because someone deciding whether to trust a route needs to know the
-    /// mode has a regime where it is confidently wrong.
-    private var pocket: some View {
-        AppCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "Motorcycle, phone in a pocket",
-                              subtitle: "where it fails completely") { EmptyView() }
-                Text("""
-                19 minutes, 1146 readings. The estimate reports roughly 50 km/h whatever the \
-                motorcycle is doing — including standing still at a light:
-                """)
-                .font(.callout)
-                if chartsFit {
-                    Chart(VelocityMethodData.pocket) { b in
-                        BarMark(x: .value("Band", b.band), y: .value("km/h", b.realKmh))
-                            .position(by: .value("Source", "real"))
-                            .foregroundStyle(AppTheme.distance)
-                        BarMark(x: .value("Band", b.band), y: .value("km/h", b.estimatedKmh))
-                            .position(by: .value("Source", "estimated"))
-                            .foregroundStyle(Color.red.opacity(0.85))
-                    }
-                    .chartForegroundStyleScale([
-                        "real": AppTheme.distance, "estimated": Color.red.opacity(0.85)
-                    ])
-                    .chartXAxisLabel("real speed band, km/h")
-                    .chartYAxisLabel("km/h")
-                    .frame(height: 190)
-                } else {
-                    PocketTable()
-                }
-                Text("""
-                The reported speed and the real speed are unrelated: R = +0.13. The vibration \
-                signature and the real speed are related at R = −0.02, which is to say not at all.
-
-                The signature reads 7.467 while the motorcycle is stopped and 7.386 at over \
-                45 km/h — indistinguishable, and marginally higher at rest. A car rests the phone \
-                on a rigid surface and delivers road noise that scales with speed. A motorcycle \
-                delivers engine vibration, which follows engine speed rather than road speed and \
-                is undiminished at a standstill in gear, through clothing that damps what little \
-                road input survives. There is no speed in the input, so nothing can recover one: \
-                47 stationary readings accumulated 468 m that did not happen.
-
-                What matters most is the confidence. The regime-distance signal sat at 3.51 all \
-                ride — outside the 1.81–2.87 range for the same vehicle carried differently — and \
-                the extrapolation warning was false on all 1146 readings. It reported 53.8 km/h at \
-                a red light and never signalled that it was guessing.
-                """)
-                .font(.caption2).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    // MARK: - Limits
+    // MARK: - Where it goes wrong
 
     private var limits: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 10) {
-                SectionHeader("What it cannot do")
-                Limitation("Hold the phone in your hand and the speed signal disappears.",
-                           "Body contact damps the vibration until the signature stops varying with speed — measured at 7.10, 7.08, 7.07, 7.13 and 7.25 across 10 to 65 km/h. Reported speed becomes a constant. Rest the phone in the vehicle.")
-                Limitation("A stationary engine reads as movement.",
-                           "A motorcycle at a red light reads 5.2 km/h in a mount, and 53.8 km/h in a pocket. No tested signal separates an idling engine from a moving one.")
-                Limitation("In a pocket on a motorcycle it does not work at all.",
-                           "Not merely inaccurate: the estimate is flat, unrelated to real speed at R = +0.13, and the model does not warn that it is guessing. See above.")
+                SectionHeader("Where it goes wrong")
+                Limitation("On a motorcycle, fast riding reads slow and slow riding reads fast.",
+                           "Above 60 km/h the speed is under two-thirds of the true value; 10–20 km/h reads about 19. Over a journey the two partly cancel, but a mostly fast journey comes out short.")
+                Limitation("The heading can start wrong and stay wrong.",
+                           "When the magnetic field cannot be trusted for the whole drive, an error in where the heading started stays for the drive: 24 of 65 graded recordings were turned by more than 15° this way. Only a clean magnetometer reading can see it.")
+                Limitation("The first minute of a ride.",
+                           "Until the angle the phone sits at is learned from the turns, direction comes from the heading alone. The saved route is redrawn afterwards, but a very short ride may never learn the angle well.")
+                Limitation("A phone that moves.",
+                           "A hand on the phone can lower the speed but not raise it, and a phone held in the hand keeps the last speed measured before it was picked up, so one picked up while slowing keeps that speed until it is still. A phone that shifts in a pocket turns the rest of the ride by about as much as it moved.")
+                Limitation("Keep the phone away from magnets.",
+                           "Beside a car's MagSafe charger the phone read up to 2,600 µT, fifty times Earth's field, yet reported its compass as well calibrated. The app ignores such a field, but then cannot correct the heading.")
+                Limitation("A ride that is never recognised.",
+                           "On one short ride Apple's motion classifier never said \u{201C}driving\u{201D} and the step counter took the engine for footsteps: 59% short.")
                 Limitation("In an aircraft, the speed after the takeoff is a typical airliner's.",
                            "Learned from NASA flight data, not measured on this flight: a strong wind or a much faster or slower aircraft reads off. On NASA flights the middle 80% counted 91–118% of the distance.")
-                Limitation("A vehicle it has never learned reads wrong at first.",
-                           "The model answers only for conditions it has observed. A first motorcycle ride teaches it; the second is far better.")
-                Limitation("These numbers are one phone, one person, three vehicles.",
-                           "23 instrumented journeys in one city. They characterise this configuration and may not transfer.")
+                Limitation("These numbers are one phone and one person.",
+                           "74 motorcycle and car journeys (20 hours, 340 km that GPS could check), 45 straight stretches and seven walks on foot, and one flight, mostly in one city. Other people, phones and vehicles may behave differently, the built-in network most of all.")
             }
         }
     }
@@ -487,9 +483,9 @@ private struct Equation: View {
     }
 }
 
-/// One measured journey.
+/// One measured result: a name with its detail, the app's figure over GPS's, and the error.
 ///
-/// Two lines rather than one. A single row could not hold "Motorcycle, 20 min" beside four
+/// Two lines rather than one. A single row could not hold a name and its detail beside four
 /// numeric columns without truncating it, and minimumScaleFactor made each row a different size
 /// as it shrank to fit — so rows that should have been comparable were not even the same height.
 private struct JourneyRow: View {
@@ -510,11 +506,14 @@ private struct JourneyRow: View {
                 }
                 .layoutPriority(1)
                 Spacer(minLength: 4)
+                // The figures keep their width and the name wraps instead: "1.87 km" split over
+                // two lines once the detail beside it grew long.
                 VStack(alignment: .trailing, spacing: 1) {
                     Text(recorded).font(.system(.caption, design: .monospaced))
                     Text("GPS\u{00A0}\(truth)").font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
+                .fixedSize()
                 Text(error)
                     .font(.system(.caption, design: .monospaced)).fontWeight(.semibold)
                     .foregroundStyle(emphasise ? .red : .primary)
@@ -545,74 +544,57 @@ private struct Limitation: View {
 
 // MARK: - The measurements
 
-/// Recorded in Velocity Mode with GPS running alongside purely as ground truth. Truth is the
-/// integral of GPS speed rather than the sum of fix-to-fix displacements, which accumulates
-/// position scatter — on one 15 km journey the two differ by 35%.
+/// The newest version re-run on every recording's raw sensor data, with GPS recorded at the same
+/// moment used only as the answer key. These are the paper's numbers (paper/velocity_mode.tex,
+/// Tables 2-5 and 7); change them only together with it.
 enum VelocityMethodData {
-    struct Journey: Identifiable {
-        let id = UUID()
-        let name: String
-        let recordedM: Int
-        let trueM: Int
-        let avgKmh: Double
-        var errorPercent: Double { 100.0 * Double(recordedM - trueM) / Double(trueM) }
+    struct Distance: Identifiable {
+        let id = UUID(); let name: String; let detail: String
+        let appKm: Double; let gpsKm: Double
+        /// As the paper reports it, from the unrounded totals.
+        let errorPercent: Double
     }
-    struct SpeedBias: Identifiable { let id = UUID(); let band: String; let biasKmh: Double }
-    struct Heading: Identifiable { let id = UUID(); let label: String; let degrees: Double; let afterFix: Bool }
-    struct RampSplit: Identifiable {
-        let id = UUID(); let name: String; let phase: String
-        let recordedM: Int; let trueM: Int
-        var errorPercent: Double { 100.0 * Double(recordedM - trueM) / Double(trueM) }
+    /// The middle GPS and app speeds in one band of GPS speed, km/h.
+    struct SpeedBand: Identifiable {
+        let id = UUID(); let band: String
+        let motorcycleGPS: Double, motorcycleApp: Double
+        let carGPS: Double, carApp: Double
+        var plotted = true
+    }
+    struct Direction: Identifiable {
+        let id = UUID(); let name: String; let graded: String
+        let medianDegrees: Int; let within30: Int
     }
     struct FlightPoint: Identifiable { let id = UUID(); let point: String; let errorPercent: Double }
-    /// Motorcycle, phone in a trouser pocket: mean estimated speed within each band of real
-    /// speed. Kept as a pair rather than an error, because the point is that one moves and the
-    /// other does not.
-    struct PocketBand: Identifiable {
-        let id = UUID(); let band: String
-        let realKmh: Double; let estimatedKmh: Double
-    }
 
-    static let journeys: [Journey] = [
-        .init(name: "Open road, 25 min",  recordedM: 14994, trueM: 14445, avgKmh: 43.2),
-        .init(name: "Suburban, 12 min",   recordedM: 3793,  trueM: 3678,  avgKmh: 28.5),
-        .init(name: "Motorcycle, 20 min", recordedM: 6181,  trueM: 5118,  avgKmh: 35.0),
-        .init(name: "City, 15 min",       recordedM: 3363,  trueM: 2801,  avgKmh: 21.0),
-        .init(name: "City, 12 min",       recordedM: 5741,  trueM: 4720,  avgKmh: 28.7),
-        .init(name: "Car park, 11 min",   recordedM: 2762,  trueM: 2207,  avgKmh: 19.7),
-        .init(name: "Car park, 8 min",    recordedM: 2548,  trueM: 1616,  avgKmh: 20.2),
-        .init(name: "Car park, 4 min",    recordedM: 1755,  trueM: 1086,  avgKmh: 18.7)
+    static let distance: [Distance] = [
+        .init(name: "Motorcycle", detail: "39 journeys, phone in a trouser pocket",
+              appKm: 158.4, gpsKm: 176.5, errorPercent: -10.3),
+        .init(name: "Car", detail: "35 journeys, pocket, flat or mount",
+              appKm: 162.7, gpsKm: 163.1, errorPercent: -0.3),
+        .init(name: "Walking", detail: "45 straight stretches, counted by steps",
+              appKm: 1.93, gpsKm: 1.87, errorPercent: 3.7),
+        .init(name: "Plane", detail: "1 flight: takeoff, then the flight network",
+              appKm: 76.1, gpsKm: 74.1, errorPercent: 2.8)
     ]
 
-    static let speedBias: [SpeedBias] = [
-        .init(band: "2–10", biasKmh: 1.0), .init(band: "10–20", biasKmh: 1.4),
-        .init(band: "20–35", biasKmh: 1.7), .init(band: "35–55", biasKmh: 0.8)
+    static let speedBands: [SpeedBand] = [
+        .init(band: "0–10",   motorcycleGPS: 2.6,  motorcycleApp: 2.5,  carGPS: 2.6,  carApp: 2.9),
+        .init(band: "10–20",  motorcycleGPS: 14.7, motorcycleApp: 19.2, carGPS: 15.4, carApp: 16.7),
+        .init(band: "20–30",  motorcycleGPS: 25.0, motorcycleApp: 26.8, carGPS: 25.2, carApp: 25.1),
+        .init(band: "30–40",  motorcycleGPS: 35.1, motorcycleApp: 30.9, carGPS: 35.1, carApp: 34.1),
+        .init(band: "40–50",  motorcycleGPS: 44.0, motorcycleApp: 35.2, carGPS: 43.7, carApp: 45.4),
+        .init(band: "50–60",  motorcycleGPS: 53.2, motorcycleApp: 38.4, carGPS: 54.6, carApp: 55.0),
+        .init(band: "60–80",  motorcycleGPS: 66.4, motorcycleApp: 41.2, carGPS: 68.9, carApp: 61.8),
+        .init(band: "80+",    motorcycleGPS: 98.4, motorcycleApp: 41.3, carGPS: 87.1, carApp: 70.7,
+              plotted: false)
     ]
 
-    static let heading: [Heading] = [
-        .init(label: "15 km", degrees: 24.9, afterFix: false),
-        .init(label: "1.6 km", degrees: 35.8, afterFix: false),
-        .init(label: "Basement", degrees: 0.8, afterFix: true),
-        .init(label: "Basement", degrees: 1.3, afterFix: true),
-        .init(label: "City", degrees: 1.0, afterFix: true),
-        .init(label: "Car park", degrees: 2.1, afterFix: true)
-    ]
-
-    /// The same two car-park journeys, split by the ramp detector.
-    static let rampSplit: [RampSplit] = [
-        .init(name: "Car park, 4 min", phase: "ramp", recordedM: 267, trueM: 67),
-        .init(name: "Car park, 4 min", phase: "road", recordedM: 1488, trueM: 1018),
-        .init(name: "Car park, 8 min", phase: "ramp", recordedM: 618, trueM: 229),
-        .init(name: "Car park, 8 min", phase: "road", recordedM: 1930, trueM: 1387)
-    ]
-
-    /// 19.1 minutes, 1146 ticks at 1 Hz, Velocity Mode on for 1143 of them.
-    static let pocket: [PocketBand] = [
-        .init(band: "0–2",   realKmh: 1.0,  estimatedKmh: 36.2),
-        .init(band: "2–10",  realKmh: 5.6,  estimatedKmh: 54.4),
-        .init(band: "10–25", realKmh: 17.0, estimatedKmh: 57.8),
-        .init(band: "25–45", realKmh: 34.0, estimatedKmh: 55.5),
-        .init(band: "45–70", realKmh: 54.0, estimatedKmh: 49.8)
+    static let direction: [Direction] = [
+        .init(name: "Motorcycle", graded: "40 recordings", medianDegrees: 16, within30: 73),
+        .init(name: "Car", graded: "25 recordings", medianDegrees: 16, within30: 83),
+        .init(name: "Walking", graded: "7 walks", medianDegrees: 10, within30: 93),
+        .init(name: "Plane", graded: "1 flight", medianDegrees: 6, within30: 99)
     ]
 
     /// The recorded flight replayed with no GPS through the app's own code (paper, Table 7).
@@ -623,56 +605,52 @@ enum VelocityMethodData {
     ]
 }
 
-// MARK: - Text fallbacks, used when the type is too large for a chart
+// MARK: - Tables, beside the charts or in place of them when the type is too large
 
-private struct PocketTable: View {
+private struct SpeedBandTable: View {
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(VelocityMethodData.pocket) { b in
+            HStack {
+                Text("GPS km/h").font(.caption2).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text("motorcycle").font(.caption2).foregroundStyle(.secondary)
+                    .frame(minWidth: 84, alignment: .trailing)
+                Text("car").font(.caption2).foregroundStyle(.secondary)
+                    .frame(minWidth: 84, alignment: .trailing)
+            }
+            .padding(.bottom, 4)
+            ForEach(VelocityMethodData.speedBands) { b in
+                Divider()
                 HStack {
-                    Text("\(b.band) km/h").font(.caption)
-                    Spacer()
-                    Text("real \(b.realKmh, specifier: "%.0f")").font(.caption).foregroundStyle(.secondary)
-                    Text("est \(b.estimatedKmh, specifier: "%.0f")").font(.caption).foregroundStyle(.red)
-                        .frame(width: 62, alignment: .trailing)
+                    Text(b.band).font(.caption)
+                    Spacer(minLength: 8)
+                    Text(String(format: "%.0f / %.0f", b.motorcycleApp, b.motorcycleGPS))
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(minWidth: 84, alignment: .trailing)
+                    Text(String(format: "%.0f / %.0f", b.carApp, b.carGPS))
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(minWidth: 84, alignment: .trailing)
                 }
                 .padding(.vertical, 5)
-                Divider()
             }
         }
     }
 }
 
-private struct BiasTable: View {
+private struct DirectionTable: View {
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(Array(VelocityMethodData.speedBias.enumerated()), id: \.element.id) { i, b in
+            ForEach(Array(VelocityMethodData.direction.enumerated()), id: \.element.id) { i, d in
                 if i > 0 { Divider() }
-                HStack {
-                    Text("\(b.band) km/h").font(.caption)
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(d.name).font(.caption).fontWeight(.medium)
+                        Text("\(d.graded), median \(d.medianDegrees)°")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     Spacer(minLength: 8)
-                    Text(String(format: "+%.1f km/h", b.biasKmh))
+                    Text("\(d.within30)% within 30°")
                         .font(.system(.caption, design: .monospaced))
-                }
-                .padding(.vertical, 6)
-            }
-        }
-    }
-}
-
-private struct HeadingTable: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(VelocityMethodData.heading.enumerated()), id: \.element.id) { i, h in
-                if i > 0 { Divider() }
-                HStack {
-                    Text(h.label).font(.caption)
-                    Text(h.afterFix ? "offset learned" : "offset unlearned")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Text(String(format: "%.1f°", h.degrees))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(h.afterFix ? .green : .red)
                 }
                 .padding(.vertical, 6)
             }
