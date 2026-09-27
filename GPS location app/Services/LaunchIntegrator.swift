@@ -41,6 +41,13 @@ struct LaunchIntegrator {
     /// Horizontal speed (m/s) reached since the last still moment, frozen at HORIZON; nil until
     /// the phone has been still once.
     private(set) var speed: Double?
+    /// For FlightSpeedEngines: which anchor this is (it changes on every re-anchor), the direction of
+    /// gravity in the phone at it (unit), and the seconds since it, counted on past HORIZON.
+    private(set) var anchorCount = 0
+    private(set) var anchorGravity: [Double]?
+    private(set) var anchorAge = 0.0
+    /// The integration has reached its horizon and is holding what it reached.
+    var isHolding: Bool { gRef != nil && sinceAnchor >= Self.HORIZON }
 
     mutating func reset() { self = LaunchIntegrator() }
 
@@ -64,8 +71,14 @@ struct LaunchIntegrator {
             let n = Double(window.count)
             gRef = (0..<3).map { i in window.reduce(0) { $0 + $1.f[i] } / n }
             q = [1, 0, 0, 0]; v = [0, 0, 0]; sinceAnchor = 0; speed = 0
+            anchorCount += 1; anchorAge = 0
+            if let g = gRef {
+                let gn = max((g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).squareRoot(), 1e-9)
+                anchorGravity = g.map { $0 / gn }
+            }
             return
         }
+        if gRef != nil { anchorAge += dt }
         guard let gRef, sinceAnchor < Self.HORIZON else { return }
         let r = rotate(f, by: q)
         for i in 0..<3 { v[i] += (r[i] - gRef[i]) * dt }

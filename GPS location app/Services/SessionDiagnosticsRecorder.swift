@@ -185,6 +185,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let magClean: Bool
         let magAnchor: Double?
         let driftFromStops: Double
+        /// In the air: both flight engines' answers (m/s), used or not, the minutes since the takeoff
+        /// roll began and the phone's mean tilt over the last minute (degrees). See FlightSpeedEngines.
+        let flightNetwork: Double?
+        let flightStore: Double?
+        let flightMinutes: Double?
+        let flightTilt60: Double?
     }
 
     /// ~4 hours at 1 Hz. Oldest rows are dropped rather than growing without bound.
@@ -563,7 +569,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "accel_mag_ms2,rotation_rate_rads,pitch_deg,roll_deg,yaw_deg,altitude_m,gps_age_s,regime_obs,prior_w,thermal,low_power,gps_fallback,gps_speed_acc,acc_reduced,background,req_acc,req_filter,"
         out += "net_speed_ms,store_speed_ms,speed_engine,launch_speed_ms,net_familiarity,store_status,"
         out += "heading_drift_deg,drift_rate_dpm,datum_raw_deg,phone_compass_deg,phone_compass_acc_deg,mag_accuracy,mag_field_ut,"
-        out += "mag_offset_deg,mag_dip_deg,mag_clean,mag_anchor_deg,drift_stops_deg\n"
+        out += "mag_offset_deg,mag_dip_deg,mag_clean,mag_anchor_deg,drift_stops_deg,"
+        out += "flight_net_ms,flight_store_ms,flight_min,flight_tilt60_deg\n"
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -598,7 +605,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.networkSpeed) + "," + Self.fmt(r.storeSpeed) + "," + Self.csvField(r.speedEngine) + "," + Self.fmt(r.launchSpeed) + "," + Self.fmt(r.networkFamiliarity, 3) + "," + Self.csvField(r.storeStatus) + ","
             out += Self.fmt(r.headingDrift, 2) + "," + Self.fmt(r.driftRate, 3) + "," + Self.fmt(r.datumUncorrected, 2) + ","
             out += Self.fmt(r.phoneCompass, 1) + "," + Self.fmt(r.phoneCompassAccuracy, 1) + "," + (r.magAccuracy.map(String.init) ?? "") + "," + Self.fmt(r.magField, 1) + ","
-            out += Self.fmt(r.magOffset, 2) + "," + Self.fmt(r.magDip, 2) + "," + (r.magClean ? "1" : "0") + "," + Self.fmt(r.magAnchor, 2) + "," + Self.fmt(r.driftFromStops, 2) + "\n"
+            out += Self.fmt(r.magOffset, 2) + "," + Self.fmt(r.magDip, 2) + "," + (r.magClean ? "1" : "0") + "," + Self.fmt(r.magAnchor, 2) + "," + Self.fmt(r.driftFromStops, 2) + ","
+            out += Self.fmt(r.flightNetwork, 2) + "," + Self.fmt(r.flightStore, 2) + "," + Self.fmt(r.flightMinutes, 2) + "," + Self.fmt(r.flightTilt60, 2) + "\n"
         }
         return out
     }

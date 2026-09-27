@@ -48,8 +48,8 @@ recorded at the same time, used only as the answer key. Every number is the late
 
 | | Motorcycle | Car | Walking | Plane |
 |---|---|---|---|---|
-| Distance vs GPS | **10%** short (39 journeys); 79% of journeys within 20% | **0.3%** short (35 journeys); 65% within 20% | **4%** long | **61%** (45 of 74 km): the takeoff is measured, then held |
-| Speed | average error 9 km/h; reads low above 40 km/h | average error 7.3 km/h; close up to 60 km/h | about 5 km/h where GPS says 4.6 | takeoff measured (265 km/h at 40 s vs GPS 266), then held |
+| Distance vs GPS | **10%** short (39 journeys); 79% of journeys within 20% | **0.3%** short (35 journeys); 65% within 20% | **4%** long | **103%** (76 of 74 km): the takeoff is measured, then the flight network (store: 99%) |
+| Speed | average error 9 km/h; reads low above 40 km/h | average error 7.3 km/h; close up to 60 km/h | about 5 km/h where GPS says 4.6 | takeoff measured (265 km/h at 40 s vs GPS 266), then the flight network: 38 km/h error in the air (holding the takeoff speed: 196) |
 | Direction within 30° of GPS | **73%** of the time | **83%** | **93%** (phone in a pocket) | **99%** |
 | Whole route turned | median **9°**; 83% within 30° (41 routes) | median **16°**; 85% within 30° (27 routes) | — | — |
 
@@ -62,21 +62,23 @@ recorded at the same time, used only as the answer key. Every number is the late
 | Motorcycle | 9.0 km/h error; 90.0% of the distance; 79% of journeys within 20% | 9.1 km/h; 91.5%; 79% |
 | Car | 7.3 km/h; 99.7%; 65% | 6.7 km/h; 101.7%; 74% |
 | Walking | 103.7% (counted by steps) | 103.7% |
-| Plane | 45 of 74 km (61%) | 45 of 74 km (61%) |
+| Plane | 102.8% (flight network in the air) | 102.9% |
 
 A store still filling up does worse (60 examples: 10.6 km/h), and draws level at about 3,000, where the app hands over.
 
+**In the air**, a smooth cabin reads as standing still, so the phone measures the takeoff for two minutes from the still moment before the roll, and then hands over to one of two flight engines. Both were trained on 302 airline flights from NASA's public DASHlink flight recorder data, and both read only what the phone senses: minutes since the roll began and how the phone is tilted. One is a small neural network (4 → 32 → 32 → 1). The other is a store of 4,000 examples answered like the ground store. Neither uses GPS. On NASA flights each engine had never seen, the network counted a median 102% of the distance (68% of flights within 10%) and the store 104% (65%), against 68% (7%) for holding the takeoff speed. They give the speed an airliner typically has at that point of a flight, so wind or a different aircraft will move them.
+
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
-varying with speed: measured flat from 10 to 65 km/h). In an aircraft only the takeoff is
-measured: the raw accelerometer is integrated from the last standstill (Core Motion's attitude
-filter would absorb the roll as tilt) and the speed reached is held, so the climb's speed-up is
-missed. A vehicle the model has never learned reads wrong until it has. And the angle the phone
+varying with speed: measured flat from 10 to 65 km/h). In an aircraft the speed after the
+takeoff is the speed an airliner typically has at that point of a flight, learned from NASA's flight
+data, not a measurement of this flight: a strong wind or a much faster or slower aircraft will read
+off. A vehicle the model has never learned reads wrong until it has. And the angle the phone
 sits at is learned per ride: if the phone shifts in a pocket mid-ride without being taken out, the
 rest of the ride is drawn off by roughly however far it moved.
 
 📄 **[Read the paper](https://github.com/yu314-coder/GPS-location-app/releases/tag/v1.0-paper)**
 — how it works, how accurate the current version is against GPS, what each part of the method adds,
-where it goes wrong, and what did not work, with every journey listed. Seventeen pages.
+where it goes wrong, and what did not work, with every journey listed. Twenty pages.
 [LaTeX source](paper/). The paper also ships inside the app: **Settings → Velocity Mode → Read the
 paper**, alongside an interactive version with the equations and error charts.
 

@@ -280,6 +280,10 @@ class WorkoutSession: ObservableObject {
     private let flightPhase = FlightPhaseEstimator()
     /// Speed gained since the phone was last still (strapdown), used in the air; see LaunchIntegrator.
     private var launchIntegrator = LaunchIntegrator()
+    /// The phone's tilt since the still moment before the takeoff roll, for the flight engines; see
+    /// FlightSpeedEngines. Their latest answers (m/s) and inputs are kept for the log.
+    private var flightTilt = FlightSpeedEngines.Tilt()
+    private var lastFlightAnswers: (network: Double?, store: Double?, features: FlightSpeedEngines.Features?) = (nil, nil, nil)
     /// Learns speed from the accelerometer's spectral signature, on-device, from GPS labels.
     /// Replaces the hand-crafted vibration model — see LearnedSpeedEstimator for the measurements
     /// showing why a learned lookup finds what five hand-built features could not.
@@ -2205,6 +2209,8 @@ class WorkoutSession: ObservableObject {
                 gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
                 rotation: [motion.rotationRate.x, motion.rotationRate.y, motion.rotationRate.z],
                 dt: dt, airborne: self.isAirborneForEstimation)
+            self.flightTilt.ingest(gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
+                                   dt: dt, launch: self.launchIntegrator)
             self.sessionDiagnostics.noteDeviceMotion(
                 accelX: motion.userAcceleration.x, accelY: motion.userAcceleration.y,
                 accelZ: motion.userAcceleration.z,
@@ -2231,6 +2237,8 @@ class WorkoutSession: ObservableObject {
         sessionDiagnostics.reset()
         flightPhase.reset()
         launchIntegrator.reset()
+        flightTilt.reset()
+        lastFlightAnswers = (nil, nil, nil)
         locationManager.freezeDeclination = false   // this trip's own, until its first point
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
         driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
@@ -4231,9 +4239,24 @@ class WorkoutSession: ObservableObject {
             // the strapdown integration since the last still moment reached 265 km/h at 40 s against
             // GPS 266 - and holding what it reached at its two-minute horizon counts 45 km of the 74.
             // Nothing here is a speed constant; the flight phase comes from cabin pressure.
+            //
+            // AFTER THE TWO MINUTES, THE FLIGHT ENGINES (build 64). Holding the takeoff's speed missed
+            // the whole climb. From then on the speed is what an airliner typically does at this point
+            // of a flight, read from the time since the roll began and the phone's tilt by a network
+            // trained on NASA's recorded flights (the store answers the same second, for the log and in
+            // case the network cannot). Replayed, the flight counts 77 km of 74 instead of 45. See
+            // FlightSpeedEngines; nothing on the ground reads it.
             estimatedFallbackSpeed = launch
-            distance = estimatedFallbackSpeed * dt
             sourceTag = "LAUNCH"
+            if launchIntegrator.isHolding, let x = flightTilt.features {
+                let net = FlightSpeedEngines.Network.bundled.map { $0.speedKmh(x) / 3.6 }
+                let store = FlightSpeedEngines.Store.bundled.map { $0.speedKmh(x) / 3.6 }
+                if let answer = net ?? store {
+                    estimatedFallbackSpeed = answer
+                    sourceTag = net != nil ? "FLIGHT(net)" : "FLIGHT(store)"
+                }
+            }
+            distance = estimatedFallbackSpeed * dt
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
@@ -4646,6 +4669,13 @@ class WorkoutSession: ObservableObject {
         learnOffsetFromTurns(dt: dt, source: sourceTag)
         // Both engines, whichever is driving, so a log can compare them on the same seconds.
         let bothSpeeds = learnedSpeed.bothAnswers(airborne: isAirborneForEstimation)
+        // And both flight engines on every airborne second, used or not.
+        if isAirborneForEstimation, let x = flightTilt.features {
+            lastFlightAnswers = (FlightSpeedEngines.Network.bundled.map { $0.speedKmh(x) / 3.6 },
+                                 FlightSpeedEngines.Store.bundled.map { $0.speedKmh(x) / 3.6 }, x)
+        } else {
+            lastFlightAnswers = (nil, nil, nil)
+        }
         sessionDiagnostics.record(.init(
             t: now,
             source: sourceTag,
@@ -4728,7 +4758,11 @@ class WorkoutSession: ObservableObject {
             magDip: lastMagnetometerTick?.dip,
             magClean: lastMagnetometerClean,
             magAnchor: magnetometerAnchor,
-            driftFromStops: driftFromStops))
+            driftFromStops: driftFromStops,
+            flightNetwork: lastFlightAnswers.network,
+            flightStore: lastFlightAnswers.store,
+            flightMinutes: lastFlightAnswers.features?[0],
+            flightTilt60: lastFlightAnswers.features?[1]))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist

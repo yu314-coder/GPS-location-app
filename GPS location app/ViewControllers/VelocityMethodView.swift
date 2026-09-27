@@ -325,19 +325,19 @@ struct VelocityMethodView: View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "In an aircraft",
-                              subtitle: "the case this mode was built for, and it does not work") { EmptyView() }
+                              subtitle: "the takeoff measured, then the flight engines") { EmptyView() }
                 Text("""
                 A 22.8-minute flight was recorded with GPS valid throughout, up to 706 km/h. \
-                Replaying it with GPS removed at four points gives the distance the app would have \
-                recorded had signal been lost there:
+                Replayed with no GPS at all, the distance each way of reading speed in the air \
+                would have recorded:
                 """)
                 .font(.callout)
                 if chartsFit {
                 Chart(VelocityMethodData.flight) { f in
                     BarMark(x: .value("Error", f.errorPercent), y: .value("Point", f.point))
-                        .foregroundStyle(Color.red.opacity(0.85))
-                        .annotation(position: .leading) {
-                            Text("\(Int(f.errorPercent))%")
+                        .foregroundStyle((abs(f.errorPercent) > 10 ? Color.red : Color.green).opacity(0.85))
+                        .annotation(position: f.errorPercent < 0 ? .leading : .trailing) {
+                            Text(String(format: "%+.0f%%", f.errorPercent))
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                 }
@@ -349,14 +349,18 @@ struct VelocityMethodView: View {
                     FlightTable()
                 }
                 Text("""
-                Signal is normally lost on the ground, which freezes taxi speed for the whole \
-                flight. The along-track correction recovers roughly 60 km/h of a 679 km/h climb: \
-                after 400 seconds of held speed it had contributed −2 km/h.
+                A smooth cabin reads as standing still, so the phone measures the takeoff itself for \
+                two minutes from the still moment before the roll: 265 km/h forty seconds in, where \
+                GPS measured 266. Holding the 317 km/h it reached misses the climb to 680.
 
-                The cause is that an accelerometer cannot separate gravity from sustained \
-                acceleration, and the phone's sensor fusion resolves that ambiguity by treating a \
-                takeoff roll as a change in which way is down. Heading is unaffected — measured at \
-                3.9° median across the flight — so direction works and speed does not.
+                After the two minutes one of two flight engines takes over: a small neural network, \
+                or a store of 4,000 examples answered like the ground store. Both were trained on 302 \
+                airline flights from NASA's public DASHlink flight recorder data. Both read only what the \
+                phone senses: minutes since the roll began and how the phone is tilted. Neither uses GPS. \
+                On NASA flights they had never seen, the network came within 10% of the distance on 68% \
+                of flights; holding the takeoff speed did on 7%. What they give is a typical airliner's \
+                speed at that point of a flight, so wind or a different aircraft will move it. \
+                Direction in the air: 4° median error.
                 """)
                 .font(.caption2).foregroundStyle(.secondary)
             }
@@ -434,8 +438,8 @@ struct VelocityMethodView: View {
                            "A motorcycle at a red light reads 5.2 km/h in a mount, and 53.8 km/h in a pocket. No tested signal separates an idling engine from a moving one.")
                 Limitation("In a pocket on a motorcycle it does not work at all.",
                            "Not merely inaccurate: the estimate is flat, unrelated to real speed at R = +0.13, and the model does not warn that it is guessing. See above.")
-                Limitation("Aircraft speed cannot be measured without GPS.",
-                           "See above: −82% to −87% when signal is lost on the ground.")
+                Limitation("In an aircraft, the speed after the takeoff is a typical airliner's.",
+                           "Learned from NASA flight data, not measured on this flight: a strong wind or a much faster or slower aircraft reads off. On NASA flights the middle 80% counted 91–118% of the distance.")
                 Limitation("A vehicle it has never learned reads wrong at first.",
                            "The model answers only for conditions it has observed. A first motorcycle ride teaches it; the second is far better.")
                 Limitation("These numbers are one phone, one person, three vehicles.",
@@ -611,11 +615,11 @@ enum VelocityMethodData {
         .init(band: "45–70", realKmh: 54.0, estimatedKmh: 49.8)
     ]
 
+    /// The recorded flight replayed with no GPS through the app's own code (paper, Table 7).
     static let flight: [FlightPoint] = [
-        .init(point: "At the gate", errorPercent: -82),
-        .init(point: "Before takeoff", errorPercent: -87),
-        .init(point: "60 s into climb", errorPercent: -31),
-        .init(point: "At cruise", errorPercent: -34)
+        .init(point: "Hold takeoff speed", errorPercent: -39),
+        .init(point: "Flight network", errorPercent: 3),
+        .init(point: "Flight store", errorPercent: -1)
     ]
 }
 
@@ -684,8 +688,9 @@ private struct FlightTable: View {
                 HStack {
                     Text(f.point).font(.caption)
                     Spacer(minLength: 8)
-                    Text(String(format: "%.0f%%", f.errorPercent))
-                        .font(.system(.caption, design: .monospaced)).foregroundStyle(.red)
+                    Text(String(format: "%+.0f%%", f.errorPercent))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(abs(f.errorPercent) > 10 ? Color.red : Color.green)
                 }
                 .padding(.vertical, 6)
             }
