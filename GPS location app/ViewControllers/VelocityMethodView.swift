@@ -526,18 +526,18 @@ struct VelocityMethodView: View {
                 SectionHeader("Where it goes wrong")
                 Limitation("On a motorcycle, fast riding reads slow and slow riding reads fast.",
                            "Above 60 km/h the speed is under two-thirds of the true value; 10–20 km/h reads about 19. Over a journey the two partly cancel, but a mostly fast journey comes out short.")
-                Limitation("The heading can start wrong and stay wrong.",
-                           "When the magnetic field cannot be trusted for the whole drive, an error in where the heading started stays for the drive: 27 of 67 graded recordings were turned by more than 15° this way. Only a clean magnetometer reading can see it.")
+                Limitation("A constant turn over a whole drive.",
+                           "Much of the remaining error is one angle that lasts the whole drive: 26 of 66 graded recordings are turned by more than 15° on average. It comes from where the heading started and from the angle learned for the phone. On the one drive with a clean magnetic field, the magnetometer cut it from 29° to 18°.")
                 Limitation("The first minute of a ride.",
                            "Until the angle the phone sits at is learned from the turns, direction comes from the heading alone. The saved route is redrawn afterwards, but a very short ride may never learn the angle well.")
                 Limitation("A short drive in slow traffic.",
-                           "The angle is learned only while the speed reads above 14 km/h, so a short, slow drive rests on a few turns. On one ten-minute drive at a median 9 km/h, the speeds read on the day kept every graded second within 30°; replayed with a speed model rebuilt from the other journeys, a different handful of turns set the angle and only 9% were.")
+                           "The angle is learned only while the speed reads above 14 km/h, so a short, slow drive rests on a few turns. On one ten-minute drive at a median 9 km/h, the speeds read on the day kept every graded second within 30°; replayed with a speed model rebuilt from the other journeys, a different handful of turns set the angle and none were.")
                 Limitation("A phone that moves.",
                            "A hand on the phone can lower the speed but not raise it, and a phone held in the hand keeps the last speed measured before it was picked up, so one picked up while slowing keeps that speed until it is still. A phone that shifts in a pocket turns the rest of the ride by about as much as it moved.")
                 Limitation("Keep the phone away from magnets.",
                            "Beside a car's MagSafe charger the phone read up to 2,600 µT, fifty times Earth's field, yet reported its compass as well calibrated. The app ignores such a field, but then cannot correct the heading.")
                 Limitation("A ride that is never recognised.",
-                           "On one short ride Apple's motion classifier never said \u{201C}driving\u{201D} and the step counter took the engine for footsteps: 59% short.")
+                           "On one short ride Apple's motion classifier never said \u{201C}driving\u{201D} and the step counter took the engine for footsteps: as recorded, the app counted 1.0 of 2.4 km.")
                 Limitation("In an aircraft, the speed after the takeoff is a typical airliner's.",
                            "Learned from NASA flight data, not measured on this flight: a strong wind or a much faster or slower aircraft reads off. On NASA flights the middle 80% counted 91–118% of the distance.")
                 Limitation("These numbers are one phone and one person.",
