@@ -1,0 +1,178 @@
+{
+ "categories": {
+  "motorcycle": {
+   "recordings": 39,
+   "hours": 11.1,
+   "gps_km": 176.5,
+   "gps_km_whole": 177,
+   "app_km": 155.5,
+   "total_pct": -11.9,
+   "within20": 82,
+   "speed_mae": 9.0,
+   "half_minutes": 818,
+   "dir_recordings": 40,
+   "dir_median": 17,
+   "dir_within30": 74,
+   "routes": 41,
+   "route_median": 11,
+   "route_within30": 85
+  },
+  "car": {
+   "recordings": 36,
+   "hours": 8.8,
+   "gps_km": 164.5,
+   "gps_km_whole": 164,
+   "app_km": 162.9,
+   "total_pct": -1.0,
+   "within20": 62,
+   "speed_mae": 7.0,
+   "half_minutes": 747,
+   "dir_recordings": 26,
+   "dir_median": 16,
+   "dir_within30": 81,
+   "routes": 28,
+   "route_median": 16,
+   "route_within30": 79
+  },
+  "walking": {
+   "stretches": 45,
+   "walks": 7,
+   "gps_km": 1.87,
+   "app_km": 1.93,
+   "total_pct": 3.7,
+   "speed_app": 5.0,
+   "speed_gps": 4.6,
+   "dir_median": 10,
+   "dir_within30": 93
+  },
+  "plane": {
+   "flights": 1,
+   "gps_km": 74.1,
+   "app_km": 76.1,
+   "total_pct": 2.8,
+   "air_error": 38,
+   "dir_median": 10,
+   "dir_within30": 99
+  }
+ },
+ "speed_bands": [
+  {
+   "band": "0–10",
+   "motorcycle": {
+    "n": 253,
+    "gps": 2.6,
+    "app": 2.6
+   },
+   "car": {
+    "n": 238,
+    "gps": 2.7,
+    "app": 2.6
+   }
+  },
+  {
+   "band": "10–20",
+   "motorcycle": {
+    "n": 159,
+    "gps": 14.7,
+    "app": 18.8
+   },
+   "car": {
+    "n": 129,
+    "gps": 15.2,
+    "app": 15.2
+   }
+  },
+  {
+   "band": "20–30",
+   "motorcycle": {
+    "n": 138,
+    "gps": 25.0,
+    "app": 26.6
+   },
+   "car": {
+    "n": 115,
+    "gps": 25.1,
+    "app": 25.0
+   }
+  },
+  {
+   "band": "30–40",
+   "motorcycle": {
+    "n": 109,
+    "gps": 35.1,
+    "app": 30.2
+   },
+   "car": {
+    "n": 97,
+    "gps": 35.1,
+    "app": 33.5
+   }
+  },
+  {
+   "band": "40–50",
+   "motorcycle": {
+    "n": 79,
+    "gps": 44.0,
+    "app": 34.6
+   },
+   "car": {
+    "n": 58,
+    "gps": 43.7,
+    "app": 45.0
+   }
+  },
+  {
+   "band": "50–60",
+   "motorcycle": {
+    "n": 43,
+    "gps": 53.2,
+    "app": 40.3
+   },
+   "car": {
+    "n": 42,
+    "gps": 54.6,
+    "app": 55.2
+   }
+  },
+  {
+   "band": "60–80",
+   "motorcycle": {
+    "n": 34,
+    "gps": 66.4,
+    "app": 39.9
+   },
+   "car": {
+    "n": 56,
+    "gps": 68.9,
+    "app": 61.7
+   }
+  },
+  {
+   "band": "80+",
+   "motorcycle": {
+    "n": 3,
+    "gps": 98.4,
+    "app": 37.6
+   },
+   "car": {
+    "n": 12,
+    "gps": 87.1,
+    "app": 71.1
+   }
+  }
+ ],
+ "flight": [
+  {
+   "label": "Hold takeoff speed",
+   "error_pct": -39
+  },
+  {
+   "label": "Flight network",
+   "error_pct": 3
+  },
+  {
+   "label": "Flight store",
+   "error_pct": -1
+  }
+ ]
+}

@@ -34,6 +34,13 @@ sensor readings (acceleration, rotation and orientation angles at 50 Hz):
   public DASHlink flight recorder data (302 flights of one regional jet) and are measured there with
   each flight held out from the engines that grade it.
 
+The speed store for each recording is 4,000 examples drawn from every other recording. Each example
+keeps a fixed chance of being drawn, so adding a recording changes the others only by its own examples.
+
+`app_numbers.py` writes the numbers the app's "How Velocity Mode works" page shows from
+`tables/numbers.json`, which the table generator writes with the tables, so the page and the paper
+cannot drift apart.
+
 Three inputs come from the recordings as they were: walking or riding, Apple's motion classifier,
 and the car-park ramp flag. The phone's step counter and cabin pressure were not recorded. The paper
 and its figures carry no recording dates or times.
