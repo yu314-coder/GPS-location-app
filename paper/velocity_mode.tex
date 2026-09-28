@@ -231,7 +231,10 @@ by about $1\dg$ a minute.
 bias, because the steel around it keeps the magnetometer from holding north: on one drive it turned
 $42\dg$ in $25$~minutes with the phone fixed in place. A stopped car does not turn, so any turning the
 heading shows while the car is stopped and the phone still is drift. The phone measures it as a rate,
-at most $3\dg$ a minute, and takes the accumulated drift off every heading.
+at most $3\dg$ a minute, and takes the accumulated drift off every heading. It counts a still second only
+while the magnetic field reads like Earth's here, $30$ to $60~\mu$T: Core Motion's heading leans on the
+magnetometer, and in a disturbed field it is pulled toward the disturbance --- which in a car is not the
+same standing as driving, so a drift measured at stops would be carried wrongly into the drive.
 
 \paragraph{The magnetometer, when the field can be trusted.} Core Motion also sets north once at the
 start, often wrongly inside a vehicle, and then follows the gyroscope. On one drive it began
@@ -661,19 +664,21 @@ direction is within a given angle of GPS.}
 \subsection{What each part of the direction method adds}\label{sec:ablation}
 
 Table~\ref{tab:ablation} replays every recording with the direction method built up one part at a time,
-graded exactly as above. For cars, drift measured at stops and the averaging of right and left turns
-matter most: together they take the share of seconds within $30\dg$ from $\nAblCarSecA\%$ to $\nAblCarSecC\%$ and routes
-within $30\dg$ from $\nAblCarRtA\%$ to $\nAblCarRtC\%$, and cut the routes of either vehicle turned more than $45\dg$ from $\nAblBigA$
-to $\nAblBigC$; the check that a turn explains the push and then the magnetometer move the car's seconds by $\nAblPush$
-and $\nAblMag$ points. For motorcycles every version is within $\nAblMotoSpan$ points of the others. The flight, replayed
-with the speed the app has in the air, is within $30\dg$ $\nAblFlA\%$ of the time with the first version and $\nAblFlB\%$
-once drift is measured at stops.
+graded exactly as above. For cars the share of seconds within $30\dg$ goes from $\nAblCarSecA\%$ with the heading and
+the angle from turns alone to $\nAblCarSecB\%$ with drift measured at stops, $\nAblCarSecC\%$ with right and left turns
+averaged apart, $\nAblCarSecD\%$ with the push check, $\nAblCarSecE\%$ with the clean magnetometer and $\nAblCarSecF\%$ when
+drift is measured only in Earth's field; routes within $30\dg$ go from $\nAblCarRtA\%$ to $\nAblCarRtF\%$, and routes of either
+vehicle turned more than $45\dg$ from $\nAblBigA$ to $\nAblBigF$. Drift measured at stops helps a drive where the phone sat
+in an Earth-like field and harms one where the field was disturbed (Section~\ref{sec:discussion}); counting
+only stops in Earth's field keeps the first and removes the second. For motorcycles every version is within
+$\nAblMotoSpan$ points of the others. The flight, replayed with the speed the app has in the air, is within
+$30\dg$ $\nAblFlA\%$ of the time with the first version and $\nAblFlB\%$ once drift is measured at stops.
 
 \begin{table}[t]
 \centering\small
 \caption{What each part of the direction method adds: the share of graded seconds and of whole routes
 within $30\dg$, routes turned more than $45\dg$, and the flight's seconds within $30\dg$. Each row adds
-one part to the row above. The magnetometer applies only where the magnetic field was recorded (three
+one part to the row above. The magnetometer applies only where the magnetic field was recorded (four
 car drives and two motorcycle rides so far; clean for long enough on one of each).}
 \label{tab:ablation}
 \setlength{\tabcolsep}{4.5pt}
@@ -708,6 +713,12 @@ other journeys, a different handful of turns set the angle and $\nSlowReplayPct\
 longer raise the speed, but a phone picked up while slowing keeps the speed it had when it was picked
 up. A phone that shifts in the pocket turns the drawn route by about as much as it moved, until enough
 new turns have been learned.
+\item \textbf{A disturbed field at stops.} On one $49$-minute drive the field read about $80~\mu$T at stops
+and $165$ at speed. The stops then measured a drift that did not happen while moving, and the route turned
+further off every minute: with every still second counted, $44\%$ of seconds were within $30\dg$; with no drift
+at all, $89\%$; counting only stops in Earth's field, $92\%$. The bound matters: allowing up to $65~\mu$T let
+the bad stops, at $62$ to $65$, back in. Only the recordings with the magnetometer logged, six so far, can show
+this at all, and the gain rests on that one drive.
 \item \textbf{A magnet beside the phone.} By a car's MagSafe charger the phone read up to
 $2{,}600~\mu$T, fifty times Earth's field, yet reported its compass as well calibrated; the iPhone's own
 Compass then drifted $49\dg$ with the gyroscope. The app ignores such a field, but it cannot then
@@ -785,11 +796,12 @@ about $1\%$ of each journey's store and moved single journeys' distance by a med
 $14$), and the motorcycle and car totals by $0.3$ and $1.3$ points, so the shares of journeys within
 $20\%$ move by several journeys from one re-run to the next. GPS in a pocket is
 accurate only to tens of metres, so small errors cannot be measured reliably. The magnetic field was
-recorded on three car drives and two motorcycle rides so far. On the first drive a MagSafe charger sat
+recorded on four car drives and two motorcycle rides so far. On the first drive a MagSafe charger sat
 near the phone for part of the time and the correction worked; on the second it sat there throughout and
 the field was clean for only $46$ seconds, short of the minute the correction needs; on the third, with the
 phone placed away from the charger, the field still swung between $32$ and $74~\mu$T from minute to minute
-and was never clean. On the first motorcycle ride the field was clean for $87$ seconds and the correction
+and was never clean; on the fourth it rose with speed, from about $70$ to $170~\mu$T, and changed even on
+straight roads, which is why subtracting it as a fixed disturbance did not work (Table~\ref{tab:failed}). On the first motorcycle ride the field was clean for $87$ seconds and the correction
 took the graded seconds within $30\dg$ from $90\%$ to $97\%$ and the ride's turn from $8\dg$ to $2\dg$, though weak
 GPS left only $69$ seconds to grade; on the second it was never clean.
 

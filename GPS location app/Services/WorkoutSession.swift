@@ -455,6 +455,16 @@ class WorkoutSession: ObservableObject {
     /// turns faster is more likely the magnetometer re-anchoring, which must not be extrapolated.
     /// Replayed on 65 rides: typical error 17.2 -> 16.8 degrees, no ride worse by a degree.
     private let DRIFT_MAX_RATE = 3.0 / 60         // degrees per second
+    /// DRIFT ONLY IN EARTH'S FIELD (build 72). Core Motion's heading leans on the magnetometer, so in a
+    /// disturbed field it is pulled toward the disturbance - and a car's disturbance is not the same
+    /// standing as driving: on one 49-minute drive the field read about 80 microtesla at stops and
+    /// 165 at speed, and the stops "measured" a drift that did not happen while moving, turning the
+    /// route further off every minute (within 30 degrees: 44% of seconds; with no drift at all, 89%).
+    /// So a still second counts only while the field reads like Earth's here (about 46 microtesla):
+    /// 30 to 60. Replayed on every recording with the magnetometer logged: that drive 44% -> 92%,
+    /// the other five unchanged, including the drive whose drift this estimator was built for (94%).
+    /// The upper bound matters: at 65 the bad stops (62-65 microtesla) still count.
+    private let DRIFT_FIELD_RANGE = 30.0...60.0   // microtesla
 
     // THE MAGNETOMETER, WHEN IT CAN BE BELIEVED (build 58).
     //
@@ -513,8 +523,9 @@ class WorkoutSession: ObservableObject {
         headingDriftDegrees *= decay
         headingDriftSeconds *= decay
         let stopped = source.contains("stopped") || estimatedFallbackSpeed < 0.3
+        let fieldLooksLikeEarth = locationManager.magneticFieldStrength.map { DRIFT_FIELD_RANGE.contains($0) } ?? true
         let still = stopped && (rotation.map { $0 < DRIFT_STILL_ROTATION } ?? false)
-            && handlingRotationLevel < DRIFT_STILL_HANDLING
+            && handlingRotationLevel < DRIFT_STILL_HANDLING && fieldLooksLikeEarth
         if still, let raw, let previous = previousUncorrectedDatum {
             let change = normalizedSignedAngle(raw - previous)
             if abs(change) < DRIFT_MAX_STEP {
