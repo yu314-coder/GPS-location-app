@@ -109,6 +109,15 @@ add(',\n'.join(rows))
 add('    ]')
 add(f'    static let flightPhases = (airborneMinute: {J["flight_phases"]["t_air_min"]}, enginesMinute: {J["flight_phases"]["t_engine_min"]})')
 
+add('')
+add('    /// Every data-dependent number the paper\'s text quotes (tables/numbers.tex), for the page\'s own text.')
+add('    enum Num {')
+import re as _re
+for name, val in _re.findall(r"\\newcommand\{\\n(\w+)\}\{(.*)\}", open(os.path.join(HERE, 'tables', 'numbers.tex')).read()):
+    v = val.replace('{,}', ',').replace('\\%', '%').replace('$', '')
+    add(f'        static let {name} = {q(v)}')
+add('    }')
+
 src = open(SWIFT).read()
 a, b = src.index(BEGIN) + len(BEGIN), src.index(END)
 open(SWIFT, 'w').write(src[:a] + '\n'.join(lines) + '\n' + src[b:])

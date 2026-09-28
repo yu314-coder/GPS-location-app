@@ -48,10 +48,10 @@ recorded at the same time, used only as the answer key. Every number is the late
 
 | | Motorcycle | Car | Walking | Plane |
 |---|---|---|---|---|
-| Distance vs GPS | **12%** short (39 journeys); 74% of journeys within 20% | **0.3%** long (37 journeys); 67% within 20% | **4%** long | **103%** (76.2 of 74.1 km): the takeoff is measured, then the flight network (store: 99%) |
-| Speed | average error 9.0 km/h; reads low above 40 km/h | average error 6.9 km/h; close up to 60 km/h | about 5 km/h where GPS says 4.6 | takeoff measured (265 km/h at 40 s vs GPS 266), then the flight network: 38 km/h error in the air (holding the takeoff speed: 196) |
-| Direction within 30° of GPS | **75%** of the time | **81%** | **93%** (phone in a pocket) | **99%** |
-| Whole route turned | median **11°**; 85% within 30° (41 routes) | median **15°**; 79% within 30° (28 routes) | — | — |
+| Distance vs GPS | **13%** short (41 journeys); 68% of journeys within 20% | **0.2%** long (37 journeys); 67% within 20% | **4%** long | **103%** (76.2 of 74.1 km): the takeoff is measured, then the flight network (store: 99%) |
+| Speed | average error 9.0 km/h; reads low above 30 km/h | average error 7.1 km/h; close up to 60 km/h | about 5 km/h where GPS says 4.6 | takeoff measured (265 km/h at 40 s vs GPS 266), then the flight network: 38 km/h error in the air (holding the takeoff speed: 196) |
+| Direction within 30° of GPS | **75%** of the time | **80%** | **93%** (phone in a pocket) | **99%** |
+| Whole route turned | median **10°**; 88% within 30° (43 routes) | median **16°**; 79% within 30° (28 routes) | — | — |
 
 **Direction uses no GPS.** The phone learns how it sits from the vehicle's turns; the heading's slow drift in a car (the gyroscope's own bias) is measured at stops and taken off; and whenever the magnetic field looks like Earth's, the magnetometer corrects where the heading started. Keep the phone away from magnets: beside a MagSafe charger no compass works, the iPhone's own included.
 
@@ -59,14 +59,14 @@ recorded at the same time, used only as the answer key. Every number is the late
 
 | | Main model (full store) | Built-in network |
 |---|---|---|
-| Motorcycle | 9.0 km/h error; 88.6% of the distance; 74% of journeys within 20% | 9.1 km/h; 91.5%; 79% |
-| Car | 6.9 km/h; 100.3%; 67% | 6.6 km/h; 101.6%; 76% |
+| Motorcycle | 9.0 km/h error; 87.3% of the distance; 68% of journeys within 20% | 9.1 km/h; 91.9%; 78% |
+| Car | 7.1 km/h; 100.2%; 67% | 6.6 km/h; 101.6%; 76% |
 | Walking | 103.7% (counted by steps) | 103.7% |
-| Plane | 102.9% (flight network in the air) | 103.0% |
+| Plane | 102.8% (flight network in the air) | 102.9% |
 
-A store still filling up does worse (60 examples: 11.1 km/h; 4,000: 8.0) and on these recordings stays a little behind the network (7.9). The app still hands over at 3,000, because the store keeps adapting to the phone's own vehicle and pocket.
+A store still filling up does worse (60 examples: 11.4 km/h; 4,000: 8.1) and on these recordings stays a little behind the network (7.9). The app still hands over at 3,000, because the store keeps adapting to the phone's own vehicle and pocket.
 
-**In the air**, a smooth cabin reads as standing still, so the phone measures the takeoff for two minutes from the still moment before the roll, and then hands over to one of two flight engines. Both were trained on 302 airline flights from NASA's public DASHlink flight recorder data, and both read only what the phone senses: minutes since the roll began and how the phone is tilted. One is a small neural network (4 → 32 → 32 → 1). The other is a store of 4,000 examples answered like the ground store. Neither uses GPS. On NASA flights each engine had never seen, the network counted a median 102% of the distance (68% of flights within 10%) and the store 104% (65%), against 68% (7%) for holding the takeoff speed. They give the speed an airliner typically has at that point of a flight, so wind or a different aircraft will move them. Drawn whole with no GPS after the first point, the recorded flight stays within about a kilometre of GPS through the taxi and takeoff and ends 16.1 km (network) and 15.5 km (store) from where GPS did: in the air the direction settles about 11° to one side of the track.
+**In the air**, a smooth cabin reads as standing still, so the phone measures the takeoff for two minutes from the still moment before the roll, and then hands over to one of two flight engines. Both were trained on 302 airline flights from NASA's public DASHlink flight recorder data, and both read only what the phone senses: minutes since the roll began and how the phone is tilted. One is a small neural network (4 → 32 → 32 → 1). The other is a store of 4,000 examples answered like the ground store. Neither uses GPS. On NASA flights each engine had never seen, the network counted a median 102% of the distance (68% of flights within 10%) and the store 104% (65%), against 68% (7%) for holding the takeoff speed. They give the speed an airliner typically has at that point of a flight, so wind or a different aircraft will move them. Drawn whole with no GPS after the first point, the recorded flight stays within about a kilometre of GPS through the taxi and takeoff and ends 16.3 km (network) and 15.4 km (store) from where GPS did: in the air the direction settles about 12° to one side of the track.
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
 varying with speed: measured flat from 10 to 65 km/h). In an aircraft the speed after the
@@ -78,7 +78,7 @@ rest of the ride is drawn off by roughly however far it moved.
 
 📄 **[Read the paper](https://github.com/yu314-coder/GPS-location-app/releases/tag/v1.0-paper)**
 — how it works, how accurate the current version is against GPS for each kind of travel in its own section (motorcycle, walking, car, plane), how the built-in networks are built, what each part of the method adds,
-where it goes wrong, and what did not work, with every journey listed. Twenty-six pages.
+where it goes wrong, and what did not work, with every journey listed. Twenty-seven pages.
 [LaTeX source](paper/). The paper also ships inside the app: **Settings → Velocity Mode → Read the
 paper**, alongside an interactive version with the equations and error charts.
 
