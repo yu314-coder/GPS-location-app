@@ -686,8 +686,8 @@ $30\dg$ $\nAblFlA\%$ of the time with the first version and $\nAblFlB\%$ once dr
 \centering\small
 \caption{What each part of the direction method adds: the share of graded seconds and of whole routes
 within $30\dg$, routes turned more than $45\dg$, and the flight's seconds within $30\dg$. Each row adds
-one part to the row above. The magnetometer applies only where the magnetic field was recorded (four
-car drives and two motorcycle rides so far).}
+one part to the row above. The magnetometer applies only where the magnetic field was recorded ($\nMagCars$
+car drives and $\nMagMotos$ motorcycle rides so far).}
 \label{tab:ablation}
 \setlength{\tabcolsep}{4.5pt}
 \input{tables/tab_ablation.tex}
@@ -722,9 +722,9 @@ up. A phone that shifts in the pocket turns the drawn route by about as much as 
 new turns have been learned.
 \item \textbf{A disturbed field at stops.} On one $49$-minute drive the field read about $80~\mu$T at stops
 and $165$ at speed. The stops then measured a drift that did not happen while moving, and the route turned
-further off every minute: with every still second counted, $44\%$ of seconds were within $30\dg$; with no drift
-at all, $89\%$; counting only stops in Earth's field, $92\%$. The bound matters: allowing up to $65~\mu$T let
-the bad stops, at $62$ to $65$, back in. Only the recordings with the magnetometer logged, six so far, can show
+further off every minute: with every still second counted, $\nLongDriftEvery\%$ of seconds were within $30\dg$; with no drift
+at all, $\nLongDriftNone\%$; counting only stops in Earth's field, $\nLongDriftEarth\%$. The bound matters: allowing up to $65~\mu$T let
+the bad stops, at $62$ to $65$, back in. Only the recordings with the magnetometer logged, $\nMagRecs$ so far, can show
 this at all, and the gain rests on that one drive.
 \item \textbf{A field that looks like Earth's but is not.} On the same drive the steady-field test found
 seconds of Earth-like strength, steady for a minute, and took the correction from them; GPS shows it was
@@ -815,8 +815,8 @@ about $1\%$ of each journey's store and moved single journeys' distance by a med
 $14$), and the motorcycle and car totals by $0.3$ and $1.3$ points, so the shares of journeys within
 $20\%$ move by several journeys from one re-run to the next. GPS in a pocket is
 accurate only to tens of metres, so small errors cannot be measured reliably. The magnetic field was
-recorded on four car drives and two motorcycle rides so far, and everything said here about it rests on
-those six. On the first drive a MagSafe charger sat near the phone for part of the time and the
+recorded on $\nMagCars$ car drives and $\nMagMotos$ motorcycle rides so far, and everything said here about it rests on
+those $\nMagRecs$. On the first drive a MagSafe charger sat near the phone for part of the time and the
 correction worked: $\nFirstMagF\%$ of seconds within $30\dg$ with the steady-field test, $\nFirstMagG\%$ with the turn check. On
 the second it sat there throughout; the field was steady at an Earth-like strength for only $\nMagSafeClean$
 seconds, short of the minute the steady-field test needs, while turning minutes passed the turn check
@@ -825,7 +825,12 @@ charger, the field swung between $32$ and $74~\mu$T from minute to minute and wa
 check passed at $\nThirdMagTurn$ seconds and the share within $30\dg$ moved from $\nThirdMagF\%$ to $\nThirdMagG\%$. On the fourth
 the field rose with speed, from about $70$ to $170~\mu$T, and changed even on straight roads, which is why
 subtracting it as a fixed disturbance did not work (Table~\ref{tab:failed}); no minute passed the turn
-check, so the steady-field test decides that drive ($\nLongDriveG\%$). On the first motorcycle ride the field was
+check, so the steady-field test decides that drive ($\nLongDriveG\%$). On the fifth, $52$ minutes long, the turn check
+passed at $\nFifthMagTurn$ seconds, most of them in the first minutes, and put north close to where GPS says it was; but
+once those samples were twenty minutes old and dropped, a few scattered later ones moved the correction
+the wrong way for the rest of the drive. The share within $30\dg$ stayed high ($\nFifthMagG\%$; $\nFifthMagD\%$ with no
+magnetometer at all), because on that drive the angle learned from turns carried an error of the
+opposite sign. On the first motorcycle ride the field was
 steady for $\nMotoMagClean$ seconds and the correction took the graded seconds within $30\dg$ from $\nMotoMagD\%$ to $\nMotoMagF\%$
 ($\nMotoMagG\%$ once the turn check, passing at $\nMotoMagTurn$ seconds, takes over), though weak GPS left only $\nMotoMagN$ seconds
 to grade; on the second the field stayed near $500~\mu$T, ten times Earth's, nothing could correct the
