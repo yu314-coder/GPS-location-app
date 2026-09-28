@@ -171,9 +171,12 @@ struct VelocityMethodView: View {
                 level: with the phone head-down in a trouser pocket the built-in heading scattered \
                 by about 49° a minute, this one by about 1°. In a car the heading drifts slowly \
                 with the gyroscope's bias, so the drift is measured while the vehicle is stopped, \
-                the phone still and the field reading like Earth's (30–60 µT), and taken off; and \
-                while the field looks like Earth's, the \
-                magnetometer is read directly to correct where the heading started.
+                the phone still and the field reading like Earth's (30–60 µT), and taken off. \
+                Where the heading started is corrected by the magnetometer, read directly, but only \
+                from a field that proves it is Earth's: over a minute in which the phone turned at \
+                least 30°, Earth's field stays put in the world, while a magnet in the car or beside \
+                the phone turns with it. A minute whose field held within 8 µT while turning is \
+                taken as north.
                 """)
                 .font(.callout)
                 Equation("eq_heading")
@@ -367,8 +370,10 @@ struct VelocityMethodView: View {
 
                 In cars, measuring the drift at stops took the seconds within 30° from \(N.AblCarSecA)% to \
                 \(N.AblCarSecB)%, averaging right and left turns apart to \(N.AblCarSecC)%, the push check to \
-                \(N.AblCarSecD)%, the clean-field magnetometer to \(N.AblCarSecE)%, and counting drift only while \
-                the field reads like Earth's to \(N.AblCarSecF)%.
+                \(N.AblCarSecD)%, the clean-field magnetometer to \(N.AblCarSecE)%, counting drift only while \
+                the field reads like Earth's to \(N.AblCarSecF)%, and taking north only from a field checked by \
+                turning to \(N.AblCarSecG)%. Checked against GPS sample by sample, turn-checked north was \
+                within 15° \(N.TurnSampFifteen)% of the time; the steady-field seconds used before, \(N.CleanSampFifteen)%.
                 """)
                 .font(.caption2).foregroundStyle(.secondary)
             }
@@ -541,7 +546,7 @@ struct VelocityMethodView: View {
                 Limitation("A phone that moves.",
                            "A hand on the phone can lower the speed but not raise it, and a phone picked up while slowing keeps the speed it had when it was picked up. A phone that shifts in a pocket turns the drawn route by about as much as it moved, until enough new turns have been learned.")
                 Limitation("Keep the phone away from magnets.",
-                           "Beside a car's MagSafe charger the phone read up to 2,600 µT, fifty times Earth's field, yet reported its compass as well calibrated. The app ignores such a field, but then cannot correct the heading.")
+                           "Beside a car's MagSafe charger the phone read up to 2,600 µT, fifty times Earth's field, yet reported its compass as well calibrated. The app ignores such a field. On the drive with the charger there throughout, a few turning minutes still showed Earth's field and the seconds within 30° rose from \(N.MagSafeF)% to \(N.MagSafeG)%; a phone that never leaves such a field cannot be corrected.")
                 Limitation("A ride that is never recognised.",
                            "On one short ride Apple's motion classifier never said \u{201C}driving\u{201D} and the step counter took the engine for footsteps: as recorded, the app counted 1.0 of 2.4 km.")
                 Limitation("In an aircraft, the speed after the takeoff is a typical airliner's.",
@@ -756,7 +761,7 @@ enum VelocityMethodData {
               direction: "73%"),
         .init(name: "Car", recorded: "38 recordings, 9.8 hours, 188 km checked by GPS; phone in a pocket, flat or in a mount",
               distance: "+0.6%", speed: "7.0 km/h", speedLabel: "average speed error",
-              direction: "82%"),
+              direction: "83%"),
         .init(name: "Walking", recorded: "45 straight stretches and 7 walks; phone in a pocket, distance counted by steps",
               distance: "+3.7%", speed: "5.0 km/h", speedLabel: "where GPS measured 4.6",
               direction: "93%"),
@@ -789,7 +794,7 @@ enum VelocityMethodData {
 
     static let direction: [Direction] = [
         .init(name: "Motorcycle", graded: "42 recordings", medianDegrees: 17, within30: 73),
-        .init(name: "Car", graded: "28 recordings", medianDegrees: 18, within30: 82),
+        .init(name: "Car", graded: "28 recordings", medianDegrees: 17, within30: 83),
         .init(name: "Walking", graded: "7 walks", medianDegrees: 10, within30: 93),
         .init(name: "Plane", graded: "1 flight", medianDegrees: 13, within30: 99)
     ]
@@ -1982,21 +1987,25 @@ enum VelocityMethodData {
         static let AblBigA = "9"
         static let AblBigC = "5"
         static let AblBigF = "5"
+        static let AblBigG = "4"
         static let AblCarRtA = "62"
         static let AblCarRtC = "79"
         static let AblCarRtF = "83"
+        static let AblCarRtG = "86"
         static let AblCarSecA = "68"
         static let AblCarSecB = "66"
         static let AblCarSecC = "69"
         static let AblCarSecD = "70"
         static let AblCarSecE = "75"
         static let AblCarSecF = "82"
+        static let AblCarSecG = "83"
         static let AblFlA = "92"
         static let AblFlB = "99"
         static let AblGate = "+8"
         static let AblMag = "+4"
         static let AblMotoSpan = "1"
         static let AblPush = "+1"
+        static let AblTurn = "+1"
         static let BothAppKm = "346"
         static let BothGpsKm = "367"
         static let BothShort = "5.8"
@@ -2011,7 +2020,7 @@ enum VelocityMethodData {
         static let CarBandThirtyGps = "35"
         static let CarBandTwentyApp = "25"
         static let CarBandTwentyGps = "25"
-        static let CarDirMed = "18"
+        static let CarDirMed = "17"
         static let CarDirRec = "28"
         static let CarDist = "+0.6"
         static let CarDistTxt = "0.6% long"
@@ -2022,17 +2031,24 @@ enum VelocityMethodData {
         static let CarMae = "7.0"
         static let CarMedJourneyTxt = "1.3% short"
         static let CarMidMax = "2"
-        static let CarNinety = "43"
+        static let CarNinety = "41"
         static let CarParks = "6"
         static let CarRec = "38"
         static let CarRoutes = "29"
-        static let CarRtBig = "2"
-        static let CarRtBigShort = "1"
-        static let CarRtMed = "16"
-        static let CarRtWthirty = "83"
+        static let CarRtBig = "1"
+        static let CarRtBigShort = "0"
+        static let CarRtMed = "15"
+        static let CarRtWthirty = "86"
         static let CarSize = "1.01"
-        static let CarWthirty = "82"
+        static let CarWthirty = "83"
         static let CarWtwenty = "65"
+        static let CleanSampFifteen = "55"
+        static let CleanSampMed = "14"
+        static let CleanSampN = "276"
+        static let CleanSampRecs = "3"
+        static let CleanSampWorst = "80"
+        static let FirstMagF = "93"
+        static let FirstMagG = "97"
         static let FlAir = "14"
         static let FlEnd = "17"
         static let FlEndNet = "19.5"
@@ -2055,8 +2071,19 @@ enum VelocityMethodData {
         static let Hours = "21"
         static let Journeys = "79"
         static let KmChecked = "367"
+        static let LongDriveF = "92"
+        static let LongDriveG = "92"
+        static let LongDriveTurn = "0"
         static let MagOffD = "32"
         static let MagOffE = "20"
+        static let MagPooledF = "86"
+        static let MagPooledG = "89"
+        static let MagRecs = "6"
+        static let MagRecsTurn = "4"
+        static let MagSafeClean = "51"
+        static let MagSafeF = "0"
+        static let MagSafeG = "57"
+        static let MagSafeTurn = "27"
         static let MagWD = "38"
         static let MagWE = "94"
         static let MainCarMae = "7.0"
@@ -2083,6 +2110,12 @@ enum VelocityMethodData {
         static let MotoHalf = "837"
         static let MotoHours = "11.3"
         static let MotoMae = "9.0"
+        static let MotoMagClean = "88"
+        static let MotoMagD = "90"
+        static let MotoMagF = "97"
+        static let MotoMagG = "94"
+        static let MotoMagN = "69"
+        static let MotoMagTurn = "5"
         static let MotoMedJourneyTxt = "7.5% short"
         static let MotoMidMax = "15"
         static let MotoNinety = "61"
@@ -2093,6 +2126,7 @@ enum VelocityMethodData {
         static let MotoRtMed = "11"
         static let MotoRtWthirty = "86"
         static let MotoSize = "0.82"
+        static let MotoTwoG = "29"
         static let MotoWthirty = "73"
         static let MotoWtwenty = "75"
         static let NetAirErr = "38"
@@ -2111,7 +2145,7 @@ enum VelocityMethodData {
         static let RecN = "12"
         static let SlowAppPct = "100"
         static let SlowGraded = "87"
-        static let SlowReplayPct = "0"
+        static let SlowReplayPct = "57"
         static let StoreAirErr = "37"
         static let StoreFourK = "8.0"
         static let StoreKm = "73.9"
@@ -2121,12 +2155,20 @@ enum VelocityMethodData {
         static let StoreVsNet = "still a little behind"
         static let TaxiApp = "17"
         static let TaxiGps = "18"
-        static let TurnBig = "28"
+        static let ThirdMagF = "79"
+        static let ThirdMagG = "77"
+        static let ThirdMagTurn = "7"
+        static let TurnBig = "27"
         static let TurnFixed = "88"
         static let TurnMedFixed = "8.4"
-        static let TurnMedNow = "17.5"
+        static let TurnMedNow = "17.0"
         static let TurnN = "70"
-        static let TurnNow = "77"
+        static let TurnNow = "78"
+        static let TurnSampFifteen = "91"
+        static let TurnSampMed = "9"
+        static let TurnSampN = "149"
+        static let TurnSampRecs = "3"
+        static let TurnSampWorst = "15"
         static let WalkAfterTxt = "6% more"
         static let WalkApp = "5.0"
         static let WalkDirMed = "10"

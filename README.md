@@ -50,10 +50,10 @@ recorded at the same time, used only as the answer key. Every number is the late
 |---|---|---|---|---|
 | Distance vs GPS | **12%** short (41 journeys); 75% of journeys within 20% | **0.6%** long (38 journeys); 65% within 20% | **4%** long | **103%** (76.5 of 74.1 km): the takeoff is measured, then the flight network (store: 100%) |
 | Speed | average error 9.0 km/h; reads low above 30 km/h | average error 7.0 km/h; close up to 60 km/h | about 5 km/h where GPS says 4.6 | takeoff measured (265 km/h at 40 s vs GPS 266), then the flight network: 38 km/h error in the air (holding the takeoff speed: 196) |
-| Direction within 30° of GPS | **73%** of the time | **82%** | **93%** (phone in a pocket) | **99%** |
-| Whole route turned | median **11°**; 86% within 30° (43 routes) | median **16°**; 83% within 30° (29 routes) | — | — |
+| Direction within 30° of GPS | **73%** of the time | **83%** | **93%** (phone in a pocket) | **99%** |
+| Whole route turned | median **11°**; 86% within 30° (43 routes) | median **15°**; 86% within 30° (29 routes) | — | — |
 
-**Direction uses no GPS.** The phone learns how it sits from the vehicle's turns; the heading's slow drift in a car (the gyroscope's own bias) is measured at stops and taken off; and whenever the magnetic field looks like Earth's, the magnetometer corrects where the heading started. Drift is only measured at stops while the field reads like Earth's (30–60 µT): in a disturbed car the stops otherwise measure a drift that does not happen on the move. Keep the phone away from magnets: beside a MagSafe charger no compass works, the iPhone's own included.
+**Direction uses no GPS.** The phone learns how it sits from the vehicle's turns; the heading's slow drift in a car (the gyroscope's own bias) is measured at stops and taken off; and the magnetometer corrects where the heading started, but only from a field that proves it is Earth's: over a minute in which the phone turned at least 30°, Earth's field stays put in the world while a magnet in the car or beside the phone turns with it. Drift is only measured at stops while the field reads like Earth's (30–60 µT): in a disturbed car the stops otherwise measure a drift that does not happen on the move. Keep the phone away from magnets: beside a MagSafe charger no compass works, the iPhone's own included.
 
 **A new phone** has no examples of its own, so until it has learned 3,000 it uses a small built-in network: the same vibration fingerprint in, speed out, and nothing from the current trip. Measured only on recordings it had never seen, next to the main model with a full store:
 

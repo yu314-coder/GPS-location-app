@@ -28,11 +28,11 @@
    "speed_mae": 7.0,
    "half_minutes": 830,
    "dir_recordings": 28,
-   "dir_median": 18,
-   "dir_within30": 82,
+   "dir_median": 17,
+   "dir_within30": 83,
    "routes": 29,
-   "route_median": 16,
-   "route_within30": 83
+   "route_median": 15,
+   "route_within30": 86
   },
   "walking": {
    "stretches": 45,

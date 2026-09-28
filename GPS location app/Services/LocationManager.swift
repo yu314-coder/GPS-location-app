@@ -140,6 +140,9 @@ class LocationManager: NSObject, ObservableObject {
     /// strength (microtesla) and dip (degrees, down positive). See WorkoutSession.updateHeadingDrift.
     private var magOffsetSin = 0.0, magOffsetCos = 0.0, magFieldSum = 0.0, magDipSum = 0.0
     private var magSamples = 0
+    /// The field in Core Motion's own world frame (north, west, up; microtesla), summed likewise.
+    /// Earth's field holds still in it while the phone turns; a magnet carried along turns with it.
+    private var magWorldNorthSum = 0.0, magWorldWestSum = 0.0, magWorldUpSum = 0.0
     /// Counts motion-tracking starts. A pause and resume restarts Core Motion with a fresh reference
     /// frame, so a correction measured against the old one no longer applies.
     private(set) var motionSession = 0
@@ -816,6 +819,7 @@ class LocationManager: NSObject, ObservableObject {
         tickVerticalRateSum = 0; tickVerticalRateSamples = 0
         magnetometerAccuracy = nil; magneticFieldStrength = nil
         magOffsetSin = 0; magOffsetCos = 0; magFieldSum = 0; magDipSum = 0; magSamples = 0
+        magWorldNorthSum = 0; magWorldWestSum = 0; magWorldUpSum = 0
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         print("📈 Starting device-motion acceleration recording")
@@ -1026,6 +1030,7 @@ class LocationManager: NSObject, ObservableObject {
         tickVerticalRateSum = 0; tickVerticalRateSamples = 0
         magnetometerAccuracy = nil; magneticFieldStrength = nil
         magOffsetSin = 0; magOffsetCos = 0; magFieldSum = 0; magDipSum = 0; magSamples = 0
+        magWorldNorthSum = 0; magWorldWestSum = 0; magWorldUpSum = 0
         deviceAccelBiasX = 0; deviceAccelBiasY = 0; deviceAccelBiasZ = 0; deviceBiasElapsedTime = 0
         lastDeviceBiasTimestamp = nil
         DispatchQueue.main.async { [weak self] in
@@ -1047,11 +1052,15 @@ class LocationManager: NSObject, ObservableObject {
 
     /// The magnetometer's bearing of the heading axis minus the attitude's (degrees), the field
     /// strength (microtesla) and its dip (degrees) since the previous call, or nil if none arrived.
-    func takeMagnetometerTick() -> (offset: Double, field: Double, dip: Double)? {
-        defer { magOffsetSin = 0; magOffsetCos = 0; magFieldSum = 0; magDipSum = 0; magSamples = 0 }
+    func takeMagnetometerTick() -> (offset: Double, field: Double, dip: Double, world: (north: Double, west: Double, up: Double))? {
+        defer {
+            magOffsetSin = 0; magOffsetCos = 0; magFieldSum = 0; magDipSum = 0; magSamples = 0
+            magWorldNorthSum = 0; magWorldWestSum = 0; magWorldUpSum = 0
+        }
         guard magSamples > 0 else { return nil }
         let n = Double(magSamples)
-        return (atan2(magOffsetSin, magOffsetCos) * 180 / .pi, magFieldSum / n, magDipSum / n)
+        return (atan2(magOffsetSin, magOffsetCos) * 180 / .pi, magFieldSum / n, magDipSum / n,
+                (magWorldNorthSum / n, magWorldWestSum / n, magWorldUpSum / n))
     }
 
     /// Mean |vertical rotation rate| in rad/s since the previous call, or nil with too few samples.
@@ -1149,6 +1158,9 @@ class LocationManager: NSObject, ObservableObject {
                 magOffsetSin += sin(offset); magOffsetCos += cos(offset)
                 magFieldSum += fieldStrength
                 magDipSum += asin(max(-1, min(1, along / fieldStrength))) * 180 / .pi
+                magWorldNorthSum += north[0] * f[0] + north[1] * f[1] + north[2] * f[2]
+                magWorldWestSum += west[0] * f[0] + west[1] * f[1] + west[2] * f[2]
+                magWorldUpSum -= along
                 magSamples += 1
             }
         }

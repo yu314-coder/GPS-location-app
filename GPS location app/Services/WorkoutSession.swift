@@ -485,7 +485,7 @@ class WorkoutSession: ObservableObject {
     private var recentFieldDip: [Double] = []
     private var magnetometerAnchors: [(time: Date, value: Double)] = []
     /// For the diagnostics columns.
-    private var lastMagnetometerTick: (offset: Double, field: Double, dip: Double)?
+    private var lastMagnetometerTick: (offset: Double, field: Double, dip: Double, world: (north: Double, west: Double, up: Double))?
     private var lastMagnetometerClean = false
     private var magnetometerAnchor: Double?
     private let MAG_FIELD_RANGE = 25.0...65.0        // microtesla
@@ -495,6 +495,31 @@ class WorkoutSession: ObservableObject {
     private let MAG_MIN_CLEAN = 60                    // clean seconds before the anchor is used
     private let MAG_KEEP: TimeInterval = 1200
     private let MAG_MAX_SPREAD = 15.0                 // degrees, interquartile range of the anchors
+
+    // NORTH CHECKED BY TURNING (build 74). "Steady and 25-65 microtesla" can be fooled: a car's own
+    // field can sit steady at an Earth-like strength while the car stops or runs straight, and on a
+    // 49-minute drive that way the anchor settled 30 degrees wrong (its "clean" seconds dipped 14-28
+    // degrees; Earth's here dips about 35). What no disturbance riding along can do is stay put while
+    // the phone turns: Earth's field is fixed in the world, a magnet in the car or on the phone turns
+    // with them. So over each last minute in which the phone's heading swept at least 30 degrees, the
+    // field in Core Motion's world frame must hold within 8 microtesla of its mean, at 25-70 strength;
+    // then that minute is Earth's field and its mean offset is an anchor sample. Once any such minute
+    // has been seen, only those samples set the anchor; before that the clean-field test stands.
+    // GPS used only to grade, every recording with the raw magnetometer: per sample, north within 15
+    // degrees 91% of the time against 55% for the clean-field test, worst 15 against 80; routes within
+    // 30 degrees 86% -> 89% of seconds, the MagSafe drive 0 -> 57%.
+    private var recentMagnetometer: [(time: Date, north: Double, west: Double, up: Double, offset: Double, heading: Double)] = []
+    private var turnVerifiedAnchors: [(time: Date, value: Double)] = []
+    private var turnVerifiedSeen = false
+    /// For the diagnostics columns: the last minute's heading sweep, field scatter, and verdict.
+    private var lastMagnetometerTurn: Double?
+    private var lastMagnetometerScatter: Double?
+    private var lastMagnetometerVerified = false
+    private let MAG_TURN_WINDOW: TimeInterval = 60
+    private let MAG_TURN_MIN_COVER = 48               // readings in the window
+    private let MAG_TURN_MIN_SWEEP = 30.0             // degrees
+    private let MAG_TURN_MAX_SCATTER = 8.0            // microtesla, RMS about the minute's mean
+    private let MAG_TURN_FIELD_RANGE = 25.0...70.0    // microtesla
 
     /// numpy's default (linear) percentile, so the app and the replay agree exactly.
     private static func percentile(_ values: [Double], _ p: Double) -> Double {
@@ -516,6 +541,7 @@ class WorkoutSession: ObservableObject {
             driftMotionSession = locationManager.motionSession
             driftFromStops = 0; magnetometerAnchors = []; recentFieldStrength = []; recentFieldDip = []
             magnetometerAnchor = nil
+            recentMagnetometer = []; turnVerifiedAnchors = []; turnVerifiedSeen = false
             previousUncorrectedDatum = nil
         }
         let step = min(max(dt, 0.5), 2.0)
@@ -557,14 +583,45 @@ class WorkoutSession: ObservableObject {
             magnetometerAnchors.append((now, -mag.offset - driftFromStops))
         }
         magnetometerAnchors.removeAll { now.timeIntervalSince($0.time) > MAG_KEEP }
+        // The turn check; see recentMagnetometer.
+        if let mag, mag.offset.isFinite, let heading = locationManager.currentAxisHeadingUncorrected {
+            recentMagnetometer.append((now, mag.world.north, mag.world.west, mag.world.up, mag.offset, heading))
+        }
+        recentMagnetometer.removeAll { now.timeIntervalSince($0.time) >= MAG_TURN_WINDOW }
+        lastMagnetometerTurn = nil; lastMagnetometerScatter = nil; lastMagnetometerVerified = false
+        if recentMagnetometer.count >= MAG_TURN_MIN_COVER {
+            var unwrapped = recentMagnetometer[0].heading, low = unwrapped, high = unwrapped
+            for i in 1..<recentMagnetometer.count {
+                unwrapped += normalizedSignedAngle(recentMagnetometer[i].heading - recentMagnetometer[i - 1].heading)
+                low = min(low, unwrapped); high = max(high, unwrapped)
+            }
+            let n = Double(recentMagnetometer.count)
+            let mn = recentMagnetometer.reduce(0) { $0 + $1.north } / n
+            let mw = recentMagnetometer.reduce(0) { $0 + $1.west } / n
+            let mu = recentMagnetometer.reduce(0) { $0 + $1.up } / n
+            let scatter = sqrt(recentMagnetometer.reduce(0) {
+                $0 + ($1.north - mn) * ($1.north - mn) + ($1.west - mw) * ($1.west - mw) + ($1.up - mu) * ($1.up - mu)
+            } / n)
+            lastMagnetometerTurn = high - low; lastMagnetometerScatter = scatter
+            if high - low >= MAG_TURN_MIN_SWEEP, scatter <= MAG_TURN_MAX_SCATTER,
+               MAG_TURN_FIELD_RANGE.contains(sqrt(mn * mn + mw * mw + mu * mu)) {
+                let o = recentMagnetometer.map { $0.offset * .pi / 180 }
+                let mean = atan2(o.reduce(0) { $0 + sin($1) }, o.reduce(0) { $0 + cos($1) }) * 180 / .pi
+                turnVerifiedAnchors.append((now, -mean - driftFromStops))
+                turnVerifiedSeen = true
+                lastMagnetometerVerified = true
+            }
+        }
+        turnVerifiedAnchors.removeAll { now.timeIntervalSince($0.time) > MAG_KEEP }
         // HELD, NOT DROPPED. The anchor measures where Core Motion started, which does not expire;
         // when its readings age out (twenty minutes by a MagSafe charger, say) the last value
         // stands until clean readings replace it. Dropping it put the heading's starting error
         // back just when drift had grown largest: replayed, 94% -> 96% within 30 degrees.
-        if magnetometerAnchors.count >= MAG_MIN_CLEAN {
-            let radians = magnetometerAnchors.map { $0.value * .pi / 180 }
+        let anchors = turnVerifiedSeen ? turnVerifiedAnchors : magnetometerAnchors
+        if anchors.count >= (turnVerifiedSeen ? 1 : MAG_MIN_CLEAN) {
+            let radians = anchors.map { $0.value * .pi / 180 }
             let centre = atan2(Self.median(radians.map(sin)), Self.median(radians.map(cos))) * 180 / .pi
-            let deviations = magnetometerAnchors.map { normalizedSignedAngle($0.value - centre) }
+            let deviations = anchors.map { normalizedSignedAngle($0.value - centre) }
             if Self.percentile(deviations, 75) - Self.percentile(deviations, 25) < MAG_MAX_SPREAD {
                 magnetometerAnchor = centre
             }
@@ -2254,6 +2311,8 @@ class WorkoutSession: ObservableObject {
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
         driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
         lastMagnetometerTick = nil; lastMagnetometerClean = false; magnetometerAnchor = nil
+        recentMagnetometer = []; turnVerifiedAnchors = []; turnVerifiedSeen = false
+        lastMagnetometerTurn = nil; lastMagnetometerScatter = nil; lastMagnetometerVerified = false
         driftMotionSession = -1
         previousUncorrectedDatum = nil
         locationManager.headingDriftCorrection = 0
@@ -4773,7 +4832,10 @@ class WorkoutSession: ObservableObject {
             flightNetwork: lastFlightAnswers.network,
             flightStore: lastFlightAnswers.store,
             flightMinutes: lastFlightAnswers.features?[0],
-            flightTilt60: lastFlightAnswers.features?[1]))
+            flightTilt60: lastFlightAnswers.features?[1],
+            magTurn: lastMagnetometerTurn,
+            magScatter: lastMagnetometerScatter,
+            magVerified: lastMagnetometerVerified))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist

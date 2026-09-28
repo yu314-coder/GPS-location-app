@@ -89,8 +89,8 @@ iPhone app, and measures how well it works. Its contributions are:
 fingerprint of the vehicle's vibration, looked up in a store of the phone's own earlier trips or, on
 a new phone, answered by a small built-in network. Direction comes from the vehicle's turns, which
 reveal how the phone sits, on top of a heading whose slow drift is measured at stops and whose
-starting error is corrected by the magnetometer whenever the magnetic field can be trusted
-(Section~\ref{sec:method}).
+starting error is corrected by the magnetometer whenever the magnetic field proves to be Earth's, by
+holding still in the world while the vehicle turns (Section~\ref{sec:method}).
 \item \textbf{An evaluation against GPS that reflects the newest version, one kind of travel at a time.}
 Every recording was replayed through the current method from its raw sensor data
 (Section~\ref{sec:eval}), and each kind of travel has its own section and figures: the motorcycle, walking,
@@ -143,7 +143,7 @@ motorcycle as well as in a car.
 \node[box=gray!12]  (air)  at (4.1, 0)    {In the air?\\[-1pt]\scriptsize takeoff, then flight network};
 \node[box=orange!12](fp)   at (4.1, -1.6) {Vibration fingerprint\\[-1pt]\scriptsize $11$ numbers a second};
 \node[box=green!10] (turn) at (4.1, -3.2) {Angle of the phone\\[-1pt]\scriptsize learned from turns};
-\node[box=green!10] (head) at (4.1, -4.8) {Heading reference\\[-1pt]\scriptsize drift at stops, clean field};
+\node[box=green!10] (head) at (4.1, -4.8) {Heading reference\\[-1pt]\scriptsize drift at stops, turn-checked field};
 \node[box=orange!12](spd)  at (8.2, -0.8) {Speed\\[-1pt]\scriptsize own trips, or network};
 \node[box=green!10] (dir)  at (8.2, -4.0) {Direction of travel};
 \node[box=yellow!15, text width=25mm, minimum height=16mm] (route) at (12.0, -2.4) {Route\\[-1pt]\scriptsize first point from GPS, then a step each second};
@@ -236,13 +236,20 @@ while the magnetic field reads like Earth's here, $30$ to $60~\mu$T: Core Motion
 magnetometer, and in a disturbed field it is pulled toward the disturbance --- which in a car is not the
 same standing as driving, so a drift measured at stops would be carried wrongly into the drive.
 
-\paragraph{The magnetometer, when the field can be trusted.} Core Motion also sets north once at the
-start, often wrongly inside a vehicle, and then follows the gyroscope. On one drive it began
-$20$--$26\dg$ off while the magnetometer, read directly, put the phone within $1$--$5\dg$ of the
-truth. So whenever the magnetic field looks like Earth's --- between $25$ and $65~\mu$T, with its
-strength and dip steady for a minute --- the phone compares the magnetometer's heading with its own and
-takes the difference, less the drift already measured, as the correction to where the heading
-started. Beside a MagSafe charger the phone read up to $2{,}600~\mu$T and nothing is taken from it.
+\paragraph{The magnetometer, when the field can be trusted.} Core Motion also sets north once, in the
+first seconds of a recording, and then follows the gyroscope: on the recordings with the magnetometer
+logged its north moved by up to $160\dg$ in the first second and afterwards seldom more than $5\dg$ in a
+minute beyond what the gyroscope measured. Set inside a vehicle, that north is often wrong. On one drive
+it began $20$--$26\dg$ off while the magnetometer, read directly, put the phone within $1$--$5\dg$ of the
+truth. So the phone compares the magnetometer's heading with its own and takes the difference, less the
+drift already measured, as the correction to where the heading started --- but only from a field that
+has shown it is Earth's. Earth's field is fixed in the world; a field from the car, or from something
+carried with the phone, turns with them. Over each last minute in which the heading swept at least
+$30\dg$, the phone expresses the field in Core Motion's world frame; if it stayed within $8~\mu$T of its
+mean, at a strength of $25$ to $70~\mu$T, that minute was Earth's field and its average difference is a
+sample of the correction. Until the first such minute, a field between $25$ and $65~\mu$T whose strength
+and dip have been steady for a minute is used instead. Beside a MagSafe charger the phone read up to
+$2{,}600~\mu$T and nothing is taken from it.
 
 \paragraph{The angle of the phone, from turns.} The heading says where the phone points, not where the
 vehicle goes; the two differ by an angle $\beta$ that depends on how the phone sits. In a turn the
@@ -666,9 +673,10 @@ direction is within a given angle of GPS.}
 Table~\ref{tab:ablation} replays every recording with the direction method built up one part at a time,
 graded exactly as above. For cars the share of seconds within $30\dg$ goes from $\nAblCarSecA\%$ with the heading and
 the angle from turns alone to $\nAblCarSecB\%$ with drift measured at stops, $\nAblCarSecC\%$ with right and left turns
-averaged apart, $\nAblCarSecD\%$ with the push check, $\nAblCarSecE\%$ with the clean magnetometer and $\nAblCarSecF\%$ when
-drift is measured only in Earth's field; routes within $30\dg$ go from $\nAblCarRtA\%$ to $\nAblCarRtF\%$, and routes of either
-vehicle turned more than $45\dg$ from $\nAblBigA$ to $\nAblBigF$. Drift measured at stops helps a drive where the phone sat
+averaged apart, $\nAblCarSecD\%$ with the push check, $\nAblCarSecE\%$ with the clean magnetometer, $\nAblCarSecF\%$ when
+drift is measured only in Earth's field and $\nAblCarSecG\%$ when north is taken only from a field checked by turning; routes
+within $30\dg$ go from $\nAblCarRtA\%$ to $\nAblCarRtG\%$, and routes of either
+vehicle turned more than $45\dg$ from $\nAblBigA$ to $\nAblBigG$. Drift measured at stops helps a drive where the phone sat
 in an Earth-like field and harms one where the field was disturbed (Section~\ref{sec:discussion}); counting
 only stops in Earth's field keeps the first and removes the second. For motorcycles every version is within
 $\nAblMotoSpan$ points of the others. The flight, replayed with the speed the app has in the air, is within
@@ -679,13 +687,12 @@ $30\dg$ $\nAblFlA\%$ of the time with the first version and $\nAblFlB\%$ once dr
 \caption{What each part of the direction method adds: the share of graded seconds and of whole routes
 within $30\dg$, routes turned more than $45\dg$, and the flight's seconds within $30\dg$. Each row adds
 one part to the row above. The magnetometer applies only where the magnetic field was recorded (four
-car drives and two motorcycle rides so far; clean for long enough on one of each).}
+car drives and two motorcycle rides so far).}
 \label{tab:ablation}
 \setlength{\tabcolsep}{4.5pt}
 \input{tables/tab_ablation.tex}
 \end{table}
 
-\clearpage
 \section{Discussion}\label{sec:discussion}
 
 \subsection{Where it goes wrong}\label{sec:wrong}
@@ -719,10 +726,22 @@ further off every minute: with every still second counted, $44\%$ of seconds wer
 at all, $89\%$; counting only stops in Earth's field, $92\%$. The bound matters: allowing up to $65~\mu$T let
 the bad stops, at $62$ to $65$, back in. Only the recordings with the magnetometer logged, six so far, can show
 this at all, and the gain rests on that one drive.
+\item \textbf{A field that looks like Earth's but is not.} On the same drive the steady-field test found
+seconds of Earth-like strength, steady for a minute, and took the correction from them; GPS shows it was
+about $30\dg$ wrong, and those seconds dipped $14$--$28\dg$ where Earth's field here dips about $35\dg$. A
+steady field proves little while a car stands or runs straight. Checked sample by sample against GPS on
+the $\nMagRecs$ recordings with the magnetometer logged, the minutes that passed the turn check put north
+within $15\dg$ of the truth $\nTurnSampFifteen\%$ of the time (median error $\nTurnSampMed\dg$, worst $\nTurnSampWorst\dg$, $\nTurnSampN$ samples); the
+steady-field seconds did so $\nCleanSampFifteen\%$ of the time (median $\nCleanSampMed\dg$, worst $\nCleanSampWorst\dg$, $\nCleanSampN$ samples).
+Over those recordings' graded seconds the turn check moved the share within $30\dg$ from $\nMagPooledF\%$ to
+$\nMagPooledG\%$. Matching the field's strength and dip to Earth's values instead was fragile
+(Table~\ref{tab:failed}).
 \item \textbf{A magnet beside the phone.} By a car's MagSafe charger the phone read up to
 $2{,}600~\mu$T, fifty times Earth's field, yet reported its compass as well calibrated; the iPhone's own
-Compass then drifted $49\dg$ with the gyroscope. The app ignores such a field, but it cannot then
-correct the heading.
+Compass then drifted $49\dg$ with the gyroscope. The app ignores such a field. On the drive with the
+charger beside the phone throughout, a few turning minutes still showed Earth's field, and with them the
+seconds within $30\dg$ rose from $\nMagSafeF\%$ to $\nMagSafeG\%$; a phone that never leaves such a field cannot be
+corrected at all.
 \item \textbf{Car-park ramps and rides never recognised.} A car crawling up a concrete ramp shakes like
 one at $40$~km/h, so distance is withheld while climbing and turning together; once that test fired on
 an ordinary road and dropped $9$~seconds at $48$~km/h, about $115$~m. On one short ride Apple's
@@ -796,14 +815,21 @@ about $1\%$ of each journey's store and moved single journeys' distance by a med
 $14$), and the motorcycle and car totals by $0.3$ and $1.3$ points, so the shares of journeys within
 $20\%$ move by several journeys from one re-run to the next. GPS in a pocket is
 accurate only to tens of metres, so small errors cannot be measured reliably. The magnetic field was
-recorded on four car drives and two motorcycle rides so far. On the first drive a MagSafe charger sat
-near the phone for part of the time and the correction worked; on the second it sat there throughout and
-the field was clean for only $46$ seconds, short of the minute the correction needs; on the third, with the
-phone placed away from the charger, the field still swung between $32$ and $74~\mu$T from minute to minute
-and was never clean; on the fourth it rose with speed, from about $70$ to $170~\mu$T, and changed even on
-straight roads, which is why subtracting it as a fixed disturbance did not work (Table~\ref{tab:failed}). On the first motorcycle ride the field was clean for $87$ seconds and the correction
-took the graded seconds within $30\dg$ from $90\%$ to $97\%$ and the ride's turn from $8\dg$ to $2\dg$, though weak
-GPS left only $69$ seconds to grade; on the second it was never clean.
+recorded on four car drives and two motorcycle rides so far, and everything said here about it rests on
+those six. On the first drive a MagSafe charger sat near the phone for part of the time and the
+correction worked: $\nFirstMagF\%$ of seconds within $30\dg$ with the steady-field test, $\nFirstMagG\%$ with the turn check. On
+the second it sat there throughout; the field was steady at an Earth-like strength for only $\nMagSafeClean$
+seconds, short of the minute the steady-field test needs, while turning minutes passed the turn check
+at $\nMagSafeTurn$ seconds ($\nMagSafeF\% \to \nMagSafeG\%$). On the third, with the phone placed away from the
+charger, the field swung between $32$ and $74~\mu$T from minute to minute and was never steady; the turn
+check passed at $\nThirdMagTurn$ seconds and the share within $30\dg$ moved from $\nThirdMagF\%$ to $\nThirdMagG\%$. On the fourth
+the field rose with speed, from about $70$ to $170~\mu$T, and changed even on straight roads, which is why
+subtracting it as a fixed disturbance did not work (Table~\ref{tab:failed}); no minute passed the turn
+check, so the steady-field test decides that drive ($\nLongDriveG\%$). On the first motorcycle ride the field was
+steady for $\nMotoMagClean$ seconds and the correction took the graded seconds within $30\dg$ from $\nMotoMagD\%$ to $\nMotoMagF\%$
+($\nMotoMagG\%$ once the turn check, passing at $\nMotoMagTurn$ seconds, takes over), though weak GPS left only $\nMotoMagN$ seconds
+to grade; on the second the field stayed near $500~\mu$T, ten times Earth's, nothing could correct the
+heading, and $\nMotoTwoG\%$ of its seconds were within $30\dg$.
 
 \section{Conclusion}
 
