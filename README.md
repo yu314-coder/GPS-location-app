@@ -48,27 +48,27 @@ recorded at the same time, used only as the answer key. Every number is the late
 
 | | Motorcycle | Car | Walking | Plane |
 |---|---|---|---|---|
-| Distance vs GPS | **13%** short (42 journeys); 73% of journeys within 20% | **0.4%** long (39 journeys); 69% within 20% | **9%** long (see below) | **103%** (76.4 of 74.1 km): the takeoff is measured, then the flight network (store: 100%) |
-| Speed | average error 9.1 km/h; reads low above 30 km/h | average error 6.7 km/h; close up to 60 km/h | about 5.1 km/h where GPS says 4.5 | takeoff measured (265 km/h at 40 s vs GPS 266), then the flight network: 38 km/h error in the air (holding the takeoff speed: 196) |
+| Distance vs GPS | **10%** short (43 journeys); 83% of journeys within 20% | **1.1%** long (39 journeys); 71% within 20% | **8%** long (see below) | **103%** (76.5 of 74.1 km): the takeoff is measured, then the flight network (store: 100%) |
+| Speed | average error 9.0 km/h; reads low above 30 km/h | average error 6.7 km/h; close up to 60 km/h | about 5.1 km/h where GPS says 4.5 | takeoff measured (265 km/h at 40 s vs GPS 266), then the flight network: 38 km/h error in the air (holding the takeoff speed: 196) |
 | Direction within 30° of GPS | **74%** of the time | **85%** | **93%** (phone in a pocket) | **99%** |
-| Whole route turned | median **11°**; 86% within 30° (44 routes) | median **14°**; 83% within 30° (30 routes) | — | — |
+| Whole route turned | median **10°**; 87% within 30° (45 routes) | median **14°**; 83% within 30° (30 routes) | — | — |
 
 **Direction uses no GPS.** The phone learns how it sits from the vehicle's turns; the heading's slow drift in a car (the gyroscope's own bias) is measured at stops and taken off; and the magnetometer corrects where the heading started, but only from a field that proves it is Earth's: over a minute in which the phone turned at least 30°, Earth's field stays put in the world while a magnet in the car or beside the phone turns with it. Drift is only measured at stops while the field reads like Earth's (30–60 µT): in a disturbed car the stops otherwise measure a drift that does not happen on the move. Keep the phone away from magnets: beside a MagSafe charger no compass works, the iPhone's own included.
 
-**Walking right after a ride** read about twice GPS on the newest ride: in some pockets each footfall rings twice, and the echo, about a quarter of a second later, was counted as a step (2.5–2.75 steps a second against a walking rhythm of 1.85). Since build 76 the app finds the rhythm of the last four seconds and refuses a peak that comes sooner than 0.65 of its step period. The re-run cannot show what that does to distance, because the walk takes the larger of this count and Apple's pedometer, which was not recorded before build 76; scaled by the step count alone, walking would go from +9% to about +0.4%. Build 76 logs the pedometer, so the next walks will show it.
+**Walking right after a ride** read about twice GPS on the newest ride: in some pockets each footfall rings twice, and the echo, about a quarter of a second later, was counted as a step (2.5–2.75 steps a second against a walking rhythm of 1.85). Since build 76 the app finds the rhythm of the last four seconds and refuses a peak that comes sooner than 0.65 of its step period. The re-run cannot show what that does to distance, because the walk takes the larger of this count and Apple's pedometer, which was not recorded before build 76; scaled by the step count alone, walking would go from +8% to about −0.4%. Build 76 logs the pedometer. The first two walks logged with it had no echo: the app's step count matched the pedometer's and the check refused almost nothing (GPS there was too poor to grade the distance).
 
 **A new phone** has no examples of its own, so until it has learned 3,000 it uses a small built-in network: the same vibration fingerprint in, speed out, and nothing from the current trip. Measured only on recordings it had never seen, next to the main model with a full store:
 
 | | Main model (full store) | Built-in network |
 |---|---|---|
-| Motorcycle | 9.1 km/h error; 87.1% of the distance; 73% of journeys within 20% | 9.1 km/h; 91.5%; 78% |
-| Car | 6.7 km/h; 100.4%; 69% | 6.3 km/h; 100.8%; 77% |
-| Walking | 109.2% (counted by steps) | 109.2% |
-| Plane | 103.1% (flight network in the air) | 103.2% |
+| Motorcycle | 8.9 km/h error; 90.3% of the distance; 83% of journeys within 20% | 9.0 km/h; 92.0%; 79% |
+| Car | 6.7 km/h; 101.1%; 71% | 6.3 km/h; 100.8%; 77% |
+| Walking | 108.3% (counted by steps) | 108.3% |
+| Plane | 103.2% (flight network in the air) | 103.3% |
 
-A store still filling up does worse (60 examples: 9.7 km/h; 4,000: 7.9) and on these recordings stays a little behind the network (7.7). The app still hands over at 3,000, because the store keeps adapting to the phone's own vehicle and pocket.
+A store still filling up does worse (60 examples: 9.5 km/h; 4,000: 7.8) and on these recordings stays a little behind the network (7.7). The app still hands over at 3,000, because the store keeps adapting to the phone's own vehicle and pocket.
 
-**In the air**, a smooth cabin reads as standing still, so the phone measures the takeoff for two minutes from the still moment before the roll, and then hands over to one of two flight engines. Both were trained on 302 airline flights from NASA's public DASHlink flight recorder data, and both read only what the phone senses: minutes since the roll began and how the phone is tilted. One is a small neural network (4 → 32 → 32 → 1). The other is a store of 4,000 examples answered like the ground store. Neither uses GPS. On NASA flights each engine had never seen, the network counted a median 102% of the distance (68% of flights within 10%) and the store 104% (65%), against 68% (7%) for holding the takeoff speed. They give the speed an airliner typically has at that point of a flight, so wind or a different aircraft will move them. Drawn whole with no GPS after the first point, the recorded flight stays within about a kilometre of GPS through the taxi and takeoff and ends 17.6 km (network) and 16.8 km (store) from where GPS did: in the air the direction settles about 13° to one side of the track.
+**In the air**, a smooth cabin reads as standing still, so the phone measures the takeoff for two minutes from the still moment before the roll, and then hands over to one of two flight engines. Both were trained on 302 airline flights from NASA's public DASHlink flight recorder data, and both read only what the phone senses: minutes since the roll began and how the phone is tilted. One is a small neural network (4 → 32 → 32 → 1). The other is a store of 4,000 examples answered like the ground store. Neither uses GPS. On NASA flights each engine had never seen, the network counted a median 102% of the distance (68% of flights within 10%) and the store 104% (65%), against 68% (7%) for holding the takeoff speed. They give the speed an airliner typically has at that point of a flight, so wind or a different aircraft will move them. Drawn whole with no GPS after the first point, the recorded flight stays within about a kilometre of GPS through the taxi and takeoff and ends 17.3 km (network) and 16.7 km (store) from where GPS did: in the air the direction settles about 12° to one side of the track.
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
 varying with speed: measured flat from 10 to 65 km/h). In an aircraft the speed after the
