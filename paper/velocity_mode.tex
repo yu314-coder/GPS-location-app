@@ -270,7 +270,11 @@ whenever the estimate improves the part of the ride already drawn is redrawn wit
 
 \paragraph{Walking.} Over four seconds the back-and-forth of the steps lines up with the direction of
 walking, and each push-off is sharper than each landing, which tells which end of that line is
-forward.
+forward. Steps are counted as peaks of the vertical acceleration and turned into distance with the
+stride Apple's pedometer has learned; the walk takes the larger of that and the pedometer's own
+total. In some pockets each footfall rings twice, with an echo about a quarter of a second after it,
+so the rhythm of the last four seconds is found from the signal's autocorrelation and, while it is
+clear, a peak sooner than $0.65$ of its step period is refused as an echo.
 
 \subsection{The route}
 
@@ -422,6 +426,16 @@ Table~\ref{tab:walk}). Over $\nWalkStretches$ straight half-minutes the app read
 $\nWalkGps$, and counted \nWalkDistTxt{} distance than GPS: \nWalkAfterTxt{} in the first minutes after a ride and
 \nWalkOtherTxt{} at other times. Direction comes from the back-and-forth of the steps: over $\nWalks$ longer walks
 the median error is $\nWalkDirMed\dg$ and $\nWalkWthirty\%$ of seconds are within $30\dg$.
+
+On $\nEchoOver$ of the $\nEchoN$ stretches the steps counted ran more than $15\%$ faster than the walking rhythm itself;
+on the walk after the newest motorcycle ride the count was $2.5$ to $2.75$ steps a second against a
+rhythm of $1.85$, and those stretches came out close to twice what GPS saw. Refusing the echo removes
+most of the extra steps. What that does to distance cannot be re-run: the app takes the larger of its
+own count and Apple's pedometer, which was not recorded until the newest version, so the re-run models
+the pedometer from what each version logged, and its walking figures above do not move. Scaled by the
+change in the count alone, the walking total would go from $\nEchoNow\%$ to about $\nEchoScaled\%$ and the stretches within
+$20\%$ from $\nEchoWtwentyNow\%$ to $\nEchoWtwentyScaled\%$; $\nEchoBetter$ stretches come closer to GPS and $\nEchoWorse$ move away, all of them
+already short. That is an estimate until walks recorded with the pedometer arrive.
 
 \begin{figure}[H]
 \centering
@@ -834,7 +848,9 @@ opposite sign. On the first motorcycle ride the field was
 steady for $\nMotoMagClean$ seconds and the correction took the graded seconds within $30\dg$ from $\nMotoMagD\%$ to $\nMotoMagF\%$
 ($\nMotoMagG\%$ once the turn check, passing at $\nMotoMagTurn$ seconds, takes over), though weak GPS left only $\nMotoMagN$ seconds
 to grade; on the second the field stayed near $500~\mu$T, ten times Earth's, nothing could correct the
-heading, and $\nMotoTwoG\%$ of its seconds were within $30\dg$.
+heading, and $\nMotoTwoG\%$ of its seconds were within $30\dg$. On the third it swung between about $45$ and $150~\mu$T while
+riding and passed the turn check only on the walk afterwards, so the ride's direction rested on its
+turns alone ($\nMotoThreeG\%$ within $30\dg$).
 
 \section{Conclusion}
 

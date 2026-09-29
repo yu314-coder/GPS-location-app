@@ -1407,6 +1407,35 @@ class WorkoutSession: ObservableObject {
     private let STEP_PEAK_ACCEL: Double = 1.2           // m/s², high-passed vertical
     private let STEP_RESET_ACCEL: Double = 0.4          // m/s², re-arm level
     private let STEP_MIN_INTERVAL: TimeInterval = 0.25  // s (4 steps/s ceiling)
+    // THE ECHO OF A FOOTFALL IS NOT A STEP (build 76).
+    //
+    // In some pockets each footfall rings twice: the vertical acceleration carries the walking
+    // rhythm (about 1.8 steps/s) and a strong echo at twice it, landing ~0.28 s after the real
+    // peak - just past the 0.25 s ceiling - so it counted. On a walk after a motorcycle ride the
+    // detector counted 2.5-2.75 steps/s against a 1.85 rhythm, and since the walk takes the larger
+    // of this count and the pedometer's, the drawn distance was almost twice what GPS saw. The
+    // rhythm itself is plain in the signal: the autocorrelation of the last 4 s at lags of
+    // 0.3-0.8 s peaks at the step period. While it is clear (correlation at least 0.3) a peak
+    // inside 0.65 of the period is refused; if half the period is also clearly rhythmic, that half
+    // is the step and the longer one was a two-step stride. With no clear rhythm (vehicle bumps,
+    // the first seconds of a walk) the 0.25 s ceiling stands. It can only remove steps, and never
+    // takes a walk below the pedometer. Over the 49 graded walking stretches the counted steps were
+    // more than 15% above the rhythm on 21; scaled by the count, the walking total went from +9.4%
+    // to about +0.6% of GPS, 26 stretches closer and 4 further (all already short).
+    private var stepSignal: [(hp: Double, dt: Double)] = []
+    private var stepSignalSeconds: Double = 0
+    private var stepRhythmSinceCheck: Double = 0
+    private var stepRefractory: TimeInterval = 0.25
+    private let STEP_RHYTHM_WINDOW: Double = 4.0         // s
+    private let STEP_RHYTHM_EVERY: Double = 0.5          // s
+    private let STEP_RHYTHM_MIN_SAMPLES = 150
+    private let STEP_RHYTHM_LAGS = 0.3...0.8             // s, one step at 1.25-3.3 steps/s
+    private let STEP_RHYTHM_MIN_CORRELATION = 0.3
+    private let STEP_RHYTHM_HALF = 0.5                   // of the best correlation
+    private let STEP_ECHO_FRACTION = 0.65                // of the step period
+    /// For the diagnostics columns: every step counted here, and CMPedometer's own totals.
+    private var imuStepsTotal = 0
+    private var pedometerStepsTotal: Int?
     /// Peak acceleration and rotation over the stationarity window, kept so the pedestrian
     /// stillness test can read them without recomputing.
     private var recentMotionPeakAccel: Double = 0
@@ -4835,7 +4864,11 @@ class WorkoutSession: ObservableObject {
             flightTilt60: lastFlightAnswers.features?[1],
             magTurn: lastMagnetometerTurn,
             magScatter: lastMagnetometerScatter,
-            magVerified: lastMagnetometerVerified))
+            magVerified: lastMagnetometerVerified,
+            pedometerSteps: pedometerStepsTotal,
+            pedometerDistance: fallbackPedometerDistance,
+            imuSteps: imuStepsTotal,
+            stepRefractory: stepRefractory))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist
@@ -4923,8 +4956,10 @@ class WorkoutSession: ObservableObject {
         pdrAppendedDistance = 0
         // Step-detector state is per-workout too: a stride learned on someone else's walk or
         // a step counted before this one began must not carry over.
+        imuStepsTotal = 0; pedometerStepsTotal = nil
         imuStepTimes = []
         imuStepsPendingTick = 0
+        stepSignal = []; stepSignalSeconds = 0; stepRhythmSinceCheck = 0; stepRefractory = STEP_MIN_INTERVAL
         walkedDistanceEstimate = 0
         pedestrianQuietDuration = 0
         stepDetectSlowVertical = 0
@@ -4948,6 +4983,7 @@ class WorkoutSession: ObservableObject {
                 let pace = data.currentPace?.doubleValue   // s/m
                 let now = Date()
                 DispatchQueue.main.async {
+                    self.pedometerStepsTotal = steps
                     // Derive a SMOOTH speed from each cumulative-distance update (robust; does
                     // not depend on currentPace being present). Prefer Apple's pace when valid.
                     if let d = distance {
@@ -5177,8 +5213,10 @@ class WorkoutSession: ObservableObject {
         pdrAppendedDistance = 0
         // Step-detector state is per-workout too: a stride learned on someone else's walk or
         // a step counted before this one began must not carry over.
+        imuStepsTotal = 0; pedometerStepsTotal = nil
         imuStepTimes = []
         imuStepsPendingTick = 0
+        stepSignal = []; stepSignalSeconds = 0; stepRhythmSinceCheck = 0; stepRefractory = STEP_MIN_INTERVAL
         walkedDistanceEstimate = 0
         pedestrianQuietDuration = 0
         stepDetectSlowVertical = 0
@@ -5200,19 +5238,57 @@ class WorkoutSession: ObservableObject {
         let alpha = min(dt / (tau + dt), 1.0)
         stepDetectSlowVertical += (up - stepDetectSlowVertical) * alpha
         let highPassed = up - stepDetectSlowVertical
+        updateStepRhythm(highPassed, dt: dt)
 
         if stepDetectArmed, highPassed > STEP_PEAK_ACCEL {
             let now = Date()
             let sinceLast = imuStepTimes.last.map { now.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
-            if sinceLast >= STEP_MIN_INTERVAL {
+            if sinceLast >= stepRefractory {
                 imuStepTimes.append(now)
                 imuStepsPendingTick += 1
+                imuStepsTotal += 1
                 if imuStepTimes.count > 12 { imuStepTimes.removeFirst() }
             }
             stepDetectArmed = false
         } else if highPassed < STEP_RESET_ACCEL {
             stepDetectArmed = true
         }
+    }
+
+    /// The walking rhythm's step period, from the autocorrelation of the last few seconds of the
+    /// detector's own signal, sets how soon a second step may count. See stepSignal.
+    private func updateStepRhythm(_ highPassed: Double, dt: TimeInterval) {
+        stepSignal.append((highPassed, dt)); stepSignalSeconds += dt
+        while let first = stepSignal.first, stepSignalSeconds - first.dt > STEP_RHYTHM_WINDOW {
+            stepSignalSeconds -= first.dt; stepSignal.removeFirst()
+        }
+        stepRhythmSinceCheck += dt
+        guard stepRhythmSinceCheck >= STEP_RHYTHM_EVERY else { return }
+        stepRhythmSinceCheck = 0
+        guard stepSignal.count >= STEP_RHYTHM_MIN_SAMPLES else { stepRefractory = STEP_MIN_INTERVAL; return }
+        let n = stepSignal.count
+        let mean = stepSignal.reduce(0) { $0 + $1.hp } / Double(n)
+        let x = stepSignal.map { $0.hp - mean }
+        let energy = x.reduce(0) { $0 + $1 * $1 }
+        let sampleDt = (stepSignalSeconds - stepSignal[0].dt) / Double(n - 1)
+        guard energy > 0, sampleDt > 0 else { stepRefractory = STEP_MIN_INTERVAL; return }
+        func correlation(_ lag: Int) -> Double {
+            var sum = 0.0
+            for i in 0..<(n - lag) { sum += x[i] * x[i + lag] }
+            return sum / energy
+        }
+        let lo = Int((STEP_RHYTHM_LAGS.lowerBound / sampleDt).rounded())
+        let hi = min(Int((STEP_RHYTHM_LAGS.upperBound / sampleDt).rounded()), n - 1)
+        guard lo >= 1, hi > lo else { stepRefractory = STEP_MIN_INTERVAL; return }
+        var bestLag = lo, best = -Double.greatestFiniteMagnitude
+        for lag in lo...hi {
+            let c = correlation(lag)
+            if c > best { best = c; bestLag = lag }
+        }
+        if bestLag / 2 >= lo, correlation(bestLag / 2) >= STEP_RHYTHM_HALF * best { bestLag /= 2 }
+        stepRefractory = best >= STEP_RHYTHM_MIN_CORRELATION
+            ? max(STEP_MIN_INTERVAL, STEP_ECHO_FRACTION * Double(bestLag) * sampleDt)
+            : STEP_MIN_INTERVAL
     }
 
 

@@ -547,6 +547,8 @@ struct VelocityMethodView: View {
                            "A hand on the phone can lower the speed but not raise it, and a phone picked up while slowing keeps the speed it had when it was picked up. A phone that shifts in a pocket turns the drawn route by about as much as it moved, until enough new turns have been learned.")
                 Limitation("Keep the phone away from magnets.",
                            "Beside a car's MagSafe charger the phone read up to 2,600 µT, fifty times Earth's field, yet reported its compass as well calibrated. The app ignores such a field. On the drive with the charger there throughout, a few turning minutes still showed Earth's field and the seconds within 30° rose from \(N.MagSafeF)% to \(N.MagSafeG)%; a phone that never leaves such a field cannot be corrected.")
+                Limitation("Walking with the phone in some pockets.",
+                           "Each footfall can ring twice, and the echo a quarter of a second later counted as a step: on one walk after a ride, 2.5–2.75 steps a second against a rhythm of 1.85, and about twice the distance GPS saw. The app now finds the walking rhythm and refuses a peak that comes too soon. On \(N.EchoOver) of \(N.EchoN) graded stretches the count had run more than 15% fast; scaled by the count, walking would go from \(N.EchoNow)% to about \(N.EchoScaled)% of GPS. That is an estimate until walks recorded with the pedometer arrive.")
                 Limitation("A ride that is never recognised.",
                            "On one short ride Apple's motion classifier never said \u{201C}driving\u{201D} and the step counter took the engine for footsteps: as recorded, the app counted 1.0 of 2.4 km.")
                 Limitation("In an aircraft, the speed after the takeoff is a typical airliner's.",
@@ -756,44 +758,44 @@ enum VelocityMethodData {
 
     // BEGIN GENERATED (paper/app_numbers.py)
     static let overview: [Overview] = [
-        .init(name: "Motorcycle", recorded: "41 recordings, 11.3 hours, 179 km checked by GPS; phone in a trouser pocket",
-              distance: "−13.6%", speed: "9.1 km/h", speedLabel: "average speed error",
+        .init(name: "Motorcycle", recorded: "42 recordings, 11.6 hours, 187 km checked by GPS; phone in a trouser pocket",
+              distance: "−13.0%", speed: "9.1 km/h", speedLabel: "average speed error",
               direction: "74%"),
         .init(name: "Car", recorded: "39 recordings, 10.6 hours, 211 km checked by GPS; phone in a pocket, flat or in a mount",
-              distance: "+1.5%", speed: "6.7 km/h", speedLabel: "average speed error",
+              distance: "+0.4%", speed: "6.7 km/h", speedLabel: "average speed error",
               direction: "85%"),
-        .init(name: "Walking", recorded: "45 straight stretches and 7 walks; phone in a pocket, distance counted by steps",
-              distance: "+3.7%", speed: "5.0 km/h", speedLabel: "where GPS measured 4.6",
+        .init(name: "Walking", recorded: "49 straight stretches and 7 walks; phone in a pocket, distance counted by steps",
+              distance: "+9.2%", speed: "5.1 km/h", speedLabel: "where GPS measured 4.5",
               direction: "93%"),
         .init(name: "Plane", recorded: "1 flight, 74 km; the takeoff measured, then the flight network",
-              distance: "+3.2%", speed: "38 km/h", speedLabel: "speed error in the air",
+              distance: "+3.1%", speed: "38 km/h", speedLabel: "speed error in the air",
               direction: "99%")
     ]
 
     static let distance: [Distance] = [
-        .init(name: "Motorcycle", detail: "41 journeys, 70% within 20%",
-              appKm: 154.9, gpsKm: 179.2, errorPercent: -13.6),
+        .init(name: "Motorcycle", detail: "42 journeys, 73% within 20%",
+              appKm: 162.4, gpsKm: 186.8, errorPercent: -13.0),
         .init(name: "Car", detail: "39 journeys, 69% within 20%",
-              appKm: 214.1, gpsKm: 210.9, errorPercent: 1.5),
-        .init(name: "Walking", detail: "45 straight stretches, counted by steps",
-              appKm: 1.93, gpsKm: 1.87, errorPercent: 3.7),
+              appKm: 211.8, gpsKm: 210.9, errorPercent: 0.4),
+        .init(name: "Walking", detail: "49 straight stretches, counted by steps",
+              appKm: 2.17, gpsKm: 1.99, errorPercent: 9.2),
         .init(name: "Plane", detail: "1 flight: takeoff, then the flight network",
-              appKm: 76.4, gpsKm: 74.1, errorPercent: 3.2)
+              appKm: 76.4, gpsKm: 74.1, errorPercent: 3.1)
     ]
 
     static let speedBands: [SpeedBand] = [
-        .init(band: "0–10", motorcycleGPS: 2.6, motorcycleApp: 2.6, carGPS: 2.7, carApp: 3.0),
-        .init(band: "10–20", motorcycleGPS: 14.7, motorcycleApp: 18.0, carGPS: 15.2, carApp: 16.5),
-        .init(band: "20–30", motorcycleGPS: 24.9, motorcycleApp: 26.4, carGPS: 25.0, carApp: 25.2),
-        .init(band: "30–40", motorcycleGPS: 35.0, motorcycleApp: 29.7, carGPS: 35.1, carApp: 34.2),
-        .init(band: "40–50", motorcycleGPS: 44.1, motorcycleApp: 33.9, carGPS: 43.8, carApp: 44.9),
-        .init(band: "50–60", motorcycleGPS: 53.2, motorcycleApp: 38.6, carGPS: 54.7, carApp: 56.4),
-        .init(band: "60–80", motorcycleGPS: 66.4, motorcycleApp: 37.8, carGPS: 69.4, carApp: 64.6),
-        .init(band: "80+", motorcycleGPS: 98.4, motorcycleApp: 37.9, carGPS: 88.2, carApp: 76.5, plotted: false)
+        .init(band: "0–10", motorcycleGPS: 2.5, motorcycleApp: 2.3, carGPS: 2.7, carApp: 2.8),
+        .init(band: "10–20", motorcycleGPS: 14.8, motorcycleApp: 18.6, carGPS: 15.2, carApp: 15.9),
+        .init(band: "20–30", motorcycleGPS: 24.9, motorcycleApp: 26.1, carGPS: 25.0, carApp: 25.1),
+        .init(band: "30–40", motorcycleGPS: 35.0, motorcycleApp: 30.5, carGPS: 35.1, carApp: 34.1),
+        .init(band: "40–50", motorcycleGPS: 44.0, motorcycleApp: 34.0, carGPS: 43.8, carApp: 45.2),
+        .init(band: "50–60", motorcycleGPS: 53.3, motorcycleApp: 38.2, carGPS: 54.7, carApp: 55.5),
+        .init(band: "60–80", motorcycleGPS: 66.1, motorcycleApp: 38.6, carGPS: 69.4, carApp: 63.0),
+        .init(band: "80+", motorcycleGPS: 98.4, motorcycleApp: 38.9, carGPS: 88.2, carApp: 75.5, plotted: false)
     ]
 
     static let direction: [Direction] = [
-        .init(name: "Motorcycle", graded: "42 recordings", medianDegrees: 16, within30: 74),
+        .init(name: "Motorcycle", graded: "43 recordings", medianDegrees: 16, within30: 74),
         .init(name: "Car", graded: "29 recordings", medianDegrees: 15, within30: 85),
         .init(name: "Walking", graded: "7 walks", medianDegrees: 10, within30: 93),
         .init(name: "Plane", graded: "1 flight", medianDegrees: 12, within30: 99)
@@ -801,9 +803,9 @@ enum VelocityMethodData {
 
     /// The recorded flight replayed with no GPS through the app's own code.
     static let flight: [FlightPoint] = [
-        .init(point: "Hold takeoff speed", errorPercent: -38.7),
-        .init(point: "Flight network", errorPercent: 3.2),
-        .init(point: "Flight store", errorPercent: -0.3)
+        .init(point: "Hold takeoff speed", errorPercent: -38.8),
+        .init(point: "Flight network", errorPercent: 3.1),
+        .init(point: "Flight store", errorPercent: -0.4)
     ]
 
     /// The recorded flight drawn with no GPS after the first point, turned by an arbitrary angle so it does
@@ -1037,447 +1039,447 @@ enum VelocityMethodData {
         .init(line: "Neural", order: 3, x: 0.0, y: 0.0),
         .init(line: "Neural", order: 4, x: 0.0, y: 0.0),
         .init(line: "Neural", order: 5, x: 0.0, y: 0.0),
-        .init(line: "Neural", order: 6, x: 0.0, y: 0.0),
-        .init(line: "Neural", order: 7, x: 0.0, y: 0.01),
-        .init(line: "Neural", order: 8, x: 0.0, y: 0.01),
-        .init(line: "Neural", order: 9, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 10, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 11, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 12, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 13, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 14, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 15, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 16, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 17, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 18, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 19, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 20, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 21, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 22, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 23, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 24, x: -0.0, y: 0.01),
-        .init(line: "Neural", order: 25, x: 0.0, y: 0.02),
+        .init(line: "Neural", order: 6, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 7, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 8, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 9, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 10, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 11, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 12, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 13, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 14, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 15, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 16, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 17, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 18, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 19, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 20, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 21, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 22, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 23, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 24, x: -0.0, y: 0.0),
+        .init(line: "Neural", order: 25, x: 0.0, y: 0.01),
         .init(line: "Neural", order: 26, x: 0.0, y: 0.03),
         .init(line: "Neural", order: 27, x: 0.0, y: 0.03),
         .init(line: "Neural", order: 28, x: 0.0, y: 0.04),
-        .init(line: "Neural", order: 29, x: 0.01, y: 0.06),
-        .init(line: "Neural", order: 30, x: 0.01, y: 0.07),
-        .init(line: "Neural", order: 31, x: 0.01, y: 0.07),
-        .init(line: "Neural", order: 32, x: 0.02, y: 0.08),
-        .init(line: "Neural", order: 33, x: 0.03, y: 0.09),
-        .init(line: "Neural", order: 34, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 35, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 36, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 37, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 38, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 39, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 40, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 41, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 42, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 43, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 44, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 45, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 46, x: 0.05, y: 0.1),
-        .init(line: "Neural", order: 47, x: 0.05, y: 0.11),
-        .init(line: "Neural", order: 48, x: 0.05, y: 0.11),
-        .init(line: "Neural", order: 49, x: 0.04, y: 0.13),
-        .init(line: "Neural", order: 50, x: 0.01, y: 0.13),
-        .init(line: "Neural", order: 51, x: -0.02, y: 0.15),
-        .init(line: "Neural", order: 52, x: -0.05, y: 0.16),
-        .init(line: "Neural", order: 53, x: -0.06, y: 0.17),
-        .init(line: "Neural", order: 54, x: -0.09, y: 0.17),
-        .init(line: "Neural", order: 55, x: -0.12, y: 0.16),
-        .init(line: "Neural", order: 56, x: -0.13, y: 0.15),
-        .init(line: "Neural", order: 57, x: -0.14, y: 0.14),
-        .init(line: "Neural", order: 58, x: -0.14, y: 0.14),
-        .init(line: "Neural", order: 59, x: -0.14, y: 0.14),
-        .init(line: "Neural", order: 60, x: -0.14, y: 0.14),
-        .init(line: "Neural", order: 61, x: -0.14, y: 0.14),
-        .init(line: "Neural", order: 62, x: -0.14, y: 0.14),
-        .init(line: "Neural", order: 63, x: -0.14, y: 0.14),
-        .init(line: "Neural", order: 64, x: -0.14, y: 0.14),
-        .init(line: "Neural", order: 65, x: -0.14, y: 0.13),
-        .init(line: "Neural", order: 66, x: -0.14, y: 0.11),
-        .init(line: "Neural", order: 67, x: -0.16, y: 0.09),
-        .init(line: "Neural", order: 68, x: -0.18, y: 0.09),
-        .init(line: "Neural", order: 69, x: -0.21, y: 0.09),
-        .init(line: "Neural", order: 70, x: -0.24, y: 0.08),
-        .init(line: "Neural", order: 71, x: -0.28, y: 0.08),
-        .init(line: "Neural", order: 72, x: -0.34, y: 0.08),
-        .init(line: "Neural", order: 73, x: -0.38, y: 0.08),
-        .init(line: "Neural", order: 74, x: -0.41, y: 0.08),
-        .init(line: "Neural", order: 75, x: -0.42, y: 0.08),
-        .init(line: "Neural", order: 76, x: -0.42, y: 0.08),
-        .init(line: "Neural", order: 77, x: -0.44, y: 0.08),
-        .init(line: "Neural", order: 78, x: -0.47, y: 0.08),
-        .init(line: "Neural", order: 79, x: -0.51, y: 0.08),
-        .init(line: "Neural", order: 80, x: -0.55, y: 0.08),
-        .init(line: "Neural", order: 81, x: -0.59, y: 0.09),
-        .init(line: "Neural", order: 82, x: -0.64, y: 0.1),
-        .init(line: "Neural", order: 83, x: -0.66, y: 0.1),
-        .init(line: "Neural", order: 84, x: -0.68, y: 0.1),
-        .init(line: "Neural", order: 85, x: -0.72, y: 0.1),
-        .init(line: "Neural", order: 86, x: -0.75, y: 0.1),
-        .init(line: "Neural", order: 87, x: -0.78, y: 0.1),
-        .init(line: "Neural", order: 88, x: -0.81, y: 0.11),
-        .init(line: "Neural", order: 89, x: -0.86, y: 0.12),
-        .init(line: "Neural", order: 90, x: -0.91, y: 0.13),
-        .init(line: "Neural", order: 91, x: -0.95, y: 0.13),
-        .init(line: "Neural", order: 92, x: -0.99, y: 0.14),
-        .init(line: "Neural", order: 93, x: -1.02, y: 0.15),
-        .init(line: "Neural", order: 94, x: -1.06, y: 0.15),
-        .init(line: "Neural", order: 95, x: -1.09, y: 0.16),
-        .init(line: "Neural", order: 96, x: -1.14, y: 0.17),
-        .init(line: "Neural", order: 97, x: -1.19, y: 0.17),
-        .init(line: "Neural", order: 98, x: -1.23, y: 0.18),
-        .init(line: "Neural", order: 99, x: -1.27, y: 0.19),
-        .init(line: "Neural", order: 100, x: -1.29, y: 0.19),
-        .init(line: "Neural", order: 101, x: -1.29, y: 0.19),
-        .init(line: "Neural", order: 102, x: -1.29, y: 0.19),
-        .init(line: "Neural", order: 103, x: -1.29, y: 0.19),
-        .init(line: "Neural", order: 104, x: -1.29, y: 0.19),
-        .init(line: "Neural", order: 105, x: -1.29, y: 0.19),
-        .init(line: "Neural", order: 106, x: -1.29, y: 0.19),
-        .init(line: "Neural", order: 107, x: -1.29, y: 0.19),
-        .init(line: "Neural", order: 108, x: -1.3, y: 0.19),
-        .init(line: "Neural", order: 109, x: -1.3, y: 0.19),
-        .init(line: "Neural", order: 110, x: -1.31, y: 0.19),
-        .init(line: "Neural", order: 111, x: -1.32, y: 0.19),
-        .init(line: "Neural", order: 112, x: -1.32, y: 0.19),
-        .init(line: "Neural", order: 113, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 114, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 115, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 116, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 117, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 118, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 119, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 120, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 121, x: -1.32, y: 0.18),
-        .init(line: "Neural", order: 122, x: -1.32, y: 0.17),
-        .init(line: "Neural", order: 123, x: -1.33, y: 0.15),
-        .init(line: "Neural", order: 124, x: -1.33, y: 0.14),
-        .init(line: "Neural", order: 125, x: -1.33, y: 0.13),
-        .init(line: "Neural", order: 126, x: -1.33, y: 0.12),
-        .init(line: "Neural", order: 127, x: -1.33, y: 0.11),
-        .init(line: "Neural", order: 128, x: -1.33, y: 0.11),
-        .init(line: "Neural", order: 129, x: -1.33, y: 0.11),
-        .init(line: "Neural", order: 130, x: -1.33, y: 0.11),
-        .init(line: "Neural", order: 131, x: -1.33, y: 0.11),
-        .init(line: "Neural", order: 132, x: -1.33, y: 0.11),
-        .init(line: "Neural", order: 133, x: -1.32, y: 0.11),
-        .init(line: "Neural", order: 134, x: -1.29, y: 0.11),
-        .init(line: "Neural", order: 135, x: -1.24, y: 0.11),
-        .init(line: "Neural", order: 136, x: -1.19, y: 0.12),
-        .init(line: "Neural", order: 137, x: -1.13, y: 0.12),
-        .init(line: "Neural", order: 138, x: -1.08, y: 0.13),
-        .init(line: "Neural", order: 139, x: -1.02, y: 0.13),
-        .init(line: "Neural", order: 140, x: -0.67, y: 0.19),
-        .init(line: "Neural", order: 141, x: -0.16, y: 0.27),
-        .init(line: "Neural", order: 142, x: 0.42, y: 0.37),
-        .init(line: "Neural", order: 143, x: 0.92, y: 0.45),
-        .init(line: "Neural", order: 144, x: 1.41, y: 0.56),
-        .init(line: "Neural", order: 145, x: 1.91, y: 0.65),
-        .init(line: "Neural", order: 146, x: 2.4, y: 0.74),
-        .init(line: "Neural", order: 147, x: 2.9, y: 0.83),
-        .init(line: "Neural", order: 148, x: 3.39, y: 0.86),
-        .init(line: "Neural", order: 149, x: 3.89, y: 0.91),
-        .init(line: "Neural", order: 150, x: 4.39, y: 1.0),
-        .init(line: "Neural", order: 151, x: 4.94, y: 1.09),
-        .init(line: "Neural", order: 152, x: 5.64, y: 1.3),
-        .init(line: "Neural", order: 153, x: 6.36, y: 1.55),
-        .init(line: "Neural", order: 154, x: 7.08, y: 1.78),
-        .init(line: "Neural", order: 155, x: 7.82, y: 2.01),
-        .init(line: "Neural", order: 156, x: 8.55, y: 2.25),
-        .init(line: "Neural", order: 157, x: 9.3, y: 2.5),
-        .init(line: "Neural", order: 158, x: 10.04, y: 2.76),
-        .init(line: "Neural", order: 159, x: 10.79, y: 3.03),
-        .init(line: "Neural", order: 160, x: 11.54, y: 3.31),
-        .init(line: "Neural", order: 161, x: 12.3, y: 3.61),
-        .init(line: "Neural", order: 162, x: 13.07, y: 3.89),
-        .init(line: "Neural", order: 163, x: 13.85, y: 4.19),
-        .init(line: "Neural", order: 164, x: 14.63, y: 4.5),
-        .init(line: "Neural", order: 165, x: 15.41, y: 4.82),
-        .init(line: "Neural", order: 166, x: 16.2, y: 5.15),
-        .init(line: "Neural", order: 167, x: 17.0, y: 5.46),
-        .init(line: "Neural", order: 168, x: 17.81, y: 5.76),
-        .init(line: "Neural", order: 169, x: 18.77, y: 6.12),
-        .init(line: "Neural", order: 170, x: 19.61, y: 6.47),
-        .init(line: "Neural", order: 171, x: 20.45, y: 6.82),
-        .init(line: "Neural", order: 172, x: 21.3, y: 7.17),
-        .init(line: "Neural", order: 173, x: 22.16, y: 7.52),
-        .init(line: "Neural", order: 174, x: 23.01, y: 7.89),
-        .init(line: "Neural", order: 175, x: 23.86, y: 8.26),
-        .init(line: "Neural", order: 176, x: 24.73, y: 8.62),
-        .init(line: "Neural", order: 177, x: 25.59, y: 9.0),
-        .init(line: "Neural", order: 178, x: 26.46, y: 9.36),
-        .init(line: "Neural", order: 179, x: 27.34, y: 9.73),
-        .init(line: "Neural", order: 180, x: 28.21, y: 10.11),
-        .init(line: "Neural", order: 181, x: 29.08, y: 10.5),
-        .init(line: "Neural", order: 182, x: 29.96, y: 10.89),
-        .init(line: "Neural", order: 183, x: 30.84, y: 11.28),
-        .init(line: "Neural", order: 184, x: 31.72, y: 11.68),
-        .init(line: "Neural", order: 185, x: 32.61, y: 12.08),
-        .init(line: "Neural", order: 186, x: 33.51, y: 12.49),
-        .init(line: "Neural", order: 187, x: 34.43, y: 12.91),
-        .init(line: "Neural", order: 188, x: 35.37, y: 13.33),
-        .init(line: "Neural", order: 189, x: 36.32, y: 13.75),
-        .init(line: "Neural", order: 190, x: 37.28, y: 14.17),
-        .init(line: "Neural", order: 191, x: 38.24, y: 14.6),
-        .init(line: "Neural", order: 192, x: 39.21, y: 15.01),
-        .init(line: "Neural", order: 193, x: 40.19, y: 15.37),
-        .init(line: "Neural", order: 194, x: 41.18, y: 15.75),
-        .init(line: "Neural", order: 195, x: 42.16, y: 16.13),
-        .init(line: "Neural", order: 196, x: 43.16, y: 16.5),
-        .init(line: "Neural", order: 197, x: 44.32, y: 16.94),
-        .init(line: "Neural", order: 198, x: 45.32, y: 17.34),
-        .init(line: "Neural", order: 199, x: 46.32, y: 17.73),
-        .init(line: "Neural", order: 200, x: 47.33, y: 18.12),
-        .init(line: "Neural", order: 201, x: 48.34, y: 18.51),
-        .init(line: "Neural", order: 202, x: 49.36, y: 18.91),
-        .init(line: "Neural", order: 203, x: 50.38, y: 19.33),
-        .init(line: "Neural", order: 204, x: 51.4, y: 19.74),
-        .init(line: "Neural", order: 205, x: 52.43, y: 20.15),
-        .init(line: "Neural", order: 206, x: 53.46, y: 20.57),
-        .init(line: "Neural", order: 207, x: 54.48, y: 21.0),
-        .init(line: "Neural", order: 208, x: 55.51, y: 21.43),
-        .init(line: "Neural", order: 209, x: 56.54, y: 21.86),
-        .init(line: "Neural", order: 210, x: 57.57, y: 22.3),
-        .init(line: "Neural", order: 211, x: 58.6, y: 22.73),
-        .init(line: "Neural", order: 212, x: 59.64, y: 23.15),
-        .init(line: "Neural", order: 213, x: 60.68, y: 23.58),
-        .init(line: "Neural", order: 214, x: 61.72, y: 24.01),
-        .init(line: "Neural", order: 215, x: 62.76, y: 24.44),
-        .init(line: "Neural", order: 216, x: 63.79, y: 24.89),
-        .init(line: "Neural", order: 217, x: 64.83, y: 25.34),
-        .init(line: "Neural", order: 218, x: 65.85, y: 25.8),
-        .init(line: "Neural", order: 219, x: 66.88, y: 26.25),
-        .init(line: "Neural", order: 220, x: 67.9, y: 26.72),
-        .init(line: "Neural", order: 221, x: 68.24, y: 26.87),
+        .init(line: "Neural", order: 29, x: 0.0, y: 0.05),
+        .init(line: "Neural", order: 30, x: 0.0, y: 0.06),
+        .init(line: "Neural", order: 31, x: 0.01, y: 0.06),
+        .init(line: "Neural", order: 32, x: 0.01, y: 0.07),
+        .init(line: "Neural", order: 33, x: 0.03, y: 0.07),
+        .init(line: "Neural", order: 34, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 35, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 36, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 37, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 38, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 39, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 40, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 41, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 42, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 43, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 44, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 45, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 46, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 47, x: 0.04, y: 0.09),
+        .init(line: "Neural", order: 48, x: 0.04, y: 0.1),
+        .init(line: "Neural", order: 49, x: 0.03, y: 0.11),
+        .init(line: "Neural", order: 50, x: 0.01, y: 0.12),
+        .init(line: "Neural", order: 51, x: -0.02, y: 0.13),
+        .init(line: "Neural", order: 52, x: -0.04, y: 0.14),
+        .init(line: "Neural", order: 53, x: -0.06, y: 0.14),
+        .init(line: "Neural", order: 54, x: -0.08, y: 0.15),
+        .init(line: "Neural", order: 55, x: -0.11, y: 0.14),
+        .init(line: "Neural", order: 56, x: -0.12, y: 0.13),
+        .init(line: "Neural", order: 57, x: -0.12, y: 0.12),
+        .init(line: "Neural", order: 58, x: -0.12, y: 0.12),
+        .init(line: "Neural", order: 59, x: -0.12, y: 0.12),
+        .init(line: "Neural", order: 60, x: -0.12, y: 0.12),
+        .init(line: "Neural", order: 61, x: -0.12, y: 0.12),
+        .init(line: "Neural", order: 62, x: -0.12, y: 0.12),
+        .init(line: "Neural", order: 63, x: -0.12, y: 0.12),
+        .init(line: "Neural", order: 64, x: -0.12, y: 0.12),
+        .init(line: "Neural", order: 65, x: -0.12, y: 0.11),
+        .init(line: "Neural", order: 66, x: -0.13, y: 0.09),
+        .init(line: "Neural", order: 67, x: -0.14, y: 0.08),
+        .init(line: "Neural", order: 68, x: -0.16, y: 0.08),
+        .init(line: "Neural", order: 69, x: -0.18, y: 0.08),
+        .init(line: "Neural", order: 70, x: -0.2, y: 0.08),
+        .init(line: "Neural", order: 71, x: -0.23, y: 0.07),
+        .init(line: "Neural", order: 72, x: -0.28, y: 0.07),
+        .init(line: "Neural", order: 73, x: -0.33, y: 0.07),
+        .init(line: "Neural", order: 74, x: -0.35, y: 0.07),
+        .init(line: "Neural", order: 75, x: -0.36, y: 0.07),
+        .init(line: "Neural", order: 76, x: -0.36, y: 0.07),
+        .init(line: "Neural", order: 77, x: -0.38, y: 0.07),
+        .init(line: "Neural", order: 78, x: -0.41, y: 0.07),
+        .init(line: "Neural", order: 79, x: -0.44, y: 0.07),
+        .init(line: "Neural", order: 80, x: -0.48, y: 0.08),
+        .init(line: "Neural", order: 81, x: -0.53, y: 0.08),
+        .init(line: "Neural", order: 82, x: -0.58, y: 0.09),
+        .init(line: "Neural", order: 83, x: -0.61, y: 0.09),
+        .init(line: "Neural", order: 84, x: -0.63, y: 0.09),
+        .init(line: "Neural", order: 85, x: -0.65, y: 0.09),
+        .init(line: "Neural", order: 86, x: -0.68, y: 0.09),
+        .init(line: "Neural", order: 87, x: -0.71, y: 0.1),
+        .init(line: "Neural", order: 88, x: -0.74, y: 0.1),
+        .init(line: "Neural", order: 89, x: -0.79, y: 0.11),
+        .init(line: "Neural", order: 90, x: -0.84, y: 0.12),
+        .init(line: "Neural", order: 91, x: -0.88, y: 0.13),
+        .init(line: "Neural", order: 92, x: -0.91, y: 0.13),
+        .init(line: "Neural", order: 93, x: -0.94, y: 0.14),
+        .init(line: "Neural", order: 94, x: -0.97, y: 0.14),
+        .init(line: "Neural", order: 95, x: -1.02, y: 0.15),
+        .init(line: "Neural", order: 96, x: -1.06, y: 0.16),
+        .init(line: "Neural", order: 97, x: -1.11, y: 0.17),
+        .init(line: "Neural", order: 98, x: -1.16, y: 0.17),
+        .init(line: "Neural", order: 99, x: -1.21, y: 0.18),
+        .init(line: "Neural", order: 100, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 101, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 102, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 103, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 104, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 105, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 106, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 107, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 108, x: -1.25, y: 0.19),
+        .init(line: "Neural", order: 109, x: -1.26, y: 0.19),
+        .init(line: "Neural", order: 110, x: -1.27, y: 0.19),
+        .init(line: "Neural", order: 111, x: -1.28, y: 0.18),
+        .init(line: "Neural", order: 112, x: -1.28, y: 0.18),
+        .init(line: "Neural", order: 113, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 114, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 115, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 116, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 117, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 118, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 119, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 120, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 121, x: -1.28, y: 0.17),
+        .init(line: "Neural", order: 122, x: -1.28, y: 0.16),
+        .init(line: "Neural", order: 123, x: -1.29, y: 0.15),
+        .init(line: "Neural", order: 124, x: -1.29, y: 0.13),
+        .init(line: "Neural", order: 125, x: -1.29, y: 0.12),
+        .init(line: "Neural", order: 126, x: -1.29, y: 0.11),
+        .init(line: "Neural", order: 127, x: -1.29, y: 0.11),
+        .init(line: "Neural", order: 128, x: -1.29, y: 0.11),
+        .init(line: "Neural", order: 129, x: -1.29, y: 0.11),
+        .init(line: "Neural", order: 130, x: -1.29, y: 0.11),
+        .init(line: "Neural", order: 131, x: -1.29, y: 0.11),
+        .init(line: "Neural", order: 132, x: -1.29, y: 0.11),
+        .init(line: "Neural", order: 133, x: -1.28, y: 0.11),
+        .init(line: "Neural", order: 134, x: -1.25, y: 0.11),
+        .init(line: "Neural", order: 135, x: -1.2, y: 0.11),
+        .init(line: "Neural", order: 136, x: -1.15, y: 0.12),
+        .init(line: "Neural", order: 137, x: -1.09, y: 0.12),
+        .init(line: "Neural", order: 138, x: -1.02, y: 0.13),
+        .init(line: "Neural", order: 139, x: -0.96, y: 0.13),
+        .init(line: "Neural", order: 140, x: -0.61, y: 0.18),
+        .init(line: "Neural", order: 141, x: -0.1, y: 0.25),
+        .init(line: "Neural", order: 142, x: 0.48, y: 0.33),
+        .init(line: "Neural", order: 143, x: 0.98, y: 0.41),
+        .init(line: "Neural", order: 144, x: 1.46, y: 0.55),
+        .init(line: "Neural", order: 145, x: 1.95, y: 0.68),
+        .init(line: "Neural", order: 146, x: 2.44, y: 0.78),
+        .init(line: "Neural", order: 147, x: 2.93, y: 0.88),
+        .init(line: "Neural", order: 148, x: 3.43, y: 0.88),
+        .init(line: "Neural", order: 149, x: 3.92, y: 0.95),
+        .init(line: "Neural", order: 150, x: 4.42, y: 1.05),
+        .init(line: "Neural", order: 151, x: 4.97, y: 1.16),
+        .init(line: "Neural", order: 152, x: 5.67, y: 1.35),
+        .init(line: "Neural", order: 153, x: 6.38, y: 1.62),
+        .init(line: "Neural", order: 154, x: 7.11, y: 1.85),
+        .init(line: "Neural", order: 155, x: 7.84, y: 2.08),
+        .init(line: "Neural", order: 156, x: 8.58, y: 2.33),
+        .init(line: "Neural", order: 157, x: 9.31, y: 2.59),
+        .init(line: "Neural", order: 158, x: 10.06, y: 2.85),
+        .init(line: "Neural", order: 159, x: 10.81, y: 3.12),
+        .init(line: "Neural", order: 160, x: 11.56, y: 3.41),
+        .init(line: "Neural", order: 161, x: 12.31, y: 3.72),
+        .init(line: "Neural", order: 162, x: 13.08, y: 4.03),
+        .init(line: "Neural", order: 163, x: 13.84, y: 4.36),
+        .init(line: "Neural", order: 164, x: 14.6, y: 4.7),
+        .init(line: "Neural", order: 165, x: 15.37, y: 5.05),
+        .init(line: "Neural", order: 166, x: 16.16, y: 5.38),
+        .init(line: "Neural", order: 167, x: 16.96, y: 5.69),
+        .init(line: "Neural", order: 168, x: 17.77, y: 5.99),
+        .init(line: "Neural", order: 169, x: 18.73, y: 6.34),
+        .init(line: "Neural", order: 170, x: 19.57, y: 6.69),
+        .init(line: "Neural", order: 171, x: 20.42, y: 7.04),
+        .init(line: "Neural", order: 172, x: 21.27, y: 7.39),
+        .init(line: "Neural", order: 173, x: 22.12, y: 7.74),
+        .init(line: "Neural", order: 174, x: 22.97, y: 8.11),
+        .init(line: "Neural", order: 175, x: 23.83, y: 8.47),
+        .init(line: "Neural", order: 176, x: 24.7, y: 8.83),
+        .init(line: "Neural", order: 177, x: 25.56, y: 9.21),
+        .init(line: "Neural", order: 178, x: 26.43, y: 9.57),
+        .init(line: "Neural", order: 179, x: 27.31, y: 9.94),
+        .init(line: "Neural", order: 180, x: 28.18, y: 10.31),
+        .init(line: "Neural", order: 181, x: 29.05, y: 10.71),
+        .init(line: "Neural", order: 182, x: 29.93, y: 11.1),
+        .init(line: "Neural", order: 183, x: 30.81, y: 11.49),
+        .init(line: "Neural", order: 184, x: 31.7, y: 11.88),
+        .init(line: "Neural", order: 185, x: 32.59, y: 12.28),
+        .init(line: "Neural", order: 186, x: 33.49, y: 12.69),
+        .init(line: "Neural", order: 187, x: 34.41, y: 13.1),
+        .init(line: "Neural", order: 188, x: 35.35, y: 13.52),
+        .init(line: "Neural", order: 189, x: 36.3, y: 13.95),
+        .init(line: "Neural", order: 190, x: 37.26, y: 14.36),
+        .init(line: "Neural", order: 191, x: 38.22, y: 14.79),
+        .init(line: "Neural", order: 192, x: 39.19, y: 15.2),
+        .init(line: "Neural", order: 193, x: 40.17, y: 15.56),
+        .init(line: "Neural", order: 194, x: 41.16, y: 15.94),
+        .init(line: "Neural", order: 195, x: 42.14, y: 16.32),
+        .init(line: "Neural", order: 196, x: 43.14, y: 16.68),
+        .init(line: "Neural", order: 197, x: 44.3, y: 17.12),
+        .init(line: "Neural", order: 198, x: 45.3, y: 17.51),
+        .init(line: "Neural", order: 199, x: 46.3, y: 17.9),
+        .init(line: "Neural", order: 200, x: 47.31, y: 18.3),
+        .init(line: "Neural", order: 201, x: 48.33, y: 18.68),
+        .init(line: "Neural", order: 202, x: 49.35, y: 19.08),
+        .init(line: "Neural", order: 203, x: 50.37, y: 19.49),
+        .init(line: "Neural", order: 204, x: 51.39, y: 19.9),
+        .init(line: "Neural", order: 205, x: 52.42, y: 20.31),
+        .init(line: "Neural", order: 206, x: 53.45, y: 20.73),
+        .init(line: "Neural", order: 207, x: 54.47, y: 21.16),
+        .init(line: "Neural", order: 208, x: 55.5, y: 21.59),
+        .init(line: "Neural", order: 209, x: 56.53, y: 22.02),
+        .init(line: "Neural", order: 210, x: 57.56, y: 22.45),
+        .init(line: "Neural", order: 211, x: 58.59, y: 22.88),
+        .init(line: "Neural", order: 212, x: 59.63, y: 23.3),
+        .init(line: "Neural", order: 213, x: 60.67, y: 23.73),
+        .init(line: "Neural", order: 214, x: 61.71, y: 24.16),
+        .init(line: "Neural", order: 215, x: 62.75, y: 24.59),
+        .init(line: "Neural", order: 216, x: 63.79, y: 25.03),
+        .init(line: "Neural", order: 217, x: 64.82, y: 25.48),
+        .init(line: "Neural", order: 218, x: 65.85, y: 25.94),
+        .init(line: "Neural", order: 219, x: 66.88, y: 26.4),
+        .init(line: "Neural", order: 220, x: 67.9, y: 26.87),
+        .init(line: "Neural", order: 221, x: 68.24, y: 27.02),
         .init(line: "Algorithm", order: 0, x: -0.0, y: 0.0),
         .init(line: "Algorithm", order: 1, x: -0.0, y: 0.0),
         .init(line: "Algorithm", order: 2, x: -0.0, y: 0.0),
         .init(line: "Algorithm", order: 3, x: 0.0, y: 0.0),
         .init(line: "Algorithm", order: 4, x: 0.0, y: 0.0),
         .init(line: "Algorithm", order: 5, x: 0.0, y: 0.0),
-        .init(line: "Algorithm", order: 6, x: 0.0, y: 0.0),
-        .init(line: "Algorithm", order: 7, x: 0.0, y: 0.01),
-        .init(line: "Algorithm", order: 8, x: 0.0, y: 0.01),
-        .init(line: "Algorithm", order: 9, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 10, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 11, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 12, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 13, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 14, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 15, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 16, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 17, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 18, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 19, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 20, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 21, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 22, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 23, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 24, x: -0.0, y: 0.01),
-        .init(line: "Algorithm", order: 25, x: 0.0, y: 0.02),
+        .init(line: "Algorithm", order: 6, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 7, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 8, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 9, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 10, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 11, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 12, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 13, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 14, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 15, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 16, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 17, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 18, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 19, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 20, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 21, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 22, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 23, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 24, x: -0.0, y: 0.0),
+        .init(line: "Algorithm", order: 25, x: 0.0, y: 0.01),
         .init(line: "Algorithm", order: 26, x: 0.0, y: 0.03),
         .init(line: "Algorithm", order: 27, x: 0.0, y: 0.03),
         .init(line: "Algorithm", order: 28, x: 0.0, y: 0.04),
-        .init(line: "Algorithm", order: 29, x: 0.01, y: 0.06),
-        .init(line: "Algorithm", order: 30, x: 0.01, y: 0.07),
-        .init(line: "Algorithm", order: 31, x: 0.01, y: 0.07),
-        .init(line: "Algorithm", order: 32, x: 0.02, y: 0.08),
-        .init(line: "Algorithm", order: 33, x: 0.03, y: 0.09),
-        .init(line: "Algorithm", order: 34, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 35, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 36, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 37, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 38, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 39, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 40, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 41, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 42, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 43, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 44, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 45, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 46, x: 0.05, y: 0.1),
-        .init(line: "Algorithm", order: 47, x: 0.05, y: 0.11),
-        .init(line: "Algorithm", order: 48, x: 0.05, y: 0.11),
-        .init(line: "Algorithm", order: 49, x: 0.04, y: 0.13),
-        .init(line: "Algorithm", order: 50, x: 0.01, y: 0.13),
-        .init(line: "Algorithm", order: 51, x: -0.02, y: 0.15),
-        .init(line: "Algorithm", order: 52, x: -0.05, y: 0.16),
-        .init(line: "Algorithm", order: 53, x: -0.06, y: 0.17),
-        .init(line: "Algorithm", order: 54, x: -0.09, y: 0.17),
-        .init(line: "Algorithm", order: 55, x: -0.12, y: 0.16),
-        .init(line: "Algorithm", order: 56, x: -0.13, y: 0.15),
-        .init(line: "Algorithm", order: 57, x: -0.14, y: 0.14),
-        .init(line: "Algorithm", order: 58, x: -0.14, y: 0.14),
-        .init(line: "Algorithm", order: 59, x: -0.14, y: 0.14),
-        .init(line: "Algorithm", order: 60, x: -0.14, y: 0.14),
-        .init(line: "Algorithm", order: 61, x: -0.14, y: 0.14),
-        .init(line: "Algorithm", order: 62, x: -0.14, y: 0.14),
-        .init(line: "Algorithm", order: 63, x: -0.14, y: 0.14),
-        .init(line: "Algorithm", order: 64, x: -0.14, y: 0.14),
-        .init(line: "Algorithm", order: 65, x: -0.14, y: 0.13),
-        .init(line: "Algorithm", order: 66, x: -0.14, y: 0.11),
-        .init(line: "Algorithm", order: 67, x: -0.16, y: 0.09),
-        .init(line: "Algorithm", order: 68, x: -0.18, y: 0.09),
-        .init(line: "Algorithm", order: 69, x: -0.21, y: 0.09),
-        .init(line: "Algorithm", order: 70, x: -0.24, y: 0.08),
-        .init(line: "Algorithm", order: 71, x: -0.28, y: 0.08),
-        .init(line: "Algorithm", order: 72, x: -0.34, y: 0.08),
-        .init(line: "Algorithm", order: 73, x: -0.38, y: 0.08),
-        .init(line: "Algorithm", order: 74, x: -0.41, y: 0.08),
-        .init(line: "Algorithm", order: 75, x: -0.42, y: 0.08),
-        .init(line: "Algorithm", order: 76, x: -0.42, y: 0.08),
-        .init(line: "Algorithm", order: 77, x: -0.44, y: 0.08),
-        .init(line: "Algorithm", order: 78, x: -0.47, y: 0.08),
-        .init(line: "Algorithm", order: 79, x: -0.51, y: 0.08),
-        .init(line: "Algorithm", order: 80, x: -0.55, y: 0.08),
-        .init(line: "Algorithm", order: 81, x: -0.59, y: 0.09),
-        .init(line: "Algorithm", order: 82, x: -0.64, y: 0.1),
-        .init(line: "Algorithm", order: 83, x: -0.66, y: 0.1),
-        .init(line: "Algorithm", order: 84, x: -0.68, y: 0.1),
-        .init(line: "Algorithm", order: 85, x: -0.72, y: 0.1),
-        .init(line: "Algorithm", order: 86, x: -0.75, y: 0.1),
-        .init(line: "Algorithm", order: 87, x: -0.78, y: 0.1),
-        .init(line: "Algorithm", order: 88, x: -0.81, y: 0.11),
-        .init(line: "Algorithm", order: 89, x: -0.86, y: 0.12),
-        .init(line: "Algorithm", order: 90, x: -0.91, y: 0.13),
-        .init(line: "Algorithm", order: 91, x: -0.95, y: 0.13),
-        .init(line: "Algorithm", order: 92, x: -0.99, y: 0.14),
-        .init(line: "Algorithm", order: 93, x: -1.02, y: 0.15),
-        .init(line: "Algorithm", order: 94, x: -1.06, y: 0.15),
-        .init(line: "Algorithm", order: 95, x: -1.09, y: 0.16),
-        .init(line: "Algorithm", order: 96, x: -1.14, y: 0.17),
-        .init(line: "Algorithm", order: 97, x: -1.19, y: 0.17),
-        .init(line: "Algorithm", order: 98, x: -1.23, y: 0.18),
-        .init(line: "Algorithm", order: 99, x: -1.27, y: 0.19),
-        .init(line: "Algorithm", order: 100, x: -1.29, y: 0.19),
-        .init(line: "Algorithm", order: 101, x: -1.29, y: 0.19),
-        .init(line: "Algorithm", order: 102, x: -1.29, y: 0.19),
-        .init(line: "Algorithm", order: 103, x: -1.29, y: 0.19),
-        .init(line: "Algorithm", order: 104, x: -1.29, y: 0.19),
-        .init(line: "Algorithm", order: 105, x: -1.29, y: 0.19),
-        .init(line: "Algorithm", order: 106, x: -1.29, y: 0.19),
-        .init(line: "Algorithm", order: 107, x: -1.29, y: 0.19),
-        .init(line: "Algorithm", order: 108, x: -1.3, y: 0.19),
-        .init(line: "Algorithm", order: 109, x: -1.3, y: 0.19),
-        .init(line: "Algorithm", order: 110, x: -1.31, y: 0.19),
-        .init(line: "Algorithm", order: 111, x: -1.32, y: 0.19),
-        .init(line: "Algorithm", order: 112, x: -1.32, y: 0.19),
-        .init(line: "Algorithm", order: 113, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 114, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 115, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 116, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 117, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 118, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 119, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 120, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 121, x: -1.32, y: 0.18),
-        .init(line: "Algorithm", order: 122, x: -1.32, y: 0.17),
-        .init(line: "Algorithm", order: 123, x: -1.33, y: 0.15),
-        .init(line: "Algorithm", order: 124, x: -1.33, y: 0.14),
-        .init(line: "Algorithm", order: 125, x: -1.33, y: 0.13),
-        .init(line: "Algorithm", order: 126, x: -1.33, y: 0.12),
-        .init(line: "Algorithm", order: 127, x: -1.33, y: 0.11),
-        .init(line: "Algorithm", order: 128, x: -1.33, y: 0.11),
-        .init(line: "Algorithm", order: 129, x: -1.33, y: 0.11),
-        .init(line: "Algorithm", order: 130, x: -1.33, y: 0.11),
-        .init(line: "Algorithm", order: 131, x: -1.33, y: 0.11),
-        .init(line: "Algorithm", order: 132, x: -1.33, y: 0.11),
-        .init(line: "Algorithm", order: 133, x: -1.32, y: 0.11),
-        .init(line: "Algorithm", order: 134, x: -1.29, y: 0.11),
-        .init(line: "Algorithm", order: 135, x: -1.24, y: 0.11),
-        .init(line: "Algorithm", order: 136, x: -1.19, y: 0.11),
-        .init(line: "Algorithm", order: 137, x: -1.13, y: 0.12),
-        .init(line: "Algorithm", order: 138, x: -1.08, y: 0.12),
-        .init(line: "Algorithm", order: 139, x: -1.02, y: 0.13),
-        .init(line: "Algorithm", order: 140, x: -0.67, y: 0.17),
-        .init(line: "Algorithm", order: 141, x: -0.16, y: 0.25),
-        .init(line: "Algorithm", order: 142, x: 0.42, y: 0.33),
-        .init(line: "Algorithm", order: 143, x: 0.92, y: 0.41),
-        .init(line: "Algorithm", order: 144, x: 1.42, y: 0.5),
-        .init(line: "Algorithm", order: 145, x: 1.92, y: 0.59),
-        .init(line: "Algorithm", order: 146, x: 2.41, y: 0.67),
-        .init(line: "Algorithm", order: 147, x: 2.91, y: 0.74),
-        .init(line: "Algorithm", order: 148, x: 3.4, y: 0.77),
-        .init(line: "Algorithm", order: 149, x: 3.9, y: 0.81),
-        .init(line: "Algorithm", order: 150, x: 4.41, y: 0.88),
-        .init(line: "Algorithm", order: 151, x: 4.96, y: 0.97),
-        .init(line: "Algorithm", order: 152, x: 5.61, y: 1.14),
-        .init(line: "Algorithm", order: 153, x: 6.23, y: 1.35),
-        .init(line: "Algorithm", order: 154, x: 6.86, y: 1.53),
-        .init(line: "Algorithm", order: 155, x: 7.48, y: 1.71),
-        .init(line: "Algorithm", order: 156, x: 8.13, y: 1.92),
-        .init(line: "Algorithm", order: 157, x: 8.83, y: 2.14),
-        .init(line: "Algorithm", order: 158, x: 9.58, y: 2.38),
-        .init(line: "Algorithm", order: 159, x: 10.34, y: 2.63),
-        .init(line: "Algorithm", order: 160, x: 11.12, y: 2.91),
-        .init(line: "Algorithm", order: 161, x: 11.93, y: 3.21),
-        .init(line: "Algorithm", order: 162, x: 12.73, y: 3.49),
-        .init(line: "Algorithm", order: 163, x: 13.52, y: 3.77),
-        .init(line: "Algorithm", order: 164, x: 14.28, y: 4.06),
-        .init(line: "Algorithm", order: 165, x: 15.03, y: 4.35),
-        .init(line: "Algorithm", order: 166, x: 15.78, y: 4.64),
-        .init(line: "Algorithm", order: 167, x: 16.59, y: 4.94),
-        .init(line: "Algorithm", order: 168, x: 17.44, y: 5.25),
-        .init(line: "Algorithm", order: 169, x: 18.44, y: 5.62),
-        .init(line: "Algorithm", order: 170, x: 19.3, y: 5.98),
-        .init(line: "Algorithm", order: 171, x: 20.17, y: 6.33),
-        .init(line: "Algorithm", order: 172, x: 21.03, y: 6.68),
-        .init(line: "Algorithm", order: 173, x: 21.89, y: 7.03),
-        .init(line: "Algorithm", order: 174, x: 22.75, y: 7.39),
-        .init(line: "Algorithm", order: 175, x: 23.61, y: 7.76),
-        .init(line: "Algorithm", order: 176, x: 24.48, y: 8.12),
-        .init(line: "Algorithm", order: 177, x: 25.33, y: 8.48),
-        .init(line: "Algorithm", order: 178, x: 26.2, y: 8.84),
-        .init(line: "Algorithm", order: 179, x: 27.09, y: 9.21),
-        .init(line: "Algorithm", order: 180, x: 27.98, y: 9.59),
-        .init(line: "Algorithm", order: 181, x: 28.87, y: 9.98),
-        .init(line: "Algorithm", order: 182, x: 29.74, y: 10.37),
-        .init(line: "Algorithm", order: 183, x: 30.61, y: 10.75),
-        .init(line: "Algorithm", order: 184, x: 31.49, y: 11.14),
-        .init(line: "Algorithm", order: 185, x: 32.36, y: 11.53),
-        .init(line: "Algorithm", order: 186, x: 33.23, y: 11.91),
-        .init(line: "Algorithm", order: 187, x: 34.1, y: 12.3),
-        .init(line: "Algorithm", order: 188, x: 35.0, y: 12.7),
-        .init(line: "Algorithm", order: 189, x: 35.91, y: 13.1),
-        .init(line: "Algorithm", order: 190, x: 36.82, y: 13.49),
-        .init(line: "Algorithm", order: 191, x: 37.73, y: 13.89),
-        .init(line: "Algorithm", order: 192, x: 38.64, y: 14.27),
-        .init(line: "Algorithm", order: 193, x: 39.58, y: 14.61),
-        .init(line: "Algorithm", order: 194, x: 40.51, y: 14.96),
-        .init(line: "Algorithm", order: 195, x: 41.44, y: 15.31),
-        .init(line: "Algorithm", order: 196, x: 42.37, y: 15.66),
-        .init(line: "Algorithm", order: 197, x: 43.44, y: 16.05),
-        .init(line: "Algorithm", order: 198, x: 44.35, y: 16.41),
-        .init(line: "Algorithm", order: 199, x: 45.29, y: 16.77),
-        .init(line: "Algorithm", order: 200, x: 46.25, y: 17.14),
-        .init(line: "Algorithm", order: 201, x: 47.22, y: 17.5),
-        .init(line: "Algorithm", order: 202, x: 48.19, y: 17.88),
-        .init(line: "Algorithm", order: 203, x: 49.15, y: 18.26),
-        .init(line: "Algorithm", order: 204, x: 50.11, y: 18.64),
-        .init(line: "Algorithm", order: 205, x: 51.07, y: 19.02),
-        .init(line: "Algorithm", order: 206, x: 52.04, y: 19.41),
-        .init(line: "Algorithm", order: 207, x: 53.02, y: 19.82),
-        .init(line: "Algorithm", order: 208, x: 54.01, y: 20.23),
-        .init(line: "Algorithm", order: 209, x: 54.99, y: 20.63),
-        .init(line: "Algorithm", order: 210, x: 55.96, y: 21.04),
-        .init(line: "Algorithm", order: 211, x: 56.93, y: 21.43),
-        .init(line: "Algorithm", order: 212, x: 57.92, y: 21.83),
-        .init(line: "Algorithm", order: 213, x: 58.9, y: 22.23),
-        .init(line: "Algorithm", order: 214, x: 59.86, y: 22.62),
-        .init(line: "Algorithm", order: 215, x: 60.83, y: 23.02),
-        .init(line: "Algorithm", order: 216, x: 61.78, y: 23.42),
-        .init(line: "Algorithm", order: 217, x: 62.74, y: 23.83),
-        .init(line: "Algorithm", order: 218, x: 63.72, y: 24.26),
-        .init(line: "Algorithm", order: 219, x: 64.72, y: 24.7),
-        .init(line: "Algorithm", order: 220, x: 65.72, y: 25.15),
-        .init(line: "Algorithm", order: 221, x: 66.05, y: 25.3)
+        .init(line: "Algorithm", order: 29, x: 0.0, y: 0.05),
+        .init(line: "Algorithm", order: 30, x: 0.0, y: 0.06),
+        .init(line: "Algorithm", order: 31, x: 0.01, y: 0.06),
+        .init(line: "Algorithm", order: 32, x: 0.01, y: 0.07),
+        .init(line: "Algorithm", order: 33, x: 0.03, y: 0.07),
+        .init(line: "Algorithm", order: 34, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 35, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 36, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 37, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 38, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 39, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 40, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 41, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 42, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 43, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 44, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 45, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 46, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 47, x: 0.04, y: 0.09),
+        .init(line: "Algorithm", order: 48, x: 0.04, y: 0.1),
+        .init(line: "Algorithm", order: 49, x: 0.03, y: 0.11),
+        .init(line: "Algorithm", order: 50, x: 0.01, y: 0.12),
+        .init(line: "Algorithm", order: 51, x: -0.02, y: 0.13),
+        .init(line: "Algorithm", order: 52, x: -0.04, y: 0.14),
+        .init(line: "Algorithm", order: 53, x: -0.06, y: 0.14),
+        .init(line: "Algorithm", order: 54, x: -0.08, y: 0.15),
+        .init(line: "Algorithm", order: 55, x: -0.11, y: 0.14),
+        .init(line: "Algorithm", order: 56, x: -0.12, y: 0.13),
+        .init(line: "Algorithm", order: 57, x: -0.12, y: 0.12),
+        .init(line: "Algorithm", order: 58, x: -0.12, y: 0.12),
+        .init(line: "Algorithm", order: 59, x: -0.12, y: 0.12),
+        .init(line: "Algorithm", order: 60, x: -0.12, y: 0.12),
+        .init(line: "Algorithm", order: 61, x: -0.12, y: 0.12),
+        .init(line: "Algorithm", order: 62, x: -0.12, y: 0.12),
+        .init(line: "Algorithm", order: 63, x: -0.12, y: 0.12),
+        .init(line: "Algorithm", order: 64, x: -0.12, y: 0.12),
+        .init(line: "Algorithm", order: 65, x: -0.12, y: 0.11),
+        .init(line: "Algorithm", order: 66, x: -0.13, y: 0.09),
+        .init(line: "Algorithm", order: 67, x: -0.14, y: 0.08),
+        .init(line: "Algorithm", order: 68, x: -0.16, y: 0.08),
+        .init(line: "Algorithm", order: 69, x: -0.18, y: 0.08),
+        .init(line: "Algorithm", order: 70, x: -0.2, y: 0.08),
+        .init(line: "Algorithm", order: 71, x: -0.23, y: 0.07),
+        .init(line: "Algorithm", order: 72, x: -0.28, y: 0.07),
+        .init(line: "Algorithm", order: 73, x: -0.33, y: 0.07),
+        .init(line: "Algorithm", order: 74, x: -0.35, y: 0.07),
+        .init(line: "Algorithm", order: 75, x: -0.36, y: 0.07),
+        .init(line: "Algorithm", order: 76, x: -0.36, y: 0.07),
+        .init(line: "Algorithm", order: 77, x: -0.38, y: 0.07),
+        .init(line: "Algorithm", order: 78, x: -0.41, y: 0.07),
+        .init(line: "Algorithm", order: 79, x: -0.44, y: 0.07),
+        .init(line: "Algorithm", order: 80, x: -0.48, y: 0.08),
+        .init(line: "Algorithm", order: 81, x: -0.53, y: 0.08),
+        .init(line: "Algorithm", order: 82, x: -0.58, y: 0.09),
+        .init(line: "Algorithm", order: 83, x: -0.61, y: 0.09),
+        .init(line: "Algorithm", order: 84, x: -0.63, y: 0.09),
+        .init(line: "Algorithm", order: 85, x: -0.65, y: 0.09),
+        .init(line: "Algorithm", order: 86, x: -0.68, y: 0.09),
+        .init(line: "Algorithm", order: 87, x: -0.71, y: 0.1),
+        .init(line: "Algorithm", order: 88, x: -0.74, y: 0.1),
+        .init(line: "Algorithm", order: 89, x: -0.79, y: 0.11),
+        .init(line: "Algorithm", order: 90, x: -0.84, y: 0.12),
+        .init(line: "Algorithm", order: 91, x: -0.88, y: 0.13),
+        .init(line: "Algorithm", order: 92, x: -0.91, y: 0.13),
+        .init(line: "Algorithm", order: 93, x: -0.94, y: 0.14),
+        .init(line: "Algorithm", order: 94, x: -0.97, y: 0.14),
+        .init(line: "Algorithm", order: 95, x: -1.02, y: 0.15),
+        .init(line: "Algorithm", order: 96, x: -1.06, y: 0.16),
+        .init(line: "Algorithm", order: 97, x: -1.11, y: 0.17),
+        .init(line: "Algorithm", order: 98, x: -1.16, y: 0.17),
+        .init(line: "Algorithm", order: 99, x: -1.21, y: 0.18),
+        .init(line: "Algorithm", order: 100, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 101, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 102, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 103, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 104, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 105, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 106, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 107, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 108, x: -1.25, y: 0.19),
+        .init(line: "Algorithm", order: 109, x: -1.26, y: 0.19),
+        .init(line: "Algorithm", order: 110, x: -1.27, y: 0.19),
+        .init(line: "Algorithm", order: 111, x: -1.28, y: 0.18),
+        .init(line: "Algorithm", order: 112, x: -1.28, y: 0.18),
+        .init(line: "Algorithm", order: 113, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 114, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 115, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 116, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 117, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 118, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 119, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 120, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 121, x: -1.28, y: 0.17),
+        .init(line: "Algorithm", order: 122, x: -1.28, y: 0.16),
+        .init(line: "Algorithm", order: 123, x: -1.29, y: 0.15),
+        .init(line: "Algorithm", order: 124, x: -1.29, y: 0.13),
+        .init(line: "Algorithm", order: 125, x: -1.29, y: 0.12),
+        .init(line: "Algorithm", order: 126, x: -1.29, y: 0.11),
+        .init(line: "Algorithm", order: 127, x: -1.29, y: 0.11),
+        .init(line: "Algorithm", order: 128, x: -1.29, y: 0.11),
+        .init(line: "Algorithm", order: 129, x: -1.29, y: 0.11),
+        .init(line: "Algorithm", order: 130, x: -1.29, y: 0.11),
+        .init(line: "Algorithm", order: 131, x: -1.29, y: 0.11),
+        .init(line: "Algorithm", order: 132, x: -1.29, y: 0.11),
+        .init(line: "Algorithm", order: 133, x: -1.28, y: 0.11),
+        .init(line: "Algorithm", order: 134, x: -1.25, y: 0.11),
+        .init(line: "Algorithm", order: 135, x: -1.2, y: 0.11),
+        .init(line: "Algorithm", order: 136, x: -1.15, y: 0.11),
+        .init(line: "Algorithm", order: 137, x: -1.09, y: 0.12),
+        .init(line: "Algorithm", order: 138, x: -1.02, y: 0.12),
+        .init(line: "Algorithm", order: 139, x: -0.96, y: 0.13),
+        .init(line: "Algorithm", order: 140, x: -0.61, y: 0.17),
+        .init(line: "Algorithm", order: 141, x: -0.1, y: 0.23),
+        .init(line: "Algorithm", order: 142, x: 0.48, y: 0.29),
+        .init(line: "Algorithm", order: 143, x: 0.98, y: 0.37),
+        .init(line: "Algorithm", order: 144, x: 1.47, y: 0.5),
+        .init(line: "Algorithm", order: 145, x: 1.96, y: 0.61),
+        .init(line: "Algorithm", order: 146, x: 2.45, y: 0.71),
+        .init(line: "Algorithm", order: 147, x: 2.95, y: 0.79),
+        .init(line: "Algorithm", order: 148, x: 3.44, y: 0.79),
+        .init(line: "Algorithm", order: 149, x: 3.94, y: 0.84),
+        .init(line: "Algorithm", order: 150, x: 4.44, y: 0.93),
+        .init(line: "Algorithm", order: 151, x: 4.99, y: 1.03),
+        .init(line: "Algorithm", order: 152, x: 5.64, y: 1.2),
+        .init(line: "Algorithm", order: 153, x: 6.26, y: 1.41),
+        .init(line: "Algorithm", order: 154, x: 6.88, y: 1.6),
+        .init(line: "Algorithm", order: 155, x: 7.51, y: 1.78),
+        .init(line: "Algorithm", order: 156, x: 8.15, y: 1.99),
+        .init(line: "Algorithm", order: 157, x: 8.85, y: 2.22),
+        .init(line: "Algorithm", order: 158, x: 9.6, y: 2.46),
+        .init(line: "Algorithm", order: 159, x: 10.36, y: 2.73),
+        .init(line: "Algorithm", order: 160, x: 11.14, y: 3.01),
+        .init(line: "Algorithm", order: 161, x: 11.94, y: 3.32),
+        .init(line: "Algorithm", order: 162, x: 12.74, y: 3.61),
+        .init(line: "Algorithm", order: 163, x: 13.52, y: 3.9),
+        .init(line: "Algorithm", order: 164, x: 14.28, y: 4.2),
+        .init(line: "Algorithm", order: 165, x: 15.03, y: 4.5),
+        .init(line: "Algorithm", order: 166, x: 15.78, y: 4.8),
+        .init(line: "Algorithm", order: 167, x: 16.59, y: 5.1),
+        .init(line: "Algorithm", order: 168, x: 17.43, y: 5.41),
+        .init(line: "Algorithm", order: 169, x: 18.44, y: 5.77),
+        .init(line: "Algorithm", order: 170, x: 19.3, y: 6.12),
+        .init(line: "Algorithm", order: 171, x: 20.17, y: 6.47),
+        .init(line: "Algorithm", order: 172, x: 21.03, y: 6.81),
+        .init(line: "Algorithm", order: 173, x: 21.89, y: 7.16),
+        .init(line: "Algorithm", order: 174, x: 22.75, y: 7.52),
+        .init(line: "Algorithm", order: 175, x: 23.62, y: 7.89),
+        .init(line: "Algorithm", order: 176, x: 24.48, y: 8.24),
+        .init(line: "Algorithm", order: 177, x: 25.34, y: 8.61),
+        .init(line: "Algorithm", order: 178, x: 26.21, y: 8.96),
+        .init(line: "Algorithm", order: 179, x: 27.1, y: 9.32),
+        .init(line: "Algorithm", order: 180, x: 27.99, y: 9.7),
+        .init(line: "Algorithm", order: 181, x: 28.88, y: 10.1),
+        .init(line: "Algorithm", order: 182, x: 29.75, y: 10.48),
+        .init(line: "Algorithm", order: 183, x: 30.63, y: 10.85),
+        .init(line: "Algorithm", order: 184, x: 31.5, y: 11.24),
+        .init(line: "Algorithm", order: 185, x: 32.38, y: 11.63),
+        .init(line: "Algorithm", order: 186, x: 33.25, y: 12.01),
+        .init(line: "Algorithm", order: 187, x: 34.12, y: 12.4),
+        .init(line: "Algorithm", order: 188, x: 35.03, y: 12.79),
+        .init(line: "Algorithm", order: 189, x: 35.93, y: 13.19),
+        .init(line: "Algorithm", order: 190, x: 36.85, y: 13.57),
+        .init(line: "Algorithm", order: 191, x: 37.75, y: 13.97),
+        .init(line: "Algorithm", order: 192, x: 38.67, y: 14.34),
+        .init(line: "Algorithm", order: 193, x: 39.61, y: 14.68),
+        .init(line: "Algorithm", order: 194, x: 40.54, y: 15.03),
+        .init(line: "Algorithm", order: 195, x: 41.47, y: 15.38),
+        .init(line: "Algorithm", order: 196, x: 42.4, y: 15.72),
+        .init(line: "Algorithm", order: 197, x: 43.47, y: 16.11),
+        .init(line: "Algorithm", order: 198, x: 44.39, y: 16.46),
+        .init(line: "Algorithm", order: 199, x: 45.33, y: 16.82),
+        .init(line: "Algorithm", order: 200, x: 46.29, y: 17.19),
+        .init(line: "Algorithm", order: 201, x: 47.26, y: 17.55),
+        .init(line: "Algorithm", order: 202, x: 48.23, y: 17.92),
+        .init(line: "Algorithm", order: 203, x: 49.2, y: 18.3),
+        .init(line: "Algorithm", order: 204, x: 50.15, y: 18.67),
+        .init(line: "Algorithm", order: 205, x: 51.12, y: 19.05),
+        .init(line: "Algorithm", order: 206, x: 52.09, y: 19.44),
+        .init(line: "Algorithm", order: 207, x: 53.07, y: 19.84),
+        .init(line: "Algorithm", order: 208, x: 54.06, y: 20.25),
+        .init(line: "Algorithm", order: 209, x: 55.04, y: 20.65),
+        .init(line: "Algorithm", order: 210, x: 56.01, y: 21.05),
+        .init(line: "Algorithm", order: 211, x: 56.99, y: 21.44),
+        .init(line: "Algorithm", order: 212, x: 57.97, y: 21.83),
+        .init(line: "Algorithm", order: 213, x: 58.95, y: 22.23),
+        .init(line: "Algorithm", order: 214, x: 59.92, y: 22.62),
+        .init(line: "Algorithm", order: 215, x: 60.89, y: 23.01),
+        .init(line: "Algorithm", order: 216, x: 61.85, y: 23.41),
+        .init(line: "Algorithm", order: 217, x: 62.81, y: 23.82),
+        .init(line: "Algorithm", order: 218, x: 63.78, y: 24.24),
+        .init(line: "Algorithm", order: 219, x: 64.78, y: 24.68),
+        .init(line: "Algorithm", order: 220, x: 65.78, y: 25.14),
+        .init(line: "Algorithm", order: 221, x: 66.12, y: 25.29)
     ]
     static let flightTakeoff = (x: -0.11, y: -0.39)
-    static let flightRouteStats = (neuralKm: 76.4, algorithmKm: 73.9, neuralEndKm: 17.5, algorithmEndKm: 16.9, medianKm: 0.8, airOffsetDeg: 13)
+    static let flightRouteStats = (neuralKm: 76.4, algorithmKm: 73.8, neuralEndKm: 17.6, algorithmEndKm: 16.8, medianKm: 0.8, airOffsetDeg: 13)
 
     /// Speed through the flight, km/h, every 8 s: GPS (the answer key), then the two versions.
     static let flightSpeed: [SpeedPoint] = [
@@ -1539,23 +1541,23 @@ enum VelocityMethodData {
         .init(minute: 2.4, line: "Neural", kmh: 0),
         .init(minute: 2.4, line: "Algorithm", kmh: 0),
         .init(minute: 2.53, line: "GPS", kmh: 0),
-        .init(minute: 2.53, line: "Neural", kmh: 13),
-        .init(minute: 2.53, line: "Algorithm", kmh: 13),
+        .init(minute: 2.53, line: "Neural", kmh: 14),
+        .init(minute: 2.53, line: "Algorithm", kmh: 14),
         .init(minute: 2.67, line: "GPS", kmh: 0),
         .init(minute: 2.67, line: "Neural", kmh: 2),
         .init(minute: 2.67, line: "Algorithm", kmh: 2),
         .init(minute: 2.8, line: "GPS", kmh: 0),
-        .init(minute: 2.8, line: "Neural", kmh: 10),
-        .init(minute: 2.8, line: "Algorithm", kmh: 10),
+        .init(minute: 2.8, line: "Neural", kmh: 5),
+        .init(minute: 2.8, line: "Algorithm", kmh: 5),
         .init(minute: 2.93, line: "GPS", kmh: 0),
         .init(minute: 2.93, line: "Neural", kmh: 7),
         .init(minute: 2.93, line: "Algorithm", kmh: 7),
         .init(minute: 3.07, line: "GPS", kmh: 0),
-        .init(minute: 3.07, line: "Neural", kmh: 9),
-        .init(minute: 3.07, line: "Algorithm", kmh: 9),
+        .init(minute: 3.07, line: "Neural", kmh: 7),
+        .init(minute: 3.07, line: "Algorithm", kmh: 7),
         .init(minute: 3.2, line: "GPS", kmh: 0),
-        .init(minute: 3.2, line: "Neural", kmh: 4),
-        .init(minute: 3.2, line: "Algorithm", kmh: 4),
+        .init(minute: 3.2, line: "Neural", kmh: 1),
+        .init(minute: 3.2, line: "Algorithm", kmh: 1),
         .init(minute: 3.33, line: "GPS", kmh: 0),
         .init(minute: 3.33, line: "Neural", kmh: 4),
         .init(minute: 3.33, line: "Algorithm", kmh: 4),
@@ -1590,26 +1592,26 @@ enum VelocityMethodData {
         .init(minute: 4.67, line: "Neural", kmh: 1),
         .init(minute: 4.67, line: "Algorithm", kmh: 1),
         .init(minute: 4.8, line: "GPS", kmh: 16),
-        .init(minute: 4.8, line: "Neural", kmh: 9),
-        .init(minute: 4.8, line: "Algorithm", kmh: 9),
+        .init(minute: 4.8, line: "Neural", kmh: 7),
+        .init(minute: 4.8, line: "Algorithm", kmh: 7),
         .init(minute: 4.93, line: "GPS", kmh: 18),
-        .init(minute: 4.93, line: "Neural", kmh: 15),
-        .init(minute: 4.93, line: "Algorithm", kmh: 15),
+        .init(minute: 4.93, line: "Neural", kmh: 13),
+        .init(minute: 4.93, line: "Algorithm", kmh: 13),
         .init(minute: 5.07, line: "GPS", kmh: 17),
-        .init(minute: 5.07, line: "Neural", kmh: 20),
-        .init(minute: 5.07, line: "Algorithm", kmh: 20),
+        .init(minute: 5.07, line: "Neural", kmh: 16),
+        .init(minute: 5.07, line: "Algorithm", kmh: 16),
         .init(minute: 5.2, line: "GPS", kmh: 18),
-        .init(minute: 5.2, line: "Neural", kmh: 17),
-        .init(minute: 5.2, line: "Algorithm", kmh: 17),
+        .init(minute: 5.2, line: "Neural", kmh: 15),
+        .init(minute: 5.2, line: "Algorithm", kmh: 15),
         .init(minute: 5.33, line: "GPS", kmh: 18),
-        .init(minute: 5.33, line: "Neural", kmh: 17),
-        .init(minute: 5.33, line: "Algorithm", kmh: 17),
+        .init(minute: 5.33, line: "Neural", kmh: 14),
+        .init(minute: 5.33, line: "Algorithm", kmh: 14),
         .init(minute: 5.47, line: "GPS", kmh: 20),
-        .init(minute: 5.47, line: "Neural", kmh: 14),
-        .init(minute: 5.47, line: "Algorithm", kmh: 14),
+        .init(minute: 5.47, line: "Neural", kmh: 13),
+        .init(minute: 5.47, line: "Algorithm", kmh: 13),
         .init(minute: 5.6, line: "GPS", kmh: 15),
-        .init(minute: 5.6, line: "Neural", kmh: 13),
-        .init(minute: 5.6, line: "Algorithm", kmh: 13),
+        .init(minute: 5.6, line: "Neural", kmh: 11),
+        .init(minute: 5.6, line: "Algorithm", kmh: 11),
         .init(minute: 5.73, line: "GPS", kmh: 2),
         .init(minute: 5.73, line: "Neural", kmh: 0),
         .init(minute: 5.73, line: "Algorithm", kmh: 0),
@@ -1629,86 +1631,86 @@ enum VelocityMethodData {
         .init(minute: 6.4, line: "Neural", kmh: 1),
         .init(minute: 6.4, line: "Algorithm", kmh: 1),
         .init(minute: 6.53, line: "GPS", kmh: 16),
-        .init(minute: 6.53, line: "Neural", kmh: 13),
-        .init(minute: 6.53, line: "Algorithm", kmh: 13),
+        .init(minute: 6.53, line: "Neural", kmh: 11),
+        .init(minute: 6.53, line: "Algorithm", kmh: 11),
         .init(minute: 6.67, line: "GPS", kmh: 17),
-        .init(minute: 6.67, line: "Neural", kmh: 13),
-        .init(minute: 6.67, line: "Algorithm", kmh: 13),
+        .init(minute: 6.67, line: "Neural", kmh: 11),
+        .init(minute: 6.67, line: "Algorithm", kmh: 11),
         .init(minute: 6.8, line: "GPS", kmh: 19),
-        .init(minute: 6.8, line: "Neural", kmh: 14),
-        .init(minute: 6.8, line: "Algorithm", kmh: 14),
+        .init(minute: 6.8, line: "Neural", kmh: 12),
+        .init(minute: 6.8, line: "Algorithm", kmh: 12),
         .init(minute: 6.93, line: "GPS", kmh: 28),
-        .init(minute: 6.93, line: "Neural", kmh: 16),
-        .init(minute: 6.93, line: "Algorithm", kmh: 16),
+        .init(minute: 6.93, line: "Neural", kmh: 13),
+        .init(minute: 6.93, line: "Algorithm", kmh: 13),
         .init(minute: 7.07, line: "GPS", kmh: 29),
-        .init(minute: 7.07, line: "Neural", kmh: 30),
-        .init(minute: 7.07, line: "Algorithm", kmh: 30),
+        .init(minute: 7.07, line: "Neural", kmh: 15),
+        .init(minute: 7.07, line: "Algorithm", kmh: 15),
         .init(minute: 7.2, line: "GPS", kmh: 27),
-        .init(minute: 7.2, line: "Neural", kmh: 29),
-        .init(minute: 7.2, line: "Algorithm", kmh: 29),
+        .init(minute: 7.2, line: "Neural", kmh: 30),
+        .init(minute: 7.2, line: "Algorithm", kmh: 30),
         .init(minute: 7.33, line: "GPS", kmh: 17),
-        .init(minute: 7.33, line: "Neural", kmh: 19),
-        .init(minute: 7.33, line: "Algorithm", kmh: 19),
+        .init(minute: 7.33, line: "Neural", kmh: 17),
+        .init(minute: 7.33, line: "Algorithm", kmh: 17),
         .init(minute: 7.47, line: "GPS", kmh: 14),
         .init(minute: 7.47, line: "Neural", kmh: 7),
         .init(minute: 7.47, line: "Algorithm", kmh: 7),
         .init(minute: 7.6, line: "GPS", kmh: 15),
-        .init(minute: 7.6, line: "Neural", kmh: 2),
-        .init(minute: 7.6, line: "Algorithm", kmh: 2),
+        .init(minute: 7.6, line: "Neural", kmh: 1),
+        .init(minute: 7.6, line: "Algorithm", kmh: 1),
         .init(minute: 7.73, line: "GPS", kmh: 20),
-        .init(minute: 7.73, line: "Neural", kmh: 17),
-        .init(minute: 7.73, line: "Algorithm", kmh: 17),
+        .init(minute: 7.73, line: "Neural", kmh: 15),
+        .init(minute: 7.73, line: "Algorithm", kmh: 15),
         .init(minute: 7.87, line: "GPS", kmh: 28),
         .init(minute: 7.87, line: "Neural", kmh: 19),
         .init(minute: 7.87, line: "Algorithm", kmh: 19),
         .init(minute: 8.0, line: "GPS", kmh: 33),
-        .init(minute: 8.0, line: "Neural", kmh: 28),
-        .init(minute: 8.0, line: "Algorithm", kmh: 28),
+        .init(minute: 8.0, line: "Neural", kmh: 29),
+        .init(minute: 8.0, line: "Algorithm", kmh: 29),
         .init(minute: 8.13, line: "GPS", kmh: 34),
-        .init(minute: 8.13, line: "Neural", kmh: 29),
-        .init(minute: 8.13, line: "Algorithm", kmh: 29),
+        .init(minute: 8.13, line: "Neural", kmh: 33),
+        .init(minute: 8.13, line: "Algorithm", kmh: 33),
         .init(minute: 8.27, line: "GPS", kmh: 35),
-        .init(minute: 8.27, line: "Neural", kmh: 14),
-        .init(minute: 8.27, line: "Algorithm", kmh: 14),
+        .init(minute: 8.27, line: "Neural", kmh: 12),
+        .init(minute: 8.27, line: "Algorithm", kmh: 12),
         .init(minute: 8.4, line: "GPS", kmh: 35),
-        .init(minute: 8.4, line: "Neural", kmh: 14),
-        .init(minute: 8.4, line: "Algorithm", kmh: 14),
+        .init(minute: 8.4, line: "Neural", kmh: 12),
+        .init(minute: 8.4, line: "Algorithm", kmh: 12),
         .init(minute: 8.53, line: "GPS", kmh: 37),
-        .init(minute: 8.53, line: "Neural", kmh: 19),
-        .init(minute: 8.53, line: "Algorithm", kmh: 19),
+        .init(minute: 8.53, line: "Neural", kmh: 17),
+        .init(minute: 8.53, line: "Algorithm", kmh: 17),
         .init(minute: 8.67, line: "GPS", kmh: 34),
-        .init(minute: 8.67, line: "Neural", kmh: 19),
-        .init(minute: 8.67, line: "Algorithm", kmh: 19),
+        .init(minute: 8.67, line: "Neural", kmh: 17),
+        .init(minute: 8.67, line: "Algorithm", kmh: 17),
         .init(minute: 8.8, line: "GPS", kmh: 37),
-        .init(minute: 8.8, line: "Neural", kmh: 24),
-        .init(minute: 8.8, line: "Algorithm", kmh: 24),
+        .init(minute: 8.8, line: "Neural", kmh: 23),
+        .init(minute: 8.8, line: "Algorithm", kmh: 23),
         .init(minute: 8.93, line: "GPS", kmh: 38),
-        .init(minute: 8.93, line: "Neural", kmh: 28),
-        .init(minute: 8.93, line: "Algorithm", kmh: 28),
+        .init(minute: 8.93, line: "Neural", kmh: 29),
+        .init(minute: 8.93, line: "Algorithm", kmh: 29),
         .init(minute: 9.07, line: "GPS", kmh: 41),
-        .init(minute: 9.07, line: "Neural", kmh: 30),
-        .init(minute: 9.07, line: "Algorithm", kmh: 30),
+        .init(minute: 9.07, line: "Neural", kmh: 26),
+        .init(minute: 9.07, line: "Algorithm", kmh: 26),
         .init(minute: 9.2, line: "GPS", kmh: 40),
-        .init(minute: 9.2, line: "Neural", kmh: 21),
-        .init(minute: 9.2, line: "Algorithm", kmh: 21),
+        .init(minute: 9.2, line: "Neural", kmh: 16),
+        .init(minute: 9.2, line: "Algorithm", kmh: 16),
         .init(minute: 9.33, line: "GPS", kmh: 40),
-        .init(minute: 9.33, line: "Neural", kmh: 23),
-        .init(minute: 9.33, line: "Algorithm", kmh: 23),
+        .init(minute: 9.33, line: "Neural", kmh: 21),
+        .init(minute: 9.33, line: "Algorithm", kmh: 21),
         .init(minute: 9.47, line: "GPS", kmh: 41),
-        .init(minute: 9.47, line: "Neural", kmh: 23),
-        .init(minute: 9.47, line: "Algorithm", kmh: 23),
+        .init(minute: 9.47, line: "Neural", kmh: 26),
+        .init(minute: 9.47, line: "Algorithm", kmh: 26),
         .init(minute: 9.6, line: "GPS", kmh: 41),
-        .init(minute: 9.6, line: "Neural", kmh: 29),
-        .init(minute: 9.6, line: "Algorithm", kmh: 29),
+        .init(minute: 9.6, line: "Neural", kmh: 30),
+        .init(minute: 9.6, line: "Algorithm", kmh: 30),
         .init(minute: 9.73, line: "GPS", kmh: 38),
         .init(minute: 9.73, line: "Neural", kmh: 29),
         .init(minute: 9.73, line: "Algorithm", kmh: 29),
         .init(minute: 9.87, line: "GPS", kmh: 32),
-        .init(minute: 9.87, line: "Neural", kmh: 20),
-        .init(minute: 9.87, line: "Algorithm", kmh: 20),
+        .init(minute: 9.87, line: "Neural", kmh: 35),
+        .init(minute: 9.87, line: "Algorithm", kmh: 35),
         .init(minute: 10.0, line: "GPS", kmh: 8),
-        .init(minute: 10.0, line: "Neural", kmh: 10),
-        .init(minute: 10.0, line: "Algorithm", kmh: 10),
+        .init(minute: 10.0, line: "Neural", kmh: 11),
+        .init(minute: 10.0, line: "Algorithm", kmh: 11),
         .init(minute: 10.13, line: "GPS", kmh: 0),
         .init(minute: 10.13, line: "Neural", kmh: 0),
         .init(minute: 10.13, line: "Algorithm", kmh: 0),
@@ -1728,11 +1730,11 @@ enum VelocityMethodData {
         .init(minute: 10.8, line: "Neural", kmh: 1),
         .init(minute: 10.8, line: "Algorithm", kmh: 1),
         .init(minute: 10.93, line: "GPS", kmh: 16),
-        .init(minute: 10.93, line: "Neural", kmh: 10),
-        .init(minute: 10.93, line: "Algorithm", kmh: 10),
+        .init(minute: 10.93, line: "Neural", kmh: 7),
+        .init(minute: 10.93, line: "Algorithm", kmh: 7),
         .init(minute: 11.07, line: "GPS", kmh: 14),
-        .init(minute: 11.07, line: "Neural", kmh: 0),
-        .init(minute: 11.07, line: "Algorithm", kmh: 0),
+        .init(minute: 11.07, line: "Neural", kmh: 8),
+        .init(minute: 11.07, line: "Algorithm", kmh: 8),
         .init(minute: 11.2, line: "GPS", kmh: 8),
         .init(minute: 11.2, line: "Neural", kmh: 0),
         .init(minute: 11.2, line: "Algorithm", kmh: 0),
@@ -1755,8 +1757,8 @@ enum VelocityMethodData {
         .init(minute: 12.0, line: "Neural", kmh: 0),
         .init(minute: 12.0, line: "Algorithm", kmh: 0),
         .init(minute: 12.13, line: "GPS", kmh: 12),
-        .init(minute: 12.13, line: "Neural", kmh: 4),
-        .init(minute: 12.13, line: "Algorithm", kmh: 4),
+        .init(minute: 12.13, line: "Neural", kmh: 6),
+        .init(minute: 12.13, line: "Algorithm", kmh: 6),
         .init(minute: 12.27, line: "GPS", kmh: 13),
         .init(minute: 12.27, line: "Neural", kmh: 17),
         .init(minute: 12.27, line: "Algorithm", kmh: 17),
@@ -1764,11 +1766,11 @@ enum VelocityMethodData {
         .init(minute: 12.4, line: "Neural", kmh: 4),
         .init(minute: 12.4, line: "Algorithm", kmh: 4),
         .init(minute: 12.53, line: "GPS", kmh: 13),
-        .init(minute: 12.53, line: "Neural", kmh: 6),
-        .init(minute: 12.53, line: "Algorithm", kmh: 6),
+        .init(minute: 12.53, line: "Neural", kmh: 5),
+        .init(minute: 12.53, line: "Algorithm", kmh: 5),
         .init(minute: 12.67, line: "GPS", kmh: 13),
-        .init(minute: 12.67, line: "Neural", kmh: 7),
-        .init(minute: 12.67, line: "Algorithm", kmh: 7),
+        .init(minute: 12.67, line: "Neural", kmh: 6),
+        .init(minute: 12.67, line: "Algorithm", kmh: 6),
         .init(minute: 12.8, line: "GPS", kmh: 7),
         .init(minute: 12.8, line: "Neural", kmh: 1),
         .init(minute: 12.8, line: "Algorithm", kmh: 1),
@@ -1782,8 +1784,8 @@ enum VelocityMethodData {
         .init(minute: 13.2, line: "Neural", kmh: 0),
         .init(minute: 13.2, line: "Algorithm", kmh: 0),
         .init(minute: 13.33, line: "GPS", kmh: 42),
-        .init(minute: 13.33, line: "Neural", kmh: 17),
-        .init(minute: 13.33, line: "Algorithm", kmh: 17),
+        .init(minute: 13.33, line: "Neural", kmh: 14),
+        .init(minute: 13.33, line: "Algorithm", kmh: 14),
         .init(minute: 13.47, line: "GPS", kmh: 78),
         .init(minute: 13.47, line: "Neural", kmh: 30),
         .init(minute: 13.47, line: "Algorithm", kmh: 30),
@@ -1791,8 +1793,8 @@ enum VelocityMethodData {
         .init(minute: 13.6, line: "Neural", kmh: 31),
         .init(minute: 13.6, line: "Algorithm", kmh: 31),
         .init(minute: 13.73, line: "GPS", kmh: 223),
-        .init(minute: 13.73, line: "Neural", kmh: 34),
-        .init(minute: 13.73, line: "Algorithm", kmh: 34),
+        .init(minute: 13.73, line: "Neural", kmh: 39),
+        .init(minute: 13.73, line: "Algorithm", kmh: 39),
         .init(minute: 13.87, line: "GPS", kmh: 273),
         .init(minute: 13.87, line: "Neural", kmh: 37),
         .init(minute: 13.87, line: "Algorithm", kmh: 37),
@@ -1984,35 +1986,35 @@ enum VelocityMethodData {
 
     /// Every data-dependent number the paper's text quotes (tables/numbers.tex), for the page's own text.
     enum Num {
-        static let AblBigA = "9"
-        static let AblBigC = "6"
-        static let AblBigF = "6"
-        static let AblBigG = "5"
-        static let AblCarRtA = "63"
+        static let AblBigA = "8"
+        static let AblBigC = "5"
+        static let AblBigF = "5"
+        static let AblBigG = "4"
+        static let AblCarRtA = "67"
         static let AblCarRtC = "73"
-        static let AblCarRtF = "77"
-        static let AblCarRtG = "77"
-        static let AblCarSecA = "71"
-        static let AblCarSecB = "73"
-        static let AblCarSecC = "76"
-        static let AblCarSecD = "76"
+        static let AblCarRtF = "80"
+        static let AblCarRtG = "83"
+        static let AblCarSecA = "72"
+        static let AblCarSecB = "72"
+        static let AblCarSecC = "75"
+        static let AblCarSecD = "75"
         static let AblCarSecE = "78"
         static let AblCarSecF = "85"
         static let AblCarSecG = "85"
-        static let AblFlA = "86"
+        static let AblFlA = "94"
         static let AblFlB = "99"
         static let AblGate = "+7"
-        static let AblMag = "+2"
+        static let AblMag = "+3"
         static let AblMotoSpan = "2"
         static let AblPush = "+0"
         static let AblTurn = "+0"
-        static let BothAppKm = "369"
-        static let BothGpsKm = "390"
-        static let BothShort = "5.4"
-        static let CarAppKm = "214"
-        static let CarBandEightyApp = "76"
+        static let BothAppKm = "374"
+        static let BothGpsKm = "398"
+        static let BothShort = "5.9"
+        static let CarAppKm = "212"
+        static let CarBandEightyApp = "75"
         static let CarBandEightyGps = "88"
-        static let CarBandSixtyApp = "65"
+        static let CarBandSixtyApp = "63"
         static let CarBandSixtyGps = "69"
         static let CarBandTenApp = "16"
         static let CarBandTenGps = "15"
@@ -2022,23 +2024,23 @@ enum VelocityMethodData {
         static let CarBandTwentyGps = "25"
         static let CarDirMed = "15"
         static let CarDirRec = "29"
-        static let CarDist = "+1.5"
-        static let CarDistTxt = "1.5% long"
-        static let CarDrift = "18"
+        static let CarDist = "+0.4"
+        static let CarDistTxt = "0.4% long"
+        static let CarDrift = "17"
         static let CarGpsKm = "211"
         static let CarHalf = "903"
         static let CarHours = "10.6"
         static let CarMae = "6.7"
-        static let CarMedJourneyTxt = "2.6% long"
+        static let CarMedJourneyTxt = "0.2% short"
         static let CarMidMax = "2"
-        static let CarNinety = "37"
+        static let CarNinety = "36"
         static let CarParks = "7"
         static let CarRec = "39"
         static let CarRoutes = "30"
-        static let CarRtBig = "2"
-        static let CarRtBigShort = "1"
-        static let CarRtMed = "15"
-        static let CarRtWthirty = "77"
+        static let CarRtBig = "1"
+        static let CarRtBigShort = "0"
+        static let CarRtMed = "14"
+        static let CarRtWthirty = "83"
         static let CarSize = "1.00"
         static let CarWthirty = "85"
         static let CarWtwenty = "69"
@@ -2047,6 +2049,14 @@ enum VelocityMethodData {
         static let CleanSampN = "541"
         static let CleanSampRecs = "4"
         static let CleanSampWorst = "80"
+        static let EchoBetter = "26"
+        static let EchoN = "49"
+        static let EchoNow = "+9.2"
+        static let EchoOver = "21"
+        static let EchoScaled = "+0.4"
+        static let EchoWorse = "4"
+        static let EchoWtwentyNow = "41"
+        static let EchoWtwentyScaled = "51"
         static let FifthMagD = "100"
         static let FifthMagG = "99"
         static let FifthMagTurn = "169"
@@ -2054,138 +2064,140 @@ enum VelocityMethodData {
         static let FirstMagG = "98"
         static let FlAir = "13"
         static let FlEnd = "16"
-        static let FlEndNet = "17.5"
+        static let FlEndNet = "17.6"
         static let FlEndShare = "24"
-        static let FlEndStore = "16.9"
+        static let FlEndStore = "16.8"
         static let FlGround = "9"
-        static let FlMainShare = "103.2"
+        static let FlMainShare = "103.1"
         static let FlMissPush = "1"
         static let FlMissRunway = "10"
         static let FlMisses = "11"
-        static let FlNetShare = "103.3"
+        static let FlNetShare = "103.2"
         static let FlOffset = "13"
         static let FlRouteMed = "0.8"
         static let FlSpeedDiff = "3.5"
         static let FlWithin = "4"
         static let GpsFlightKm = "74.1"
         static let HoldAirErr = "196"
-        static let HoldKm = "45.4"
+        static let HoldKm = "45.3"
         static let HoldShare = "61"
         static let Hours = "22"
-        static let Journeys = "80"
-        static let KmChecked = "390"
-        static let LongDriftEarth = "94"
-        static let LongDriftEvery = "46"
-        static let LongDriftNone = "89"
-        static let LongDriveF = "94"
-        static let LongDriveG = "94"
+        static let Journeys = "81"
+        static let KmChecked = "398"
+        static let LongDriftEarth = "93"
+        static let LongDriftEvery = "45"
+        static let LongDriftNone = "88"
+        static let LongDriveF = "93"
+        static let LongDriveG = "93"
         static let LongDriveTurn = "0"
         static let MagCars = "5"
-        static let MagMotos = "2"
-        static let MagOffD = "28"
-        static let MagOffE = "16"
-        static let MagPooledF = "92"
-        static let MagPooledG = "93"
-        static let MagRecs = "7"
-        static let MagRecsTurn = "5"
+        static let MagMotos = "3"
+        static let MagOffD = "30"
+        static let MagOffE = "18"
+        static let MagPooledF = "91"
+        static let MagPooledG = "92"
+        static let MagRecs = "8"
+        static let MagRecsTurn = "6"
         static let MagSafeClean = "51"
         static let MagSafeF = "0"
-        static let MagSafeG = "39"
+        static let MagSafeG = "56"
         static let MagSafeTurn = "27"
-        static let MagWD = "65"
+        static let MagWD = "50"
         static let MagWE = "97"
         static let MainCarMae = "6.7"
-        static let MainCarShare = "101.5"
+        static let MainCarShare = "100.4"
         static let MainMotoMae = "9.1"
-        static let MainMotoShare = "86.6"
-        static let MotoAppKm = "155"
-        static let MotoBandEightyApp = "38"
+        static let MainMotoShare = "87.1"
+        static let MotoAppKm = "162"
+        static let MotoBandEightyApp = "39"
         static let MotoBandEightyGps = "98"
-        static let MotoBandSixtyApp = "38"
+        static let MotoBandSixtyApp = "39"
         static let MotoBandSixtyGps = "66"
-        static let MotoBandTenApp = "18"
+        static let MotoBandTenApp = "19"
         static let MotoBandTenGps = "15"
-        static let MotoBandThirtyApp = "30"
+        static let MotoBandThirtyApp = "31"
         static let MotoBandThirtyGps = "35"
         static let MotoBandTwentyApp = "26"
         static let MotoBandTwentyGps = "25"
         static let MotoDirMed = "16"
-        static let MotoDirRec = "42"
-        static let MotoDist = "-13.6"
-        static let MotoDistTxt = "14% short"
+        static let MotoDirRec = "43"
+        static let MotoDist = "-13.0"
+        static let MotoDistTxt = "13% short"
         static let MotoDrift = "16"
-        static let MotoGpsKm = "179"
-        static let MotoHalf = "837"
-        static let MotoHours = "11.3"
+        static let MotoGpsKm = "187"
+        static let MotoHalf = "863"
+        static let MotoHours = "11.6"
         static let MotoMae = "9.1"
         static let MotoMagClean = "88"
         static let MotoMagD = "90"
         static let MotoMagF = "97"
-        static let MotoMagG = "94"
+        static let MotoMagG = "93"
         static let MotoMagN = "69"
         static let MotoMagTurn = "5"
-        static let MotoMedJourneyTxt = "9.0% short"
-        static let MotoMidMax = "15"
-        static let MotoNinety = "61"
-        static let MotoRec = "41"
-        static let MotoRoutes = "43"
+        static let MotoMedJourneyTxt = "6.9% short"
+        static let MotoMidMax = "16"
+        static let MotoNinety = "59"
+        static let MotoRec = "42"
+        static let MotoRoutes = "44"
         static let MotoRtBig = "3"
         static let MotoRtBigShort = "3"
         static let MotoRtMed = "11"
         static let MotoRtWthirty = "86"
-        static let MotoSize = "0.80"
-        static let MotoTwoG = "28"
+        static let MotoSize = "0.83"
+        static let MotoThreeD = "81"
+        static let MotoThreeG = "81"
+        static let MotoTwoG = "32"
         static let MotoWthirty = "74"
-        static let MotoWtwenty = "70"
+        static let MotoWtwenty = "73"
         static let NetAirErr = "38"
         static let NetAll = "7.7"
         static let NetCarMae = "6.3"
         static let NetCarShare = "100.8"
         static let NetKm = "76.4"
         static let NetMotoMae = "9.1"
-        static let NetMotoShare = "91.9"
+        static let NetMotoShare = "91.5"
         static let NetShare = "103"
         static let NetVsStore = "a little more accurate than"
         static let PlaneDirMed = "12"
-        static let PlaneDist = "+3.2"
+        static let PlaneDist = "+3.1"
         static let PlaneWthirty = "99"
-        static let RecDiff = "8"
+        static let RecDiff = "7"
         static let RecN = "12"
         static let SlowAppPct = "100"
         static let SlowGraded = "87"
-        static let SlowReplayPct = "39"
+        static let SlowReplayPct = "56"
         static let StoreAirErr = "37"
         static let StoreFourK = "7.9"
-        static let StoreKm = "73.9"
+        static let StoreKm = "73.8"
         static let StoreShare = "100"
-        static let StoreSixty = "9.5"
+        static let StoreSixty = "9.7"
         static let StoreThousand = "8.3"
         static let StoreVsNet = "still a little behind"
-        static let TaxiApp = "16"
+        static let TaxiApp = "14"
         static let TaxiGps = "18"
-        static let ThirdMagF = "79"
+        static let ThirdMagF = "80"
         static let ThirdMagG = "77"
         static let ThirdMagTurn = "7"
-        static let TurnBig = "27"
+        static let TurnBig = "26"
         static let TurnFixed = "89"
-        static let TurnMedFixed = "8.4"
-        static let TurnMedNow = "15.5"
-        static let TurnN = "71"
+        static let TurnMedFixed = "8.5"
+        static let TurnMedNow = "15.7"
+        static let TurnN = "72"
         static let TurnNow = "79"
-        static let TurnSampFifteen = "93"
+        static let TurnSampFifteen = "94"
         static let TurnSampMed = "7"
-        static let TurnSampN = "312"
-        static let TurnSampRecs = "4"
+        static let TurnSampN = "331"
+        static let TurnSampRecs = "5"
         static let TurnSampWorst = "26"
-        static let WalkAfterTxt = "6% more"
-        static let WalkApp = "5.0"
+        static let WalkAfterTxt = "13% more"
+        static let WalkApp = "5.1"
         static let WalkDirMed = "10"
-        static let WalkDist = "+3.7"
-        static let WalkDistTxt = "4% more"
-        static let WalkGps = "4.6"
+        static let WalkDist = "+9.2"
+        static let WalkDistTxt = "9% more"
+        static let WalkGps = "4.5"
         static let WalkOtherTxt = "7% less"
-        static let WalkShare = "103.7"
-        static let WalkStretches = "45"
+        static let WalkShare = "109.2"
+        static let WalkStretches = "49"
         static let WalkWthirty = "93"
         static let Walks = "7"
     }
