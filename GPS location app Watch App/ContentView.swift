@@ -78,86 +78,59 @@ struct WatchHomeView: View {
 
     private var normalHomeView: some View {
         ScrollView {
-            VStack(spacing: 20) {
-                Spacer().frame(height: 8)
-
-                // App Icon with gradient
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.blue.opacity(0.3), Color.purple.opacity(0.2)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 70, height: 70)
-                        .blur(radius: 15)
-
-                    Image(systemName: "figure.run.circle.fill")
-                        .font(.system(size: 55))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [.blue, .purple],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "location.north.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Velocity")
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                        Text("Routes with or without GPS")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .padding(.top, 8)
 
-                Text("Workout Tracker")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-
-                // Modern Start Button
-                Button(action: {
+                Button {
                     showLiveSession = true
-                }) {
-                    VStack(spacing: 6) {
-                        Image(systemName: "play.circle.fill")
-                            .font(.title2)
-                        Text("Start Tracking")
-                            .font(.caption)
-                            .fontWeight(.semibold)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "play.fill").font(.system(size: 18, weight: .bold))
+                        Text("New workout").font(.system(size: 17, weight: .bold, design: .rounded))
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.green, Color.green.opacity(0.8)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .foregroundColor(.white)
-                    .cornerRadius(20)
+                    .padding(.vertical, 14)
+                    .background(Color.green, in: Capsule())
+                    .foregroundStyle(.black)
                 }
                 .buttonStyle(.plain)
 
-                // Feature Pills
-                VStack(spacing: 8) {
-                    WatchFeaturePill(icon: "location.fill", text: "GPS Tracking", color: .blue)
-                    WatchFeaturePill(icon: "heart.fill", text: "HealthKit Sync", color: .red)
-
-                    // Connection status
-                    if connectivityManager.isReachable {
-                        HStack(spacing: 6) {
-                            Image(systemName: "iphone.radiowaves.left.and.right")
-                                .font(.caption2)
-                            Text("iPhone Connected")
-                                .font(.caption2)
-                        }
-                        .foregroundColor(.green)
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 10)
-                        .background(Color.green.opacity(0.15))
-                        .cornerRadius(12)
+                // The iPhone leads the speed in Auto while it is reachable.
+                HStack(spacing: 8) {
+                    Image(systemName: connectivityManager.isReachable ? "iphone.radiowaves.left.and.right" : "iphone.slash")
+                        .foregroundStyle(connectivityManager.isReachable ? .blue : .secondary)
+                        .frame(width: 22)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(connectivityManager.isReachable ? "iPhone connected" : "iPhone not reachable")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(connectivityManager.isReachable ? "Its speed leads in Auto" : "The watch uses its own engines")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                     }
                 }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.08)))
 
-                Spacer().frame(height: 8)
+                SpeedEngineStatusCard()
+
+                Text("Swipe for history and settings")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal)
+            .padding(.horizontal, 4)
         }
     }
 }

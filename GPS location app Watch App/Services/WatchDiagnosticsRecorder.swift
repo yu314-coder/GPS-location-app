@@ -31,6 +31,15 @@ final class WatchDiagnosticsRecorder {
         let truthLongitude: Double?
         let accelMagnitude: Double
         let rotationRate: Double
+        /// Both speed engines this second, whichever drove (build 79): the network's answer and
+        /// familiarity (1.0 or less answers), the store's answer and its ground examples, and the
+        /// 11-number vibration fingerprint both read - so a wrist recording can later be scored
+        /// engine against engine against GPS, which the watch logs could not show before.
+        var networkSpeed: Double? = nil
+        var networkFamiliarity: Double? = nil
+        var storeSpeed: Double? = nil
+        var storeGroundExamples: Int = 0
+        var features: [Double]? = nil
     }
 
     private var rows: [Row] = []
@@ -66,7 +75,10 @@ final class WatchDiagnosticsRecorder {
     func csv() -> String {
         var out = "time,source,reported_speed_ms,reported_speed_kmh,distance_m,heading_deg,"
         out += "compass_deg,offset_deg,step_cadence,quiet_s,learn_obs,"
-        out += "gps_speed_ms,gps_accuracy_m,truth_lat,truth_lon,accel_mag_ms2,rotation_rate_rads\n"
+        out += "gps_speed_ms,gps_accuracy_m,truth_lat,truth_lon,accel_mag_ms2,rotation_rate_rads,"
+        // Appended at the end so every existing column keeps its position.
+        out += "net_speed_ms,net_familiarity,store_speed_ms,store_ground_obs,"
+        out += (0..<11).map { "f\($0)" }.joined(separator: ",") + "\n"
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         for r in rows {
@@ -77,7 +89,10 @@ final class WatchDiagnosticsRecorder {
             out += Self.fmt(Double(r.learnObservations), 0) + ","
             out += Self.fmt(r.gpsSpeed) + "," + Self.fmt(r.gpsAccuracy) + ","
             out += Self.fmt(r.truthLatitude, 7) + "," + Self.fmt(r.truthLongitude, 7) + ","
-            out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + "\n"
+            out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
+            out += Self.fmt(r.networkSpeed) + "," + Self.fmt(r.networkFamiliarity, 3) + ","
+            out += Self.fmt(r.storeSpeed) + ",\(r.storeGroundExamples),"
+            out += (0..<11).map { i in Self.fmt(r.features.flatMap { $0.count == 11 ? $0[i] : nil }, 4) }.joined(separator: ",") + "\n"
         }
         return out
     }

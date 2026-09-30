@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage("mapStyle") private var mapStyle = "standard"
     @AppStorage("kalmanSensitivity") private var kalmanSensitivity = "medium"
     @AppStorage("healthKitExportType") private var healthKitExportType = "auto"
+    @AppStorage(LearnedSpeedEstimator.engineDefaultsKey) private var speedEngine = LearnedSpeedEstimator.Engine.auto.rawValue
 
     @State private var locationPermissionStatus = "Not Determined"
     @State private var healthKitPermissionStatus = "Not Determined"
@@ -14,6 +15,16 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
+                // Which engine sets the speed in Velocity Mode (build 79)
+                Section(header: Text("Speed engine"),
+                        footer: Text(SpeedEngineChoiceView.explanation(LearnedSpeedEstimator.Engine(rawValue: speedEngine) ?? .auto))) {
+                    Picker("Engine", selection: $speedEngine) {
+                        ForEach(LearnedSpeedEstimator.Engine.allCases, id: \.rawValue) { engine in
+                            Text(engine.title).tag(engine.rawValue)
+                        }
+                    }
+                }
+
                 // Permissions Section
                 Section(header: Text("Permissions")) {
                     HStack {

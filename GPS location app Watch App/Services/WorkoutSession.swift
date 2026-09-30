@@ -55,6 +55,21 @@ class WorkoutSession: NSObject, ObservableObject {
         persistForceMotionFallback = true
     }
     @Published var networkDebugMessage = "GPS active"
+    /// Both speed engines, the iPhone's relayed speed and the watch's GPS this second, and which
+    /// of them set the displayed speed - for the live screens (build 79). Refreshed once a second
+    /// while a workout runs, whether or not Velocity Mode is on.
+    struct SpeedEngineReadout: Equatable {
+        var network: Double?            // m/s; nil when the network refuses this fingerprint
+        var familiarity: Double?        // 1.0 or less: the network recognises the fingerprint
+        var store: Double?              // m/s; nil without enough evidence or a close match
+        var storeExamples = 0           // ground examples in the watch's own store
+        var iPhone: Double?             // m/s, relayed from the iPhone while fresh
+        var gps: Double?                // m/s, the watch's own GPS while fresh (reference only)
+        var driving = "—"               // GPS, iPhone, Neural, Algorithm, Steps, Held, —
+        var choice: LearnedSpeedEstimator.Engine = .auto
+        var velocityMode = false
+    }
+    @Published var engineReadout = SpeedEngineReadout()
     @Published var networkPathStatus = "Net: pending • iPhone: disconnected"
     @Published var nativePedometerStepCount: Int = 0
     @Published var nativePedometerDistanceMeters: Double = 0.0
@@ -2088,6 +2103,35 @@ class WorkoutSession: NSObject, ObservableObject {
             endPedometerFallback(reason: "motion fallback owns the gap")
         }
         checkMotionFallback()
+        refreshEngineReadout(now: now)
+    }
+
+    private func refreshEngineReadout(now: Date) {
+        let answers = learnedSpeed.bothAnswers()
+        var r = SpeedEngineReadout()
+        r.network = answers.network
+        r.familiarity = answers.familiarity
+        r.store = answers.store
+        r.storeExamples = learnedSpeed.groundObservationCount
+        if let relayed = iPhoneDRSpeed, let ts = iPhoneDRTimestamp,
+           now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE { r.iPhone = relayed }
+        if watchDiagnostics.latestGPSSpeed >= 0, now.timeIntervalSince(lastLocationTime) <= 5 {
+            r.gps = watchDiagnostics.latestGPSSpeed
+        }
+        r.choice = LearnedSpeedEstimator.chosenEngine
+        r.velocityMode = forceMotionFallback
+        if !isUsingMotionFallback {
+            r.driving = "GPS"
+        } else {
+            let tag = watchDiagnosticsSource
+            if tag.hasPrefix("NET") { r.driving = "Neural" }
+            else if tag.hasPrefix("STORE") { r.driving = "Algorithm" }
+            else if tag.hasPrefix("iPhone") { r.driving = "iPhone" }
+            else if tag.hasPrefix("PDR") { r.driving = "Steps" }
+            else if tag.hasPrefix("HOLD") || tag.hasPrefix("LEARN") { r.driving = "Held" }
+            else { r.driving = "—" }
+        }
+        if r != engineReadout { engineReadout = r }
     }
 
     private func checkMotionFallback() {
@@ -2459,26 +2503,43 @@ class WorkoutSession: NSObject, ObservableObject {
             // model, holds the GPS-measured speed, and sees far steadier motion than a wrist;
             // then the watch's own last GPS-measured speed, held; then nothing at all. Never
             // integration.
-            if let relayed = iPhoneDRSpeed, let ts = iPhoneDRTimestamp,
-               now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE {
+            //
+            // THE WATCH'S OWN ENGINES (build 79): the bundled network or the store, chosen as on the
+            // iPhone (LearnedSpeedEstimator.estimate). In Auto the iPhone still leads when its
+            // relay is fresh; with an engine pinned in Settings the watch answers for itself and
+            // the relay only covers seconds its engine cannot.
+            let relayedSpeed: Double? = {
+                guard let relayed = iPhoneDRSpeed, let ts = iPhoneDRTimestamp,
+                      now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE else { return nil }
+                return relayed
+            }()
+            let engineChoice = LearnedSpeedEstimator.chosenEngine
+            let ownAnswer = (engineChoice == .auto && relayedSpeed != nil) ? nil : learnedSpeed.estimate(airborne: false)
+            let ownUsedNetwork = learnedSpeed.lastEstimateUsedNetwork
+            if engineChoice == .auto, let relayed = relayedSpeed {
                 motionFallbackSpeed = relayed
                 accelSource = "iPhone-DR"
-            } else if let learned = learnedSpeed.estimate(airborne: false) ?? recentLearnedAnswer {
-                // ITS OWN LEARNED SPEED. Ranked below the iPhone's estimate — the phone sees
-                // steadier motion than a wrist and runs the same model against more evidence —
-                // but above a frozen hold, which cannot follow a vehicle that changes speed.
+            } else if let learned = ownAnswer ?? (relayedSpeed == nil ? recentLearnedAnswer : nil) {
+                // ITS OWN LEARNED SPEED. Ranked below the iPhone's estimate in Auto — the phone
+                // sees steadier motion than a wrist and runs the same engines against more
+                // evidence — but above a frozen hold, which cannot follow a vehicle that changes
+                // speed.
                 let corrected = learned
                 let stoppedOnGround = corrected < MAX_GROUND_STOP_SPEED
                     && corrected < VEHICLE_STOP_CONFIRM_SPEED
                     && pedestrianQuietDuration >= VEHICLE_STOP_QUIET_WINDOW
                 motionFallbackSpeed = stoppedOnGround ? 0 : corrected
-                if learnedSpeed.estimate(airborne: false) != nil {
+                if ownAnswer != nil {
                     lastLearnedAnswer = learned
                     lastLearnedAnswerTime = Date()
                 }
-                accelSource = stoppedOnGround ? "LEARN(stopped)"
-                    : (learnedSpeed.estimate(airborne: false) == nil ? "LEARN(held)"
-                       : (learnedSpeed.lastEstimateUsedWarmup ? "LEARN(warmup)" : "LEARN"))
+                let engineTag = ownUsedNetwork ? "NET" : "STORE"
+                accelSource = stoppedOnGround ? "\(engineTag)(stopped)"
+                    : (ownAnswer == nil ? "LEARN(held)" : engineTag)
+            } else if let relayed = relayedSpeed {
+                // A pinned watch engine that cannot answer this second: the iPhone covers it.
+                motionFallbackSpeed = relayed
+                accelSource = "iPhone-DR"
             } else if let held = lastMeasuredVehicleSpeedWatch {
                 // A HELD SPEED MUST STILL OBEY THE ACCELEROMETER (identical to the iPhone).
                 // Freezing it meant braking to a stop kept reporting the pre-stop speed and
@@ -2512,6 +2573,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Keep the DISPLAYED speed in sync every tick, not only when a point is appended, so
         // it matches the DR status and reflects ZUPT zeroing while standing still.
+        let engineAnswers = learnedSpeed.bothAnswers()
         currentMetrics.currentSpeed = motionFallbackSpeed
         currentMetrics.smoothedSpeed = motionFallbackSpeed
 
@@ -2531,7 +2593,12 @@ class WorkoutSession: NSObject, ObservableObject {
             truthLatitude: watchDiagnostics.latestGPSLatitude,
             truthLongitude: watchDiagnostics.latestGPSLongitude,
             accelMagnitude: lastMotionAccelMagnitude,
-            rotationRate: lastMotionRotationMagnitude))
+            rotationRate: lastMotionRotationMagnitude,
+            networkSpeed: engineAnswers.network,
+            networkFamiliarity: engineAnswers.familiarity,
+            storeSpeed: engineAnswers.store,
+            storeGroundExamples: learnedSpeed.groundObservationCount,
+            features: learnedSpeed.currentFeatures()))
 
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.

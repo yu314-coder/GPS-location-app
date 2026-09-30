@@ -54,10 +54,23 @@ final class LearnedSpeedEstimator {
         ring[ringIndex] = vertical
         ringIndex = (ringIndex + 1) % windowSize
         if ringFilled < windowSize { ringFilled += 1 }
+        samplesIngested &+= 1
     }
+
+    /// The fingerprint is asked for several times a second (the speed, both engines' readouts,
+    /// the log); it only changes when a sample arrives, so it is computed once per sample.
+    private var samplesIngested = 0
+    private var cachedFeatures: (at: Int, f: [Double])?
 
     /// Log band energies plus two time-domain terms, or nil until the window is full.
     func currentFeatures() -> [Double]? {
+        if let c = cachedFeatures, c.at == samplesIngested { return c.f }
+        guard let f = computeFeatures() else { return nil }
+        cachedFeatures = (samplesIngested, f)
+        return f
+    }
+
+    private func computeFeatures() -> [Double]? {
         guard ringFilled >= windowSize else { return nil }
         var x = [Double](repeating: 0, count: windowSize)
         for i in 0..<windowSize { x[i] = ring[(ringIndex + i) % windowSize] }
@@ -198,31 +211,53 @@ final class LearnedSpeedEstimator {
     /// applied". Those need opposite fixes and look identical from the outside.
     var calibration: (slope: Double, intercept: Double) { (calibrationSlope, calibrationIntercept) }
     var quarantinedCount: Int { quarantined.count }
-    /// Set by the last estimate() call: true when the answer came from within-session evidence
-    /// rather than the store built on previous trips. The distinction has to reach the log,
-    /// because only the second kind predicts what happens when GPS has been gone for hours.
-    private(set) var lastEstimateUsedWarmup = false
 
-    /// How stale a quarantined observation must be before the estimate may see it.
-    ///
-    /// Quarantine exists to stop the model answering from the fix it was just handed - the
-    /// window is 4 s, so an observation from the same window IS the GPS speed. Aging past that
-    /// removes the leak: at 120 s the two windows share no samples, and an answer built from
-    /// evidence two minutes old is a prediction, not an echo.
-    ///
-    /// This only ever applies when the committed store cannot answer at all. A warm model
-    /// ignores the quarantine entirely and the ground test stays honest.
-    private let WARMUP_AGE: TimeInterval = 120
-
-    private func warmupPool(airborne: Bool) -> [Observation] {
-        let cutoff = Date().addingTimeInterval(-WARMUP_AGE)
-        return quarantined.filter { $0.airborne == airborne && ($0.t ?? .distantFuture) <= cutoff }
+    // BOTH ENGINES, AS ON THE IPHONE (build 79).
+    //
+    // The iPhone answers from a small network bundled with the app until its own store holds
+    // 3,000 ground examples, and from the store after (paper, "A new phone"). The watch only had
+    // the store, with a warm-up pool of this trip's own GPS-labelled seconds standing in while it
+    // was empty - the path the iPhone retired in build 49, because it made Velocity Mode partly
+    // GPS-powered. Now the watch carries the same network (SpeedNetwork.swift, same weights) and
+    // the same rule, and the warm-up pool is gone.
+    //
+    // One difference, for the wrist: the network was trained on phones in pockets and on mounts,
+    // and a wrist moves in ways it has never seen, so it will refuse more fingerprints (farther
+    // from all its training clusters than 99.5% of them). In Auto a refused second falls to the
+    // watch's own store, which learns the wrist from the watch's GPS, instead of to nothing.
+    // The user may also pin either engine (watch Settings, "Speed engine").
+    enum Engine: String, CaseIterable {
+        case auto, network, store
+        var title: String {
+            switch self {
+            case .auto: return "Auto"
+            case .network: return "Neural"
+            case .store: return "Algorithm"
+            }
+        }
+    }
+    static let engineDefaultsKey = "watchSpeedEngine"
+    static var chosenEngine: Engine {
+        Engine(rawValue: UserDefaults.standard.string(forKey: engineDefaultsKey) ?? "") ?? .auto
+    }
+    /// The iPhone's threshold: below this many ground examples its store read less accurately
+    /// than the network on recordings neither had seen.
+    static let NETWORK_UNTIL_OBSERVATIONS = 3000
+    var groundObservationCount: Int { observations.reduce(0) { $0 + ($1.airborne ? 0 : 1) } }
+    /// Set by the last estimate(): the answer came from the bundled network, not the store.
+    private(set) var lastEstimateUsedNetwork = false
+    /// Whether Auto would ask the network first right now.
+    var networkLeadsInAuto: Bool {
+        groundObservationCount < Self.NETWORK_UNTIL_OBSERVATIONS && SpeedNetwork.bundled != nil
     }
 
-    private func poolIsUsable(_ pool: [Observation]) -> Bool {
-        guard pool.count >= MIN_OBSERVATIONS else { return false }
-        let speeds = pool.map(\.speed)
-        return (speeds.max()! - speeds.min()!) >= MIN_SPEED_SPREAD
+    /// Both engines' answers for this second, whichever one is driving: the network's speed (nil
+    /// when it refuses) and how familiar the fingerprint is (1.0 or less answers), and the
+    /// store's speed (nil when it has too little evidence or no close match). m/s.
+    func bothAnswers() -> (network: Double?, familiarity: Double?, store: Double?) {
+        guard let f = currentFeatures() else { return (nil, nil, nil) }
+        let net = SpeedNetwork.bundled?.diagnose(features: f)
+        return (net?.speed, net?.familiarity, storeEstimate(features: f, airborne: false))
     }
 
     /// Observations recorded while Velocity Mode was forced. Held apart from the searchable
@@ -417,28 +452,27 @@ final class LearnedSpeedEstimator {
     /// Speed in m/s from the closest signatures seen before, or nil when there is not enough
     /// evidence. Distance-weighted so a near-exact match dominates a merely similar one.
     func estimate(airborne: Bool = false) -> Double? {
-        lastEstimateUsedWarmup = false
-        guard let f = currentFeatures(), featureMean.count == f.count else { return nil }
-
-        // COLD START MUST NOT MEAN NO ROUTE.
-        //
-        // A 16 km drive recorded ZERO metres: every tick fell through to HOLD, because the
-        // store had just been reset and everything this session taught was quarantined until
-        // the workout ended. The quarantine reasoning was right and its consequence was not -
-        // an empty model made the whole workout unrecordable, which is a worse failure than
-        // the leak it was guarding against.
-        //
-        // So the store answers whenever it can, exactly as before. Only when it cannot does
-        // the aged quarantine stand in, and the log says which happened.
-        let pool: [Observation]
-        if isUsable(airborne: airborne) {
-            pool = observations.filter { $0.airborne == airborne }
-        } else {
-            let warm = warmupPool(airborne: airborne)
-            guard poolIsUsable(warm) else { return nil }
-            pool = warm
-            lastEstimateUsedWarmup = true
+        lastEstimateUsedNetwork = false
+        guard let f = currentFeatures() else { return nil }
+        // On the ground: the network first while the store is young (or when pinned), the store
+        // otherwise, and the store again when the network refuses a wrist it does not recognise.
+        // The network never answers in the air - nothing in its training flew.
+        if !airborne {
+            let choice = Self.chosenEngine
+            if choice == .network || (choice == .auto && networkLeadsInAuto),
+               let net = SpeedNetwork.bundled?.speed(features: f) {
+                lastEstimateUsedNetwork = true
+                return net
+            }
+            if choice == .network { return nil }
         }
+        return storeEstimate(features: f, airborne: airborne)
+    }
+
+    /// The store alone: the closest stored signatures, distance-weighted, or nil. See estimate().
+    private func storeEstimate(features f: [Double], airborne: Bool) -> Double? {
+        guard featureMean.count == f.count, isUsable(airborne: airborne) else { return nil }
+        let pool = observations.filter { $0.airborne == airborne }
 
         var best = [(d: Double, s: Double)]()
         best.reserveCapacity(K + 1)
@@ -671,6 +705,14 @@ final class LearnedSpeedEstimator {
         // Re-measure the compression against everything restored, so the first drive after a
         // launch is corrected too rather than waiting for 200 fresh observations.
         recalibrate()
+    }
+
+    /// Ground examples in the saved store, read without loading it into an estimator - for the
+    /// home screen, before any workout has started. Call off the main thread.
+    static func savedGroundExampleCount() -> Int {
+        guard let data = try? Data(contentsOf: storeURL),
+              let saved = try? JSONDecoder().decode([Observation].self, from: data) else { return 0 }
+        return saved.reduce(0) { $0 + ($1.airborne ? 0 : 1) }
     }
 
     func save() {
