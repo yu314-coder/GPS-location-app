@@ -64,170 +64,70 @@ struct SpeedFormatter {
     }
 }
 
-/// Both engines side by side, live, with the iPhone and GPS for reference.
-struct SpeedEnginesPage: View {
+/// Both engines in one compact card for the workout list: what set the speed, and what each
+/// engine, the iPhone and GPS read this second.
+struct SpeedEnginesCard: View {
     let readout: WorkoutSession.SpeedEngineReadout
     @AppStorage("speedUnit") private var speedUnit = "km/h"
-    @State private var showChoice = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Speed engines")
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    Spacer()
-                    if readout.developer {
-                        Button { showChoice = true } label: {
-                            Text(readout.choice.title)
-                                .font(.system(size: 12, weight: .semibold))
-                                .padding(.horizontal, 8).padding(.vertical, 3)
-                                .background(Color.white.opacity(0.14), in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Speed engine: \(readout.choice.title). Change")
-                    }
-                }
-
-                EngineRow(name: "Neural", symbol: "brain", tint: .purple,
-                          value: fmt.value(readout.network), unit: speedUnit,
-                          detail: networkDetail, isDriving: readout.driving == "Neural")
-                EngineRow(name: "Algorithm", symbol: "square.stack.3d.up.fill", tint: .orange,
-                          value: fmt.value(readout.store), unit: speedUnit,
-                          detail: storeDetail, isDriving: readout.driving == "Algorithm")
-                if readout.choice == .auto {
-                    ExamplesProgress(count: readout.storeExamples)
-                }
-
-                Divider().padding(.vertical, 2)
-                ReferenceRow(label: "iPhone", symbol: "iphone", value: readout.iPhone.map { fmt.value($0) },
-                             unit: speedUnit, isDriving: readout.driving == "iPhone")
-                ReferenceRow(label: "GPS", symbol: "location.fill", value: readout.gps.map { fmt.value($0) },
-                             unit: speedUnit, isDriving: readout.driving == "GPS")
-                if !readout.velocityMode && readout.driving == "GPS" {
-                    Text("Both engines read along with GPS. Turn on Velocity Mode to let them set the speed.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+        let fmt = SpeedFormatter(unit: speedUnit)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("SPEED FROM")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                SpeedSourceBadge(driving: readout.driving)
             }
-            .padding(.leading, 4)
-            .padding(.trailing, 10)
+            EngineLine(name: "Neural", symbol: "brain", tint: .purple,
+                       value: fmt.value(readout.network), unit: speedUnit,
+                       note: readout.familiarity.map { $0 <= 1 ? "" : "unfamiliar" } ?? "",
+                       isDriving: readout.driving == "Neural")
+            EngineLine(name: "Algorithm", symbol: "square.stack.3d.up.fill", tint: .orange,
+                       value: fmt.value(readout.store), unit: speedUnit,
+                       note: "\(readout.storeExamples.formatted()) ex.",
+                       isDriving: readout.driving == "Algorithm")
+            EngineLine(name: "iPhone", symbol: "iphone", tint: .blue,
+                       value: fmt.value(readout.iPhone), unit: speedUnit, note: "",
+                       isDriving: readout.driving == "iPhone")
+            EngineLine(name: "GPS", symbol: "location.fill", tint: .green,
+                       value: fmt.value(readout.gps), unit: speedUnit, note: "",
+                       isDriving: readout.driving == "GPS")
         }
-        .sheet(isPresented: $showChoice) { SpeedEngineChoiceView() }
-    }
-
-    private var fmt: SpeedFormatter { SpeedFormatter(unit: speedUnit) }
-
-    private var networkDetail: String {
-        guard let f = readout.familiarity else { return "Needs 5 s of motion" }
-        return f <= 1 ? "Recognises this motion" : "Unfamiliar motion, not answering"
-    }
-
-    /// The iPhone store's own status for this second, in words.
-    private var storeDetail: String {
-        switch readout.storeStatus {
-        case "answered": return "\(readout.storeExamples.formatted()) of your examples"
-        case "too few examples": return "Learning: \(readout.storeExamples.formatted()) examples"
-        case "unlearned regime": return "A kind of ride it hasn't learned"
-        case "no close match": return "No close example"
-        case "locally unreliable": return "Unsure at this speed"
-        default: return "Needs 5 s of motion"
-        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 12).stroke(Color.purple.opacity(0.5), lineWidth: 1))
+        .accessibilityElement(children: .contain)
     }
 }
 
-private struct EngineRow: View {
+private struct EngineLine: View {
     let name: String
     let symbol: String
     let tint: Color
     let value: String
     let unit: String
-    let detail: String
+    let note: String
     let isDriving: Bool
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(spacing: 5) {
             Image(systemName: symbol)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text(name).font(.system(size: 13, weight: .semibold))
-                    if isDriving {
-                        Text("IN USE")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.black)
-                            .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(tint, in: Capsule())
-                    }
-                }
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                .font(.system(size: 11))
+                .foregroundColor(tint)
+                .frame(width: 16)
+            Text(name)
+                .font(.system(size: 12, weight: isDriving ? .bold : .regular))
+            if !note.isEmpty {
+                Text(note).font(.system(size: 9)).foregroundColor(.secondary)
             }
-            Spacer(minLength: 4)
-            VStack(alignment: .trailing, spacing: 0) {
-                Text(value)
-                    .font(.system(size: 22, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                Text(unit).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-        }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 12)
-            .fill(isDriving ? tint.opacity(0.22) : Color.white.opacity(0.08)))
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct ReferenceRow: View {
-    let label: String
-    let symbol: String
-    let value: String?
-    let unit: String
-    let isDriving: Bool
-
-    var body: some View {
-        HStack {
-            Label(label, systemImage: symbol)
-                .font(.system(size: 12))
-                .foregroundStyle(isDriving ? .primary : .secondary)
-            Spacer()
-            Text(value.map { "\($0) \(unit)" } ?? "not available")
-                .font(.system(size: 12, weight: isDriving ? .semibold : .regular))
+            Spacer(minLength: 2)
+            Text(value == "—" ? "—" : "\(value) \(unit)")
+                .font(.system(size: 13, weight: isDriving ? .bold : .medium, design: .rounded))
                 .monospacedDigit()
-                .foregroundStyle(value == nil ? .tertiary : .primary)
+                .foregroundColor(isDriving ? tint : .primary)
         }
         .accessibilityElement(children: .combine)
-    }
-}
-
-/// How far the watch's own store is from taking over from the network in Auto.
-struct ExamplesProgress: View {
-    let count: Int
-
-    var body: some View {
-        let goal = LearnedSpeedEstimator.NETWORK_UNTIL_OBSERVATIONS
-        VStack(alignment: .leading, spacing: 3) {
-            // Drawn rather than a ProgressView: its track is the tint dimmed, which at zero reads as
-            // a full bar.
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.15))
-                    Capsule().fill(Color.orange)
-                        .frame(width: geo.size.width * CGFloat(min(count, goal)) / CGFloat(goal))
-                }
-            }
-            .frame(height: 5)
-            .accessibilityLabel("\(count) of \(goal) examples")
-            Text(count >= goal
-                 ? "Auto uses the algorithm: \(count.formatted()) examples learned"
-                 : "Auto uses Neural until the algorithm has \(goal.formatted()) examples (\(count.formatted()) now)")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-        }
     }
 }
 

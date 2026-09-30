@@ -1,36 +1,30 @@
 import SwiftUI
-import MapKit
 import CoreLocation
 import HealthKit
 
-/// The workout on the wrist (redesigned in build 79). Before a workout: one screen to pick the
-/// activity, Velocity Mode and the speed engine, and start. During one, swipe up and down through
-/// pages: the numbers that matter, both speed engines live, the map, the controls, and the full
-/// details kept for testing.
 struct LiveSessionView: View {
     @StateObject private var workoutSession = WorkoutSession()
     @Environment(\.dismiss) private var dismiss
 
     @State private var showStopConfirmation = false
     @State private var showWorkoutTypeSelector = false
-    @State private var showEngineChoice = false
     @State private var selectedWorkoutType: HKWorkoutActivityType = .walking
-    @State private var livePage = 0
     @AppStorage("velocityModeEnabled") private var velocityModeBeforeStart = false
-    // Testing controls (engine choice, network refresh, GPS and debug readouts) show only with the
-    // developer options on - see the watch's Settings, five taps on the version.
+    // Refresh Net shows only with the developer options on (five taps on the version in Settings).
     @AppStorage(WatchSpeedEngine.developerKey) private var developerUnlocked = false
-    @AppStorage("speedUnit") private var speedUnit = "km/h"
-    @AppStorage("distanceUnit") private var distanceUnit = "km"
-
-    // Updated once a second: the screen never needs more, and the wrist's battery does.
-    @State private var displayMetrics = FlightMetrics()
-    @State private var elapsedTime: TimeInterval = 0
-    @State private var timeSinceLastGPS: TimeInterval = 0
     @State private var pausedTotal: TimeInterval = 0
     @State private var pausedSince: Date?
 
+    // Performance optimization: Throttled UI updates
+    @State private var displayMetrics = FlightMetrics()
+    @State private var elapsedTime: TimeInterval = 0
+    @State private var timeSinceLastGPS: TimeInterval = 0
+
+    // Timer for smooth UI updates (updates every 1 second instead of every GPS point)
     let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+
+    // High-precision timer for workout time display (0.01s updates)
+    let precisionTimer = Timer.publish(every: 0.01, on: .main, in: .common).autoconnect()
 
     // Available workout types
     let workoutTypes: [(HKWorkoutActivityType, String, String)] = [
@@ -45,20 +39,21 @@ struct LiveSessionView: View {
     var body: some View {
         Group {
             if workoutSession.isActive {
-                livePages
+                activeList
             } else {
                 readyView
             }
         }
         // Opaque: the sheet is otherwise translucent, and the home screen's green button glowed
-        // through behind every page.
+        // through behind the list.
         .background(Color.black.ignoresSafeArea())
+        .navigationTitle("Workout")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showWorkoutTypeSelector) {
             WatchWorkoutTypeSelectorView(selectedType: $selectedWorkoutType)
         }
-        .sheet(isPresented: $showEngineChoice) { SpeedEngineChoiceView() }
-        .confirmationDialog("End workout?", isPresented: $showStopConfirmation) {
-            Button("End & Save", role: .destructive) {
+        .confirmationDialog("Stop Tracking", isPresented: $showStopConfirmation) {
+            Button("Stop & Save", role: .destructive) {
                 workoutSession.stopWorkout { success in
                     DispatchQueue.main.async {
                         if success {
@@ -70,9 +65,9 @@ struct LiveSessionView: View {
                     }
                 }
             }
-            Button("Keep going", role: .cancel) {}
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The route and the logs are saved.")
+            Text("Save this workout?")
         }
         .onAppear {
             print("⌚ LiveSessionView appeared")
@@ -101,37 +96,283 @@ struct LiveSessionView: View {
                 }
             }
         }
-        .onReceive(timer) { now in
-            guard workoutSession.isActive else { return }
-            // CRITICAL: also drive the GPS-gap fallbacks from THIS timer. On watchOS the
-            // always-on/throttled state can starve the session's own keep-alive RunLoop timer
-            // while this view timer keeps firing — that starvation is why the accel/velocity
-            // dead reckoning never engaged (stuck on "GPS OK" while the counter climbed). The
-            // tick is debounced so it runs at most once per second no matter how many timers
-            // call it.
-            workoutSession.runGpsGapFallbacksTick(source: "view")
-            displayMetrics = workoutSession.currentMetrics
+        .onReceive(timer) { _ in
+            // Update UI metrics only once per second for smooth performance
+            // This prevents the UI from updating on every GPS point (which can be multiple times per second)
+            if workoutSession.isActive {
+                // CRITICAL: also drive the GPS-gap fallbacks from THIS timer. On watchOS
+                // the always-on/throttled state can starve the session's own keep-alive
+                // RunLoop timer while this view timer keeps firing — that starvation is
+                // why the accel/velocity dead reckoning never engaged (stuck on "GPS OK"
+                // while the counter climbed). The tick is debounced so it runs at most
+                // once per second no matter how many timers call it.
+                workoutSession.runGpsGapFallbacksTick(source: "view")
+                displayMetrics = workoutSession.currentMetrics
+                // CRITICAL: Calculate time since last GPS update to detect when GPS breaks
+                timeSinceLastGPS = Date().timeIntervalSince(workoutSession.lastLocationTime)
+                if timeSinceLastGPS > 5 {
+                    let source: String
+                    if workoutSession.isUsingIPhoneGPSFallback {
+                        source = "iPhone fallback"
+                    } else if workoutSession.networkPathStatus.contains("fallback:pending") {
+                        source = "iPhone fallback request"
+                    } else {
+                        source = "watch GPS"
+                    }
+                    workoutSession.networkDebugMessage = "Waiting for fresh fix from \(source): \(Int(timeSinceLastGPS))s"
+                }
+            }
+        }
+        .onReceive(precisionTimer) { _ in
+            // Update elapsed time every 0.01s for high-precision timer display
+            // IMPORTANT: Only update when active AND not paused
             // The clock stops while paused and carries on from there, rather than jumping by the
             // length of the pause when the workout resumes.
+            guard workoutSession.isActive else { return }
+            let now = Date()
             if workoutSession.isPaused {
                 if pausedSince == nil { pausedSince = now }
             } else {
                 if let since = pausedSince { pausedTotal += now.timeIntervalSince(since); pausedSince = nil }
                 elapsedTime = max(0, now.timeIntervalSince(workoutSession.flight.startDate) - pausedTotal)
             }
-            // CRITICAL: Calculate time since last GPS update to detect when GPS breaks
-            timeSinceLastGPS = now.timeIntervalSince(workoutSession.lastLocationTime)
-            if timeSinceLastGPS > 5 {
-                let source: String
-                if workoutSession.isUsingIPhoneGPSFallback {
-                    source = "iPhone fallback"
-                } else if workoutSession.networkPathStatus.contains("fallback:pending") {
-                    source = "iPhone fallback request"
-                } else {
-                    source = "watch GPS"
+            // When paused, elapsedTime stays frozen at the value it had when pause was pressed
+        }
+    }
+
+    /// The workout as one list (restored in build 82 at the owner's request: everything is one
+    /// scroll away, which the paged design of builds 79-81 was not). Only the speed-engine card is
+    /// new.
+    private var activeList: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                // Status Header
+                if workoutSession.isActive {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(workoutSession.isPaused ? Color.orange : Color.red)
+                            .frame(width: 6, height: 6)
+                        Text(workoutSession.isPaused ? "PAUSED" : "LIVE")
+                            .font(.caption2)
+                            .foregroundColor(workoutSession.isPaused ? .orange : .red)
+                    }
                 }
-                workoutSession.networkDebugMessage = "Waiting for fresh fix from \(source): \(Int(timeSinceLastGPS))s"
+
+                // Workout Type Display
+                if workoutSession.isActive {
+                    HStack {
+                        Image(systemName: getWorkoutIcon(selectedWorkoutType))
+                            .font(.caption)
+                        Text(getWorkoutName(selectedWorkoutType))
+                            .font(.caption)
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .background(Color.gray.opacity(0.2))
+                    .cornerRadius(8)
+                }
+
+                // Metrics (using throttled display metrics for smooth UI)
+                if workoutSession.isActive {
+                    // High-precision timer display (0.01s precision)
+                    Text(formatPreciseTime(elapsedTime))
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundColor(.green)
+                        .padding(.vertical, 8)
+
+                    MetricsView(
+                        metrics: displayMetrics,
+                        nativeStepDistanceMeters: workoutSession.nativePedometerDistanceMeters
+                    )
+                        .padding(.vertical, 4)
+
+                    // Both speed engines, the iPhone and GPS this second, and which set the speed.
+                    SpeedEnginesCard(readout: workoutSession.engineReadout)
+
+                    // GPS Tracking Status - Critical for monitoring GPS health
+                    GPSTrackingStatusView(
+                        signalQuality: workoutSession.locationManager.gpsSignalQuality,
+                        horizontalAccuracy: workoutSession.locationManager.currentLocation?.horizontalAccuracy,
+                        timeSinceLastGPS: timeSinceLastGPS,
+                        locationCount: workoutSession.flight.locations.count,
+                        isTracking: workoutSession.locationManager.isTracking,
+                        isUsingIPhoneFallback: workoutSession.isUsingIPhoneGPSFallback,
+                        fallbackStatus: workoutSession.fallbackDebugStatus
+                    )
+
+                    Text(workoutSession.networkDebugMessage)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
+
+                    Text(workoutSession.networkPathStatus)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+
+                    Text(
+                        "Native steps: \(workoutSession.nativePedometerStepCount) • native step distance: \(String(format: "%.2f", workoutSession.nativePedometerDistanceMeters / 1000.0))km"
+                    )
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 8)
+
+                    Text(
+                        "Pedometer freq: \(String(format: "%.2f", workoutSession.nativePedometerCallbackHz))Hz • native age: \(String(format: "%.1f", workoutSession.nativePedometerCallbackAgeSeconds))s • query age: \(String(format: "%.1f", workoutSession.nativePedometerQueryAgeSeconds))s"
+                    )
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 8)
+                }
+
+                // Control Buttons
+                if workoutSession.isActive {
+                    VStack(spacing: 8) {
+                        // Pause/Resume button
+                        if workoutSession.isPaused {
+                            Button(action: {
+                                print("⌚ 🔘 Resume button tapped by user")
+                                workoutSession.resumeWorkout()
+                            }) {
+                                HStack {
+                                    Image(systemName: "play.fill")
+                                        .font(.caption)
+                                    Text("Resume")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color.green, Color.green.opacity(0.8)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .foregroundColor(.white)
+                                .cornerRadius(20)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Button(action: {
+                                print("⌚ 🔘 Pause button tapped by user")
+                                workoutSession.pauseWorkout()
+                            }) {
+                                HStack {
+                                    Image(systemName: "pause.fill")
+                                        .font(.caption)
+                                    Text("Pause")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color.orange, Color.orange.opacity(0.8)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .foregroundColor(.white)
+                                .cornerRadius(20)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if developerUnlocked {
+                        // Manual cellular/WiFi refresh button (useful in tunnels / poor GPS areas)
+                        Button(action: {
+                            print("⌚ 🔘 Refresh Net button tapped by user")
+                            workoutSession.refreshCellularFallback()
+                        }) {
+                            HStack {
+                                Image(systemName: "antenna.radiowaves.left.and.right")
+                                    .font(.caption)
+                                Text("Refresh Net")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color.blue, Color.blue.opacity(0.8)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .foregroundColor(.white)
+                            .cornerRadius(20)
+                        }
+                        .buttonStyle(.plain)
+                        }
+
+                        // Force Velocity toggle: when ON, the watch ignores GPS and tracks
+                        // distance/route purely from its own accelerometer + velocity dead
+                        // reckoning (useful in known-bad-GPS areas, or to force the estimate).
+                        // Toggling OFF hands back to normal GPS on the next real fix.
+                        Button(action: {
+                            workoutSession.forceMotionFallback.toggle()
+                            print("⌚ 🔘 Force Velocity toggled -> \(workoutSession.forceMotionFallback ? "ON" : "OFF")")
+                        }) {
+                            HStack {
+                                Image(systemName: workoutSession.forceMotionFallback ? "speedometer" : "location.fill")
+                                    .font(.caption)
+                                Text(workoutSession.forceMotionFallback ? "Velocity: ON" : "Force Velocity")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                LinearGradient(
+                                    colors: workoutSession.forceMotionFallback
+                                        ? [Color.purple, Color.purple.opacity(0.8)]
+                                        : [Color.gray.opacity(0.6), Color.gray.opacity(0.4)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .foregroundColor(.white)
+                            .cornerRadius(20)
+                        }
+                        .buttonStyle(.plain)
+
+                        // Stop button
+                        Button(action: {
+                            showStopConfirmation = true
+                        }) {
+                            HStack {
+                                Image(systemName: "stop.fill")
+                                    .font(.caption)
+                                Text("Stop")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color.red, Color.red.opacity(0.8)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .foregroundColor(.white)
+                            .cornerRadius(20)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal)
+                }
             }
+            .padding(.vertical)
         }
     }
 
@@ -189,173 +430,6 @@ struct LiveSessionView: View {
             .padding(.horizontal, 2)
         }
         .navigationTitle("Workout")
-    }
-
-    // MARK: - During a workout
-
-    private var livePages: some View {
-        TabView(selection: $livePage) {
-            nowPage.tag(0)
-            SpeedEnginesPage(readout: workoutSession.engineReadout).tag(1)
-            mapPage.tag(2)
-            controlsPage.tag(3)
-            detailsPage.tag(4)
-        }
-        .tabViewStyle(.verticalPage)
-        .containerBackground(Color.black, for: .tabView)
-    }
-
-    private var speedFormatter: SpeedFormatter { SpeedFormatter(unit: speedUnit) }
-
-    private var nowPage: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(workoutSession.isPaused ? Color.orange : Color.red)
-                    .frame(width: 7, height: 7)
-                Image(systemName: getWorkoutIcon(selectedWorkoutType))
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(formatElapsed(elapsedTime))
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(workoutSession.isPaused ? .orange : .yellow)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(workoutSession.isPaused ? "Paused, \(formatElapsed(elapsedTime))" : "Elapsed \(formatElapsed(elapsedTime))")
-
-            Spacer(minLength: 0)
-
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(speedFormatter.value(displayMetrics.currentSpeed))
-                    .font(.system(size: 58, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.6)
-                    .lineLimit(1)
-                Text(speedUnit)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
-            SpeedSourceBadge(driving: workoutSession.engineReadout.driving)
-
-            Spacer(minLength: 0)
-
-            HStack(alignment: .bottom) {
-                LiveFigure(value: distanceText, unit: distanceUnit == "mi" ? "mi" : "km",
-                           label: "Distance", tint: .green)
-                Spacer()
-                if let hr = displayMetrics.currentHeartRate {
-                    LiveFigure(value: String(format: "%.0f", hr), unit: "bpm", label: "Heart", tint: .red)
-                } else {
-                    LiveFigure(value: speedFormatter.value(displayMetrics.averageSpeed), unit: speedUnit,
-                               label: "Average", tint: .cyan)
-                }
-            }
-        }
-        .padding(.leading, 4)
-        .padding(.trailing, 10)
-    }
-
-    private var distanceText: String {
-        let km = displayMetrics.distanceInKilometers
-        return String(format: "%.2f", distanceUnit == "mi" ? km * 0.621_371 : km)
-    }
-
-    private var mapPage: some View {
-        LiveRouteMap(locations: workoutSession.flight.locations,
-                     gpsLocation: workoutSession.locationManager.currentLocation)
-            .ignoresSafeArea()
-    }
-
-    private var controlsPage: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                    ControlTile(title: workoutSession.isPaused ? "Resume" : "Pause",
-                                symbol: workoutSession.isPaused ? "play.fill" : "pause.fill",
-                                tint: workoutSession.isPaused ? .green : .yellow) {
-                        if workoutSession.isPaused {
-                            print("⌚ 🔘 Resume button tapped by user")
-                            workoutSession.resumeWorkout()
-                        } else {
-                            print("⌚ 🔘 Pause button tapped by user")
-                            workoutSession.pauseWorkout()
-                        }
-                    }
-                    // Velocity Mode: when ON the watch ignores GPS and tracks distance and route from
-                    // its motion alone. Turning it OFF hands back to GPS on the next real fix.
-                    ControlTile(title: workoutSession.forceMotionFallback ? "Velocity on" : "Velocity off",
-                                symbol: "speedometer",
-                                tint: workoutSession.forceMotionFallback ? .purple : .gray) {
-                        workoutSession.forceMotionFallback.toggle()
-                        print("⌚ 🔘 Force Velocity toggled -> \(workoutSession.forceMotionFallback ? "ON" : "OFF")")
-                    }
-                    if developerUnlocked {
-                        ControlTile(title: workoutSession.engineReadout.choice.title, symbol: "brain",
-                                    tint: .purple, caption: "Speed engine") { showEngineChoice = true }
-                        // Manual cellular/WiFi refresh (useful in tunnels / poor GPS areas).
-                        ControlTile(title: "Refresh net", symbol: "antenna.radiowaves.left.and.right",
-                                    tint: .blue) {
-                            print("⌚ 🔘 Refresh Net button tapped by user")
-                            workoutSession.refreshCellularFallback()
-                        }
-                    }
-                }
-                Button(role: .destructive) { showStopConfirmation = true } label: {
-                    Label("End", systemImage: "xmark")
-                        .font(.system(size: 15, weight: .bold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(Color.red.opacity(0.25), in: Capsule())
-                        .foregroundStyle(.red)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 2)
-        }
-    }
-
-    private var detailsPage: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                MetricsView(
-                    metrics: displayMetrics,
-                    nativeStepDistanceMeters: workoutSession.nativePedometerDistanceMeters
-                )
-
-                if developerUnlocked {
-                // GPS Tracking Status - Critical for monitoring GPS health
-                GPSTrackingStatusView(
-                    signalQuality: workoutSession.locationManager.gpsSignalQuality,
-                    horizontalAccuracy: workoutSession.locationManager.currentLocation?.horizontalAccuracy,
-                    timeSinceLastGPS: timeSinceLastGPS,
-                    locationCount: workoutSession.flight.locations.count,
-                    isTracking: workoutSession.locationManager.isTracking,
-                    isUsingIPhoneFallback: workoutSession.isUsingIPhoneGPSFallback,
-                    fallbackStatus: workoutSession.fallbackDebugStatus
-                )
-
-                Group {
-                    Text(workoutSession.networkDebugMessage)
-                    Text(workoutSession.networkPathStatus)
-                    Text("Native steps: \(workoutSession.nativePedometerStepCount) • native step distance: \(String(format: "%.2f", workoutSession.nativePedometerDistanceMeters / 1000.0))km")
-                    Text("Pedometer freq: \(String(format: "%.2f", workoutSession.nativePedometerCallbackHz))Hz • native age: \(String(format: "%.1f", workoutSession.nativePedometerCallbackAgeSeconds))s • query age: \(String(format: "%.1f", workoutSession.nativePedometerQueryAgeSeconds))s")
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                }
-            }
-            .padding(.horizontal, 2)
-        }
-    }
-
-    private func formatElapsed(_ interval: TimeInterval) -> String {
-        let s = Int(interval)
-        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
-                         : String(format: "%02d:%02d", s / 60, s % 60)
     }
 
     private func startWorkoutAsync() async {
@@ -426,6 +500,18 @@ struct LiveSessionView: View {
         workoutTypes.first(where: { $0.0 == type })?.2 ?? "figure.mixed.cardio"
     }
 
+    private func formatPreciseTime(_ interval: TimeInterval) -> String {
+        let hours = Int(interval) / 3600
+        let minutes = (Int(interval) % 3600) / 60
+        let seconds = Int(interval) % 60
+        let centiseconds = Int((interval.truncatingRemainder(dividingBy: 1.0)) * 100)
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds)
+        } else {
+            return String(format: "%02d:%02d.%02d", minutes, seconds, centiseconds)
+        }
+    }
 }
 
 // MARK: - Watch Workout Type Selector
@@ -755,94 +841,5 @@ struct GPSTrackingStatusView: View {
 struct LiveSessionView_Previews: PreviewProvider {
     static var previews: some View {
         LiveSessionView()
-    }
-}
-
-// MARK: - Live page pieces
-
-/// One figure under the big speed: value, unit and a small label.
-private struct LiveFigure: View {
-    let value: String
-    let unit: String
-    let label: String
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(label.uppercased())
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(tint)
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(value)
-                    .font(.system(size: 22, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                Text(unit).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-/// A square control on the controls page.
-private struct ControlTile: View {
-    let title: String
-    let symbol: String
-    let tint: Color
-    var caption: String? = nil
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: symbol)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(tint)
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                if let caption {
-                    Text(caption)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, minHeight: 62)
-            .background(RoundedRectangle(cornerRadius: 14).fill(tint.opacity(0.18)))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// The route so far and where it ends, following the newest point. It takes no touches: on a
-/// page that is swiped through, a map that pans swallows the swipe and traps the user on it.
-private struct LiveRouteMap: View {
-    let locations: [FlightLocation]
-    let gpsLocation: CLLocation?
-    @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
-
-    var body: some View {
-        let route = locations.suffix(600).map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-        let here = route.last ?? gpsLocation?.coordinate
-        Map(position: $position, interactionModes: []) {
-            if route.count > 1 {
-                MapPolyline(coordinates: route).stroke(.green, lineWidth: 4)
-            }
-            if let here {
-                Annotation("", coordinate: here) {
-                    Circle().fill(.blue).frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(.white, lineWidth: 2))
-                }
-            }
-        }
-        .onChange(of: here?.latitude) { _, _ in
-            guard let here else { return }
-            withAnimation { position = .camera(MapCamera(centerCoordinate: here, distance: 900)) }
-        }
-        .onAppear {
-            if let here { position = .camera(MapCamera(centerCoordinate: here, distance: 900)) }
-        }
-        .accessibilityLabel("Map of the route so far")
     }
 }
