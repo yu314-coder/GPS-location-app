@@ -13,83 +13,111 @@ struct HealthKitSimulationTestView: View {
     private let simulationWorkoutType: HKWorkoutActivityType = .running
     private let simulationPointCount: Int = 2 * 60 * 60
 
+    /// A developer tool (shown only with developer options on): saves a synthetic long workout to
+    /// check what HealthKit keeps of it. Laid out for the watch in build 83 - one card saying what
+    /// is saved, one prominent action, access asked for only while it is missing, and the log in
+    /// its own card - instead of a stack of full-width buttons.
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("HealthKit Test")
-                    .font(.headline)
-
-                Text("2h Taipei -> Taichung @ 120 km/h (Running)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                Text("Path simulation: 7200 moving coordinates")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(healthKitManager.isAuthorized ? Color.green : Color.orange)
-                        .frame(width: 7, height: 7)
-                    Text(healthKitManager.isAuthorized ? "HealthKit authorized" : "HealthKit not authorized")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "heart.text.square.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.pink)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("HealthKit test")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("Developer")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .padding(.top, 2)
 
-                Button {
-                    requestAuthorization()
-                } label: {
-                    Text("Request HealthKit")
-                        .frame(maxWidth: .infinity)
+                Label(healthKitManager.isAuthorized ? "Health access allowed" : "Health access not allowed",
+                      systemImage: healthKitManager.isAuthorized ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(healthKitManager.isAuthorized ? .green : .orange)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("SAVES ONE WORKOUT")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    TestFactRow(symbol: "map.fill", text: "Taipei → Taichung")
+                    TestFactRow(symbol: "clock.fill",
+                                text: "\(Int(simulationDurationSeconds / 3600)) h at \(Int(simulationSpeedKmh)) km/h")
+                    TestFactRow(symbol: "figure.run", text: "Running")
+                    TestFactRow(symbol: "point.topleft.down.to.point.bottomright.curvepath.fill",
+                                text: "\(simulationPointCount.formatted()) route points")
                 }
-                .buttonStyle(.bordered)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.08)))
 
                 Button {
                     runSimulationSave()
                 } label: {
-                    if isRunningSimulation {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Text("Run 2h Save Test")
-                            .frame(maxWidth: .infinity)
+                    Group {
+                        if isRunningSimulation {
+                            ProgressView()
+                        } else {
+                            Label("Save test workout", systemImage: "square.and.arrow.down.fill")
+                        }
                     }
+                    .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(.pink)
                 .disabled(isRunningSimulation)
 
-                Button {
-                    deleteLastSimulatedWorkout()
-                } label: {
-                    Text("Delete Last Simulated Workout")
-                        .frame(maxWidth: .infinity)
+                if lastSimulatedWorkoutUUID != nil {
+                    Button(role: .destructive) {
+                        deleteLastSimulatedWorkout()
+                    } label: {
+                        Label("Delete test workout", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isRunningSimulation)
                 }
-                .buttonStyle(.bordered)
-                .disabled(lastSimulatedWorkoutUUID == nil || isRunningSimulation)
 
-                Button {
-                    logs.removeAll()
-                    appendLog("Cleared logs")
-                } label: {
-                    Text("Clear Logs")
-                        .frame(maxWidth: .infinity)
+                if !healthKitManager.isAuthorized {
+                    Button {
+                        requestAuthorization()
+                    } label: {
+                        Label("Allow Health access", systemImage: "hand.raised.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
 
-                Divider().padding(.vertical, 4)
-
-                ForEach(Array(logs.enumerated()), id: \.offset) { _, log in
-                    Text(log)
-                        .font(.system(size: 10, weight: .regular, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                if !logs.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("LOG")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Clear") { logs.removeAll() }
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.pink)
+                                .buttonStyle(.plain)
+                        }
+                        ForEach(Array(logs.enumerated()), id: \.offset) { _, log in
+                            Text(log)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.08)))
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
         }
         .onAppear {
+            // Reads the current state; the system only prompts if access was never asked for.
             requestAuthorization()
-            appendLog("Test tab ready")
         }
     }
 
@@ -353,5 +381,24 @@ struct HealthKitSimulationTestView: View {
             return String(format: "%.2fkm", value / 1000.0)
         }
         return String(format: "%.0fm", value)
+    }
+}
+
+/// One fact about the test workout: a small symbol and a line of text.
+private struct TestFactRow: View {
+    let symbol: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 11))
+                .foregroundStyle(.pink)
+                .frame(width: 16)
+            Text(text)
+                .font(.system(size: 13))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
     }
 }

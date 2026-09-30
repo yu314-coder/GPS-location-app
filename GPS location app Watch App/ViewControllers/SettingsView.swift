@@ -16,32 +16,27 @@ struct SettingsView: View {
     @State private var versionTapHint: String?
     private let tapsToUnlock = 5
 
-    @State private var locationPermissionStatus = "Not Determined"
-    @State private var healthKitPermissionStatus = "Not Determined"
+    @StateObject private var permissions = PermissionStatusModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationView {
             Form {
-                // Permissions Section
-                Section(header: Text("Permissions")) {
-                    HStack {
-                        Label("Location Services", systemImage: "location.fill")
-                        Spacer()
-                        Text(locationPermissionStatus)
-                            .foregroundColor(.secondary)
+                // Permissions, as the system reports them now.
+                Section(header: Text("Permissions"),
+                        footer: Text("To change one, open Settings on the watch, then Privacy & Security.")) {
+                    PermissionRow(title: "Location", symbol: "location.fill", state: permissions.location)
+                    PermissionRow(title: "Health", symbol: "heart.fill", state: permissions.health)
+                    PermissionRow(title: "Motion & Fitness", symbol: "figure.walk.motion", state: permissions.motion)
+                    if permissions.anyNotAsked {
+                        Button {
+                            permissions.requestMissing()
+                        } label: {
+                            Label("Ask for access", systemImage: "hand.raised.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .tint(.orange)
                     }
-
-                    HStack {
-                        Label("HealthKit", systemImage: "heart.fill")
-                        Spacer()
-                        Text(healthKitPermissionStatus)
-                            .foregroundColor(.secondary)
-                    }
-
-                    // Note: Opening settings is not directly available on watchOS
-                    Text("Manage permissions in iPhone app")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
 
                 // Display Units Section
@@ -148,6 +143,10 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .onAppear { permissions.refresh() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { permissions.refresh() }
+            }
         }
     }
 }
