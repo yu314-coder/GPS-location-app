@@ -63,15 +63,21 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     var onIPhoneLocationReceived: ((FlightLocation, IPhoneLocationFeedMode) -> Void)?
     var onIPhoneMotionAccelerationReceived: ((Double, Date) -> Void)?
     var onIPhoneMotionAssistReceived: ((IPhoneMotionAssist) -> Void)?
-    /// iPhone's integrated dead-reckoning answer (speed m/s, heading°, velocity N/E, time).
+    /// iPhone's dead-reckoning answer (speed m/s or nil, heading°, velocity N/E, time).
     /// Arrives independently of GPS, so it keeps flowing when the watch needs it most.
-    var onIPhoneDeadReckoningReceived: ((Double, Double, Double, Double, Date) -> Void)?
+    var onIPhoneDeadReckoningReceived: ((Double?, Double, Double, Double, Date) -> Void)?
 
     fileprivate func handleIPhoneDeadReckoningState(_ message: [String: Any]) {
-        guard let speed = message["drSpeed"] as? Double,
-              let heading = message["drHeading"] as? Double else { return }
-        let velN = message["drVelNorth"] as? Double ?? 0
-        let velE = message["drVelEast"] as? Double ?? 0
+        guard let heading = message["drHeading"] as? Double else { return }
+        // A SPEED ONLY FROM THE iPHONE'S WORKOUT OR A GPS FIX (build 82). The iPhone's relay of its
+        // own motion integrates acceleration, which grows without bound, and after an MRT ride the
+        // watch took it as the iPhone's speed and recorded 173-181 km/h on foot. That relay now
+        // sends a heading only; an untagged state is from an older iPhone build, so its speed is
+        // not trusted either. Headings are used from every source.
+        let source = message["drSource"] as? String
+        let speed = (source == "engine" || source == "gps") ? message["drSpeed"] as? Double : nil
+        let velN = speed == nil ? 0 : message["drVelNorth"] as? Double ?? 0
+        let velE = speed == nil ? 0 : message["drVelEast"] as? Double ?? 0
         let ts = (message["timestamp"] as? TimeInterval).map { Date(timeIntervalSince1970: $0) } ?? Date()
         onIPhoneDeadReckoningReceived?(speed, heading, velN, velE, ts)
     }

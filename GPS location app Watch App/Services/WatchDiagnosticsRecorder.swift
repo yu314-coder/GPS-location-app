@@ -40,6 +40,16 @@ final class WatchDiagnosticsRecorder {
         var storeSpeed: Double? = nil
         var storeGroundExamples: Int = 0
         var features: [Double]? = nil
+        /// Walking and vehicle state (build 82), to check the watch against the iPhone's method:
+        /// steps the accelerometer counted and the pedometer's count this workout, the pedometer's
+        /// distance since the gap began, the echo check's refractory, whether a vehicle was current,
+        /// and the speed the iPhone relayed from its workout or GPS.
+        var imuSteps: Int? = nil
+        var pedometerSteps: Int? = nil
+        var pedometerGapDistance: Double? = nil
+        var stepRefractory: Double? = nil
+        var vehicleContext: Bool? = nil
+        var relayedSpeed: Double? = nil
     }
 
     private var rows: [Row] = []
@@ -78,7 +88,8 @@ final class WatchDiagnosticsRecorder {
         out += "gps_speed_ms,gps_accuracy_m,truth_lat,truth_lon,accel_mag_ms2,rotation_rate_rads,"
         // Appended at the end so every existing column keeps its position.
         out += "net_speed_ms,net_familiarity,store_speed_ms,store_ground_obs,"
-        out += (0..<11).map { "f\($0)" }.joined(separator: ",") + "\n"
+        out += (0..<11).map { "f\($0)" }.joined(separator: ",") + ","
+        out += "imu_steps,pedometer_steps,pedometer_gap_m,step_refractory_s,vehicle_ctx,relay_speed_ms\n"
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         for r in rows {
@@ -92,7 +103,10 @@ final class WatchDiagnosticsRecorder {
             out += Self.fmt(r.accelMagnitude) + "," + Self.fmt(r.rotationRate) + ","
             out += Self.fmt(r.networkSpeed) + "," + Self.fmt(r.networkFamiliarity, 3) + ","
             out += Self.fmt(r.storeSpeed) + ",\(r.storeGroundExamples),"
-            out += (0..<11).map { i in Self.fmt(r.features.flatMap { $0.count == 11 ? $0[i] : nil }, 4) }.joined(separator: ",") + "\n"
+            out += (0..<11).map { i in Self.fmt(r.features.flatMap { $0.count == 11 ? $0[i] : nil }, 4) }.joined(separator: ",") + ","
+            out += Self.fmt(r.imuSteps.map(Double.init), 0) + "," + Self.fmt(r.pedometerSteps.map(Double.init), 0) + ","
+            out += Self.fmt(r.pedometerGapDistance, 1) + "," + Self.fmt(r.stepRefractory, 3) + ","
+            out += (r.vehicleContext.map { $0 ? "1" : "0" } ?? "") + "," + Self.fmt(r.relayedSpeed) + "\n"
         }
         return out
     }

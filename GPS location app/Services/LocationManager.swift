@@ -999,6 +999,11 @@ class LocationManager: NSObject, ObservableObject {
                                                   referenceAcceleration.up,
                                                   rotationMagnitude,
                                                   sampleDt)
+                self.onWorldAccelSampleRelay?(referenceAcceleration.north,
+                                              referenceAcceleration.east,
+                                              referenceAcceleration.up,
+                                              rotationMagnitude,
+                                              sampleDt)
                 self.onRawMotionSample?(motion, sampleDt)
             }
             self.onMotionAccelerationUpdate?(
@@ -1343,10 +1348,17 @@ class LocationManager: NSObject, ObservableObject {
     /// (north, east, up, rotationRateMagnitude, dt) — up and rotation rate feed the ZUPT
     /// stationarity detector.
     var onWorldAccelSample: ((Double, Double, Double, Double, TimeInterval) -> Void)?
-    /// Secondary consumer of the same samples. Lets the iPhone act as a MOTION SOURCE for the
-    /// watch while running no workout of its own — the primary callback is owned by
-    /// WorkoutSession and only exists during an iPhone workout.
+    /// Second consumer of the same samples, owned by WorkoutSession: the speed engines, the
+    /// vibration model and the 50 Hz log.
     var onWorldAccelSampleSecondary: ((Double, Double, Double, Double, TimeInterval) -> Void)?
+    /// Third consumer, owned by the watch relay (WatchConnectivityManager), so the iPhone can
+    /// give the watch a heading while running no workout of its own.
+    ///
+    /// The relay used to share the second slot with WorkoutSession, and whichever was set last
+    /// won. A watch workout started during a phone workout took the slot from the phone's speed
+    /// engines and its log, and ending the watch workout emptied it; a phone workout started
+    /// after the watch's took it back and left the relay with no samples. Each has its own now.
+    var onWorldAccelSampleRelay: ((Double, Double, Double, Double, TimeInterval) -> Void)?
     /// EVERYTHING THE SENSOR SAID, for reconstruction after the fact.
     ///
     /// The world-frame channel above is already a processed summary: gravity removed, rotated

@@ -3425,9 +3425,10 @@ class WorkoutSession: ObservableObject {
         }
     }
 
-    /// Force Velocity's replacement for confirmVehicleFromGPS: the same test, three consecutive
+    /// Dead reckoning's replacement for confirmVehicleFromGPS: the same test, three consecutive
     /// readings over 5.5 m/s with no walking in the last 20 s, but the reading is the speed model's
-    /// answer from the phone's own vibration rather than a satellite speed.
+    /// answer from the phone's own vibration rather than a satellite speed. Runs in every gap,
+    /// forced or automatic.
     ///
     /// Apple's classifier alone is too slow for this. It took 163 s to say "automotive" on one
     /// pocket ride and never said it on another, and GPS had been covering the gap. Replayed on
@@ -4164,7 +4165,12 @@ class WorkoutSession: ObservableObject {
         // selects "Walking" while sitting in an aircraft, where the pedometer counts zero
         // steps — routing on the label alone yields zero distance and NO TRACK.
         updateRampDetection(now: Date())
-        if forceMotionFallback { confirmVehicleFromModel() }
+        // In every gap, not only a forced one (build 82). GPS confirms a vehicle for five minutes
+        // after its last fast fix and then has nothing more to say, so a longer tunnel, or a ride
+        // that began underground, ran out of vehicle context: the engines stopped answering and the
+        // speed fell to zero, although the forced mode would have kept it. This is the forced
+        // mode's own test, the same three readings over 5.5 m/s with no steps for 20 s.
+        confirmVehicleFromModel()
         var distance: Double
         var sourceTag = "DR"
         // VEHICLE-LAUNCH DETECTOR. A car or aircraft pulling away produces a large horizontal
@@ -4878,7 +4884,8 @@ class WorkoutSession: ObservableObject {
             headingDegrees: headingDegrees,
             velocityNorth: motionVelNorth,
             velocityEast: motionVelEast,
-            isDeadReckoning: true)
+            isDeadReckoning: true,
+            source: .engine)
 
         // Accumulate below the append threshold instead of DISCARDING. Previously a tick
         // under 0.25 m returned early and the distance was lost for good — the pedometer's
@@ -5831,6 +5838,19 @@ class WorkoutSession: ObservableObject {
         }
 
         if isUsingEstimatedLocationFallback {
+            // ONLY A FIX GOOD ENOUGH TO END THE GAP ENDS IT (build 82).
+            //
+            // The switch reads positioning as degraded until a fix of GOOD_FIX_ACCURACY or better
+            // arrives, but any fix used to end the gap here - so with ±50-100 m fixes arriving the
+            // app left dead reckoning on each one and re-entered it on the next tick, resetting the
+            // pedometer, the step detector and the heading each time. In the two automatic
+            // recordings, 33 of 105 gaps lasted one or two seconds. A poorer fix is now ignored, as
+            // a noisy fix already is while a good one is recent, and the first good fix rubber-sheets
+            // the whole gap onto itself.
+            guard location.horizontalAccuracy <= GOOD_FIX_ACCURACY else {
+                print("📍 Fix ±\(Int(location.horizontalAccuracy))m too poor to end the gap; dead reckoning continues")
+                return
+            }
             reanchorAfterEstimatedFallback(with: location)
             return
         }
@@ -5945,7 +5965,8 @@ class WorkoutSession: ObservableObject {
                 headingDegrees: course,
                 velocityNorth: speed * cos(course * .pi / 180),
                 velocityEast: speed * sin(course * .pi / 180),
-                isDeadReckoning: false)
+                isDeadReckoning: false,
+                source: .gps)
         }
 
         // Update Live Activity (throttled to every 2 seconds)

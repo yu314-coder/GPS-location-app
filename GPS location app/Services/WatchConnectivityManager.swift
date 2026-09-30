@@ -3,11 +3,16 @@ import WatchConnectivity
 import Combine
 import CoreLocation
 
-/// Derives heading and speed from the iPhone's motion so the phone can act as a MOTION SOURCE
-/// for the watch while running no workout of its own (phone simply nearby in a pocket, watch
-/// recording in Force Velocity). A watch cannot resolve walking direction alone — arm swing
-/// defeats the acceleration-axis method — so without this the watch holds one heading and
-/// draws a straight line.
+/// Derives a heading from the iPhone's motion so the phone can act as a MOTION SOURCE for the
+/// watch while running no workout of its own (phone simply nearby in a pocket, watch recording
+/// in Force Velocity). A watch cannot resolve walking direction alone — arm swing defeats the
+/// acceleration-axis method — so without this the watch holds one heading and draws a straight
+/// line.
+///
+/// The speed it integrates is used here to judge the heading and is never relayed (build 82).
+/// Integrating acceleration is the method the iPhone's own workout dropped, because bias makes it
+/// grow without bound. After an MRT ride the watch took this speed as the iPhone's and recorded
+/// 173-181 km/h on foot.
 ///
 /// Same maths as the in-workout pipeline: low-pass, gated bias, ZUPT, clamped integration,
 /// plus PCA of world-frame horizontal acceleration for the walking axis. World-frame
@@ -386,7 +391,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         motionRelay.reset(seedHeading: locationManager.currentLocation.flatMap {
             $0.course >= 0 && $0.speed > 0.5 ? $0.course : nil
         })
-        locationManager.onWorldAccelSampleSecondary = { [weak self] north, east, up, rotationRate, dt in
+        locationManager.onWorldAccelSampleRelay = { [weak self] north, east, up, rotationRate, dt in
             self?.motionRelay.ingest(north: north, east: east, up: up,
                                      rotationRate: rotationRate, dt: dt)
         }
@@ -399,22 +404,25 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         }
     }
 
-    /// Relay motion-derived heading/speed when GPS cannot supply a usable heading. With a
-    /// moving GPS fix, sendCurrentLocationToWatch already carries course-over-ground, which is
-    /// better; this covers the no-GPS case (aircraft, tunnel, indoors) where the watch would
-    /// otherwise have no way to turn.
+    /// Relay a motion-derived HEADING when GPS cannot supply a usable one. With a moving GPS fix,
+    /// sendCurrentLocationToWatch already carries course-over-ground, which is better; this covers
+    /// the no-GPS case (aircraft, tunnel, indoors) where the watch would otherwise have no way to
+    /// turn. No speed: see PhoneMotionRelayEstimator. And nothing at all while the phone's own
+    /// workout is relaying, whose answer is the better one; two senders took turns before.
     private func relayMotionDerivedStateIfNeeded() {
+        if let last = lastWorkoutRelayTime, Date().timeIntervalSince(last) < 3.0 { return }
         let fix = locationManager.currentLocation
         let gpsUsableForHeading: Bool = {
             guard let fix else { return false }
             return Date().timeIntervalSince(fix.timestamp) < 5.0 && fix.course >= 0 && fix.speed > 0.5
         }()
         guard !gpsUsableForHeading, let state = motionRelay.currentState() else { return }
-        relayDeadReckoningState(speed: state.speed,
+        relayDeadReckoningState(speed: nil,
                                 headingDegrees: state.heading,
-                                velocityNorth: state.velNorth,
-                                velocityEast: state.velEast,
-                                isDeadReckoning: true)
+                                velocityNorth: 0,
+                                velocityEast: 0,
+                                isDeadReckoning: true,
+                                source: .motion)
     }
 
     func stopGPSSharing() {
@@ -424,7 +432,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         isSharingGPS = false
         gpsSharingTimer?.invalidate()
         gpsSharingTimer = nil
-        locationManager.onWorldAccelSampleSecondary = nil
+        locationManager.onWorldAccelSampleRelay = nil
         motionRelay.reset(seedHeading: nil)
     }
 
@@ -436,19 +444,28 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     /// heading, world velocity) rather than raw accelerations for the watch to re-integrate:
     /// the iPhone runs the full ZUPT/bias/yaw pipeline, so the watch should simply adopt it.
     /// WatchConnectivity works over Bluetooth/peer-WiFi, so this needs no internet.
-    func relayDeadReckoningState(speed: Double, headingDegrees: Double,
+    ///
+    /// Every state names its source (build 82). The watch takes a SPEED only from the phone's
+    /// workout, which runs the chain the watch runs, or from a GPS fix; the relay's own motion
+    /// estimate carries a heading and no speed.
+    enum RelaySource: String { case engine, gps, motion }
+    private var lastWorkoutRelayTime: Date?
+
+    func relayDeadReckoningState(speed: Double?, headingDegrees: Double,
                                  velocityNorth: Double, velocityEast: Double,
-                                 isDeadReckoning: Bool) {
+                                 isDeadReckoning: Bool, source: RelaySource) {
+        if source != .motion { lastWorkoutRelayTime = Date() }
         guard let session = session, session.activationState == .activated else { return }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "action": "drState",
-            "drSpeed": speed,
             "drHeading": headingDegrees,
             "drVelNorth": velocityNorth,
             "drVelEast": velocityEast,
             "drActive": isDeadReckoning,
+            "drSource": source.rawValue,
             "timestamp": Date().timeIntervalSince1970
         ]
+        if let speed { payload["drSpeed"] = speed }
         if session.isReachable {
             session.sendMessage(payload, replyHandler: nil) { _ in }
         } else {
