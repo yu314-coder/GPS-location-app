@@ -1,8 +1,8 @@
 import SwiftUI
 
 // The watch's two speed engines on screen: which one is setting the speed now and what each of
-// them reads this second. The engine is the iPhone's (see WatchSpeedEngine); choosing one engine
-// over the other is a developer option.
+// them reads this second. The engine is the iPhone's (see WatchSpeedEngine); Settings chooses
+// whether both run or only one.
 
 /// What set the displayed speed, as a small labelled badge.
 struct SpeedSourceBadge: View {
@@ -80,14 +80,18 @@ struct SpeedEnginesCard: View {
                 Spacer()
                 SpeedSourceBadge(driving: readout.driving)
             }
-            EngineLine(name: "Neural", symbol: "brain", tint: .purple,
-                       value: fmt.value(readout.network), unit: speedUnit,
-                       note: readout.familiarity.map { $0 <= 1 ? "" : "unfamiliar" } ?? "",
-                       isDriving: readout.driving == "Neural")
-            EngineLine(name: "Algorithm", symbol: "square.stack.3d.up.fill", tint: .orange,
-                       value: fmt.value(readout.store), unit: speedUnit,
-                       note: "\(readout.storeExamples.formatted()) ex.",
-                       isDriving: readout.driving == "Algorithm")
+            if readout.choice.runsNetwork {
+                EngineLine(name: "Neural", symbol: "brain", tint: .purple,
+                           value: fmt.value(readout.network), unit: speedUnit,
+                           note: readout.familiarity.map { $0 <= 1 ? "" : "unfamiliar" } ?? "",
+                           isDriving: readout.driving == "Neural")
+            }
+            if readout.choice.runsStore {
+                EngineLine(name: "Algorithm", symbol: "square.stack.3d.up.fill", tint: .orange,
+                           value: fmt.value(readout.store), unit: speedUnit,
+                           note: "\(readout.storeExamples.formatted()) ex.",
+                           isDriving: readout.driving == "Algorithm")
+            }
             EngineLine(name: "iPhone", symbol: "iphone", tint: .blue,
                        value: fmt.value(readout.iPhone), unit: speedUnit, note: "",
                        isDriving: readout.driving == "iPhone")
@@ -131,7 +135,7 @@ private struct EngineLine: View {
     }
 }
 
-/// Choose which engine sets the watch's speed in Velocity Mode.
+/// Choose whether both engines run and are recorded, or only one.
 struct SpeedEngineChoiceView: View {
     @AppStorage(WatchSpeedEngine.defaultsKey) private var choice = WatchSpeedEngine.auto.rawValue
     @Environment(\.dismiss) private var dismiss
@@ -156,37 +160,35 @@ struct SpeedEngineChoiceView: View {
                 }
             }
         }
-        .navigationTitle("Speed engine")
+        .navigationTitle("Speed engines")
     }
 
     static func explanation(_ engine: WatchSpeedEngine) -> String {
         switch engine {
         case .auto:
-            return "The iPhone's rule: its speed first when it's connected, otherwise Neural until the watch has learned \(LearnedSpeedEstimator.NETWORK_UNTIL_OBSERVATIONS.formatted()) examples, then the Algorithm."
+            return "Both engines run and both are recorded. The speed follows the iPhone's rule: the iPhone's own speed first when it's connected, otherwise Neural until the watch has learned \(LearnedSpeedEstimator.NETWORK_UNTIL_OBSERVATIONS.formatted()) examples, then the Algorithm."
         case .network:
-            return "Testing: the built-in neural network only."
+            return "Only the built-in neural network runs and is recorded. The iPhone's speed covers seconds it can't answer."
         case .store:
-            return "Testing: the watch's own learned examples only."
+            return "Only the Algorithm, the watch's own learned examples, runs and is recorded. It has no answer until the watch has learned examples in a vehicle with GPS. The iPhone's speed covers seconds it can't answer."
         }
     }
 }
 
 /// The engines' state before a workout starts: the choice and how much the algorithm has learned.
+/// Tapping it changes the choice.
 struct SpeedEngineStatusCard: View {
     @AppStorage(WatchSpeedEngine.defaultsKey) private var choice = WatchSpeedEngine.auto.rawValue
-    @AppStorage(WatchSpeedEngine.developerKey) private var developerUnlocked = false
     @State private var examples: Int?
     @State private var showChoice = false
 
-    private var inUse: WatchSpeedEngine {
-        developerUnlocked ? (WatchSpeedEngine(rawValue: choice) ?? .auto) : .auto
-    }
+    private var inUse: WatchSpeedEngine { WatchSpeedEngine(rawValue: choice) ?? .auto }
 
     var body: some View {
-        Button { if developerUnlocked { showChoice = true } } label: {
+        Button { showChoice = true } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
-                    Label("Speed engine", systemImage: "gauge.with.dots.needle.67percent")
+                    Label("Speed engines", systemImage: "gauge.with.dots.needle.67percent")
                         .font(.system(size: 13, weight: .semibold))
                     Spacer()
                     Text(inUse.title)

@@ -3,6 +3,9 @@ import Charts
 
 struct SummaryView: View {
     let flight: Flight
+    /// Opened from the Flights tab rather than at the end of a workout (build 82): no effort
+    /// question on opening, and Done only closes - it never re-sends the workout to HealthKit.
+    var fromHistory = false
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var healthKitManager = HealthKitManager()
@@ -35,7 +38,7 @@ struct SummaryView: View {
                 // Static Map
                 if !flight.locations.isEmpty {
                     StaticMapView(locations: flight.locations)
-                        .frame(height: 250)
+                        .frame(height: 140)
                         .cornerRadius(12)
                         .padding(.horizontal)
                 }
@@ -281,38 +284,11 @@ struct SummaryView: View {
                     .padding(.horizontal)
                 }
 
-                // Action Buttons
+                // Action Buttons. "View in Fitness" and "Export GPX" were here and did nothing
+                // when tapped; they are gone until they do something (build 82).
                 VStack(spacing: 12) {
                     Button(action: {
-                        // TODO: Open in Fitness app
-                    }) {
-                        HStack {
-                            Image(systemName: "heart.text.square")
-                            Text("View in Fitness")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.green)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                    }
-
-                    Button(action: {
-                        // TODO: Export GPX
-                    }) {
-                        HStack {
-                            Image(systemName: "square.and.arrow.up")
-                            Text("Export GPX")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                    }
-
-                    Button(action: {
-                        if !effortSaved {
+                        if !effortSaved, !fromHistory {
                             saveEffort(syncToHealthKit: true)
                         }
                         dismiss()
@@ -320,8 +296,8 @@ struct SummaryView: View {
                         Text("Done")
                             .frame(maxWidth: .infinity)
                             .padding()
-                            .background(Color.systemGray5)
-                            .foregroundColor(.primary)
+                            .background(Color.white.opacity(0.18))
+                            .foregroundColor(.white)
                             .cornerRadius(12)
                     }
                 }
@@ -374,7 +350,7 @@ struct SummaryView: View {
             } else {
                 effort = 10
                 effortSaved = false
-                showEffortPrompt = true
+                showEffortPrompt = !fromHistory
             }
         }
         .onChange(of: effort) {

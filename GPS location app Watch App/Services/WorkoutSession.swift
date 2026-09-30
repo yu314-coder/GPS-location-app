@@ -506,13 +506,27 @@ class WorkoutSession: NSObject, ObservableObject {
     /// finalize any unfinished flight (endDate == nil) and push it to iPhone so
     /// the trace is never lost.
     private func recoverUnfinishedFlights() {
+        Self.finalizeUnfinishedFlights(skipping: isActive ? flight.id : nil)
+    }
+
+    /// Also run once when the app launches (build 82), from ContentView: this object exists only
+    /// while the workout screen is open, so a workout cut short by a crash stayed unfinished - and
+    /// in the Flights tab its time kept counting - until the next workout was started.
+    private static var finalizedAtLaunch = false
+    static func finalizeUnfinishedFlightsAtLaunch() {
+        guard !finalizedAtLaunch else { return }
+        finalizedAtLaunch = true
+        finalizeUnfinishedFlights(skipping: nil)
+    }
+
+    private static func finalizeUnfinishedFlights(skipping activeID: UUID?) {
         FlightDataStore.shared.loadFlights()
         let unfinished = FlightDataStore.shared.savedFlights.filter { $0.endDate == nil }
         guard !unfinished.isEmpty else { return }
 
         for summary in unfinished {
             // Skip the one we may be about to resume as the live workout.
-            if isActive && summary.id == flight.id { continue }
+            if summary.id == activeID { continue }
 
             guard var full = FlightDataStore.shared.loadFlightDetails(id: summary.id),
                   !full.locations.isEmpty else {
@@ -533,7 +547,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
             // Persist finalized version locally and push the full track to iPhone.
             FlightDataStore.shared.saveFlight(full)
-            connectivityManager.transferFlightToPhone(full)
+            WatchConnectivityManager.shared.transferFlightToPhone(full)
             print("⌚ ♻️ Recovered unfinished flight after crash: id=\(full.id), locations=\(full.locations.count), distance=\(String(format: "%.2f", metrics.totalDistance/1000))km — saved + synced to iPhone")
         }
     }
@@ -567,6 +581,8 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         locationManager.onBarometricAltitudeUpdate = { [weak self] relativeAltitude, pressure, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
+            self.watchDiagnostics.latestRelativeAltitude = relativeAltitude
+            self.watchDiagnostics.latestPressure = pressure
             self.currentMetrics.updateWithBarometricAltitude(
                 relativeAltitude: relativeAltitude,
                 pressure: pressure,
@@ -768,7 +784,8 @@ class WorkoutSession: NSObject, ObservableObject {
             learnedSpeed.beginSession()
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             lastGoodFixTimeWatch = nil; latestGPSFixTimeWatch = nil
-            watchDiagnostics.reset()
+            watchDiagnostics.reset(workoutStart: flight.startDate)
+            lastGPSRowTotalDistance = nil
             startActivityClassifier()
             lastLocationTime = Date()
             latestIPhoneMotionAssist = nil
@@ -852,7 +869,7 @@ class WorkoutSession: NSObject, ObservableObject {
         // Fold in what Velocity Mode held back, then persist — same order as the iPhone.
         learnedSpeed.commitQuarantinedObservations()
         learnedSpeed.save()
-        watchDiagnostics.sendToPhone(workoutStart: flight.startDate)
+        watchDiagnostics.finishAndSend()
         stopActivityClassifier()
         // Clear the runtime flag but keep the standing choice for the next workout.
         setForceMotionFallback(false, persist: false)
@@ -2246,13 +2263,78 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         checkMotionFallback()
         refreshEngineReadout(now: now)
+        if !isUsingMotionFallback { recordGPSRow(now: now) }
+    }
+
+    /// What the chosen engines read this second. Only the engines the setting runs are asked
+    /// (build 82): "Neural only" never runs the Algorithm's lookup. The Algorithm's answer comes
+    /// from the shared engine file's bothAnswers, which also runs the small network; that answer is
+    /// simply not used. The fingerprint is logged every second either way, so an engine that was
+    /// not run can be replayed later from the log.
+    private func engineAnswers(for choice: WatchSpeedEngine)
+        -> (network: Double?, familiarity: Double?, store: Double?, storeStatus: String) {
+        switch choice {
+        case .auto:
+            let a = learnedSpeed.bothAnswers(airborne: false)
+            return (a.network, a.networkFamiliarity, a.store, a.storeStatus)
+        case .store:
+            let a = learnedSpeed.bothAnswers(airborne: false)
+            return (nil, nil, a.store, a.storeStatus)
+        case .network:
+            guard let f = learnedSpeed.currentFeatures() else { return (nil, nil, nil, "not run") }
+            let d = SpeedNetwork.bundled?.diagnose(features: f)
+            return (d?.speed, d?.familiarity, nil, "not run")
+        }
+    }
+
+    /// ONE ROW A SECOND WHILE GPS IS IN CHARGE (build 82). The log only had rows while dead
+    /// reckoning ran, so a workout with good GPS left nothing to score the wrist's engines against,
+    /// and nothing of the stretches either side of a gap. These rows carry the GPS speed and fix as
+    /// the truth, both engines' readings and the fingerprint, the barometer and the steps.
+    private var lastGPSRowTotalDistance: Double?
+    private func recordGPSRow(now: Date) {
+        let r = engineReadout
+        let gpsFresh = now.timeIntervalSince(lastLocationTime) <= 5 && watchDiagnostics.latestGPSSpeed >= 0
+        let total = currentMetrics.totalDistance
+        let added = max(0, total - (lastGPSRowTotalDistance ?? total))
+        lastGPSRowTotalDistance = total
+        watchDiagnostics.record(.init(
+            t: now,
+            source: gpsFresh ? "GPS" : "GPS(waiting)",
+            speed: currentMetrics.currentSpeed,
+            distance: added,
+            heading: flight.locations.last.flatMap { validCourse($0.course) } ?? motionHeadingDegrees,
+            compass: locationManager.currentCompassHeading,
+            offset: compassMisalignmentWatch,
+            stepCadence: stepCadenceWatch,
+            quietDuration: pedestrianQuietDuration,
+            learnObservations: learnedSpeed.observationCount,
+            gpsSpeed: watchDiagnostics.latestGPSSpeed >= 0 ? watchDiagnostics.latestGPSSpeed : nil,
+            gpsAccuracy: watchDiagnostics.latestGPSAccuracy >= 0 ? watchDiagnostics.latestGPSAccuracy : nil,
+            truthLatitude: watchDiagnostics.latestGPSLatitude,
+            truthLongitude: watchDiagnostics.latestGPSLongitude,
+            accelMagnitude: lastMotionAccelMagnitude,
+            rotationRate: lastMotionRotationMagnitude,
+            networkSpeed: r.network,
+            networkFamiliarity: r.familiarity,
+            storeSpeed: r.store,
+            storeGroundExamples: r.storeExamples,
+            features: learnedSpeed.currentFeatures(),
+            imuSteps: imuStepsTotal,
+            pedometerSteps: pedometerManager.currentStepCount,
+            pedometerGapDistance: nil,
+            stepRefractory: stepRefractory,
+            vehicleContext: vehicleContextIsCurrent,
+            relayedSpeed: freshIPhoneSpeed(at: now),
+            relativeAltitude: watchDiagnostics.latestRelativeAltitude,
+            pressure: watchDiagnostics.latestPressure))
     }
 
     private func refreshEngineReadout(now: Date) {
-        let answers = learnedSpeed.bothAnswers(airborne: false)
+        let answers = engineAnswers(for: WatchSpeedEngine.effective)
         var r = SpeedEngineReadout()
         r.network = answers.network
-        r.familiarity = answers.networkFamiliarity
+        r.familiarity = answers.familiarity
         r.store = answers.store
         r.storeStatus = answers.storeStatus
         r.storeExamples = learnedSpeed.groundObservationCount
@@ -2547,8 +2629,12 @@ class WorkoutSession: NSObject, ObservableObject {
         let pedometerSinceGapStart: Double? = pedometerManager.isDistanceAvailable
             ? max(0, pedometerManager.currentDistance - pedometerDistanceAtDRStart) : nil
         // Vehicle evidence from the engine in every gap, forced or not, exactly as on the iPhone
-        // (confirmVehicleFromModel there).
-        confirmVehicleFromModel(reading: learnedSpeed.estimate(airborne: false))
+        // (confirmVehicleFromModel there). With one engine chosen, that engine's reading.
+        let engineChoice = WatchSpeedEngine.effective
+        let pinnedAnswers = engineChoice == .auto ? nil : engineAnswers(for: engineChoice)
+        let pinnedAnswer = engineChoice == .network ? pinnedAnswers?.network : pinnedAnswers?.store
+        confirmVehicleFromModel(reading: engineChoice == .auto ? learnedSpeed.estimate(airborne: false)
+                                                               : pinnedAnswer)
         // THE iPHONE'S GATE (build 82). This used a held GPS speed under 8 m/s instead, which a
         // watch with no GPS in the gap always passes, whatever it was riding in.
         if imuIsStepping, !vehicleContextIsCurrent {
@@ -2679,13 +2765,9 @@ class WorkoutSession: NSObject, ObservableObject {
             // developer options the watch answers from that one alone, and the relay only covers
             // seconds it cannot.
             let relayedSpeed = freshIPhoneSpeed(at: now)
-            let engineChoice = WatchSpeedEngine.effective
-            let ownAnswer: Double?
-            switch engineChoice {
-            case .auto: ownAnswer = relayedSpeed != nil ? nil : learnedSpeed.estimate(airborne: false)
-            case .network: ownAnswer = learnedSpeed.bothAnswers(airborne: false).network
-            case .store: ownAnswer = learnedSpeed.bothAnswers(airborne: false).store
-            }
+            let ownAnswer: Double? = engineChoice == .auto
+                ? (relayedSpeed != nil ? nil : learnedSpeed.estimate(airborne: false))
+                : pinnedAnswer
             let ownUsedNetwork = engineChoice == .network || (engineChoice == .auto && learnedSpeed.lastEstimateUsedNetwork)
             if engineChoice == .auto, let relayed = relayedSpeed {
                 motionFallbackSpeed = relayed
@@ -2779,7 +2861,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Keep the DISPLAYED speed in sync every tick, not only when a point is appended, so
         // it matches the DR status and reflects ZUPT zeroing while standing still.
-        let engineAnswers = learnedSpeed.bothAnswers(airborne: false)
+        let tickAnswers = pinnedAnswers ?? engineAnswers(for: .auto)
         currentMetrics.currentSpeed = motionFallbackSpeed
         currentMetrics.smoothedSpeed = motionFallbackSpeed
 
@@ -2800,9 +2882,9 @@ class WorkoutSession: NSObject, ObservableObject {
             truthLongitude: watchDiagnostics.latestGPSLongitude,
             accelMagnitude: lastMotionAccelMagnitude,
             rotationRate: lastMotionRotationMagnitude,
-            networkSpeed: engineAnswers.network,
-            networkFamiliarity: engineAnswers.networkFamiliarity,
-            storeSpeed: engineAnswers.store,
+            networkSpeed: tickAnswers.network,
+            networkFamiliarity: tickAnswers.familiarity,
+            storeSpeed: tickAnswers.store,
             storeGroundExamples: learnedSpeed.groundObservationCount,
             features: learnedSpeed.currentFeatures(),
             imuSteps: imuStepsTotal,
@@ -2810,7 +2892,9 @@ class WorkoutSession: NSObject, ObservableObject {
             pedometerGapDistance: pedometerSinceGapStart,
             stepRefractory: stepRefractory,
             vehicleContext: vehicleContextIsCurrent,
-            relayedSpeed: freshIPhoneSpeed(at: now)))
+            relayedSpeed: freshIPhoneSpeed(at: now),
+            relativeAltitude: watchDiagnostics.latestRelativeAltitude,
+            pressure: watchDiagnostics.latestPressure))
 
         // Live diagnostic: computed travel heading (→) vs compass, so a ground test can
         // confirm in real time whether the inertial direction tracks the real one.

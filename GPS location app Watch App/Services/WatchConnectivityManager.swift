@@ -46,6 +46,15 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         session.transferFile(fileURL, metadata: ["type": "diagnosticsLog"])
     }
 
+    /// Names of diagnostics logs already queued for the iPhone, so none is queued twice.
+    func outstandingDiagnosticsLogNames() -> [String] {
+        let session = WCSession.default
+        guard session.activationState == .activated else { return [] }
+        return session.outstandingFileTransfers
+            .filter { ($0.file.metadata?["type"] as? String) == "diagnosticsLog" }
+            .map { $0.file.fileURL.lastPathComponent }
+    }
+
     enum IPhoneLocationFeedMode {
         case assist
         case fallback
@@ -339,7 +348,28 @@ extension WatchConnectivityManager: WCSessionDelegate {
                 print("❌ WCSession activation failed: \(error.localizedDescription)")
             } else {
                 print("✅ WCSession activated: \(activationState.rawValue)")
+                // Logs left by a workout the watch ended without a Stop, or that never reached the
+                // iPhone (build 82). A file written in the last minute belongs to a running workout.
+                if activationState == .activated {
+                    WatchDiagnosticsRecorder.sendUnsentLogs(untouchedFor: 60)
+                }
             }
+        }
+    }
+
+    /// A diagnostics log the iPhone has confirmed receiving is deleted from the watch (build 82);
+    /// until then it stays, and is sent again if the transfer failed.
+    func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+        guard (fileTransfer.file.metadata?["type"] as? String) == "diagnosticsLog" else { return }
+        let name = fileTransfer.file.fileURL.lastPathComponent
+        if let error {
+            print("⌚ ⚠️ Diagnostics log \(name) not delivered (\(error.localizedDescription)); kept for the next try")
+            return
+        }
+        let local = WatchDiagnosticsRecorder.logDirectory.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: local.path) {
+            try? FileManager.default.removeItem(at: local)
+            print("⌚ ✅ Diagnostics log \(name) is on the iPhone; removed from the watch")
         }
     }
 

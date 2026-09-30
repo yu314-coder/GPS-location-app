@@ -63,6 +63,16 @@ struct SettingsView: View {
                     }
                 }
 
+                // Speed engines (build 82): which run and are recorded in Velocity Mode.
+                Section(header: Text("Speed engines"),
+                        footer: Text(SpeedEngineChoiceView.explanation(WatchSpeedEngine(rawValue: speedEngine) ?? .auto))) {
+                    Picker("Run and record", selection: $speedEngine) {
+                        ForEach(WatchSpeedEngine.allCases, id: \.rawValue) { engine in
+                            Text(engine.title).tag(engine.rawValue)
+                        }
+                    }
+                }
+
                 // Map Settings Section
                 Section(header: Text("Map Settings")) {
                     Picker("Map Style", selection: $mapStyle) {
@@ -152,14 +162,6 @@ extension SettingsView {
 
     /// Testing options, hidden until the version is tapped five times.
     @ViewBuilder var developerSection: some View {
-        Section(header: Text("Developer: speed engine"),
-                footer: Text(SpeedEngineChoiceView.explanation(WatchSpeedEngine(rawValue: speedEngine) ?? .auto))) {
-            Picker("Engine", selection: $speedEngine) {
-                ForEach(WatchSpeedEngine.allCases, id: \.rawValue) { engine in
-                    Text(engine.title).tag(engine.rawValue)
-                }
-            }
-        }
         Section(header: Text("Developer: tracking"),
                 footer: Text("Higher sensitivity provides smoother tracking but may introduce slight lag")) {
             Picker("Kalman Filter Sensitivity", selection: $kalmanSensitivity) {

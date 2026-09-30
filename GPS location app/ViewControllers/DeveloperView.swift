@@ -135,7 +135,7 @@ struct DeveloperView: View {
             } header: {
                 Text("Session logs")
             } footer: {
-                Text("One row per second of dead reckoning, plus the 50 Hz sensor trace. The raw trace of a long flight can reach tens of megabytes.")
+                Text("Per workout: one row per second of dead reckoning, the 50 Hz sensor trace, and every GPS fix and barometer reading. Written as the workout runs and kept until deleted here. The raw trace of a long flight can reach hundreds of megabytes.")
             }
         }
         .navigationTitle("Developer")

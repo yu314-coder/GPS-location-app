@@ -24,8 +24,22 @@ struct StaticMapView: View {
         }
     }
 
+    /// The route, thinned to at most 500 points so a long flight draws quickly on a watch.
+    private var routeCoordinates: [CLLocationCoordinate2D] {
+        let step = max(1, locations.count / 500)
+        var coords = stride(from: 0, to: locations.count, by: step).map { locations[$0].toCLLocation().coordinate }
+        if let last = locations.last, step > 1 { coords.append(last.toCLLocation().coordinate) }
+        return coords
+    }
+
     var body: some View {
-        Map(position: $position) {
+        // Static, as the name says (build 82): a map that takes drags swallowed the swipe meant for
+        // the page, so on the Flights tab the summary could not be scrolled past it.
+        Map(position: $position, interactionModes: []) {
+            if locations.count > 1 {
+                MapPolyline(coordinates: routeCoordinates)
+                    .stroke(.purple, lineWidth: 3)
+            }
             // Start marker (green)
             if let first = locations.first {
                 Marker("Start", coordinate: first.toCLLocation().coordinate)

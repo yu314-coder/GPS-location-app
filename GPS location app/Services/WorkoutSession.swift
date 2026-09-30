@@ -188,6 +188,9 @@ class WorkoutSession: ObservableObject {
                 compassMisalignment = nil
                 offsetSource = .none
             }
+            if isActive, forceMotionFallback != oldValue {
+                sessionDiagnostics.recordEvent("velocity_mode", detail: forceMotionFallback ? "on" : "off")
+            }
             guard persistForceMotionFallback else { return }
             UserDefaults.standard.set(forceMotionFallback, forKey: "velocityModeEnabled")
         }
@@ -1529,6 +1532,40 @@ class WorkoutSession: ObservableObject {
         movingAmplitudeSamples += 1
     }
 
+    /// Which build, device and settings a log came from, for its first events row.
+    private func diagnosticsSessionDetail() -> String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        var sys = utsname()
+        uname(&sys)
+        let model = withUnsafeBytes(of: &sys.machine) { raw in
+            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+        return "app \(version) (\(build)); device \(model); iOS \(UIDevice.current.systemVersion); "
+            + "workout type \(workoutType.rawValue); velocity mode \(forceMotionFallback ? "on" : "off")"
+    }
+
+    /// The classifier's verdict as one short string, logged only when it changes.
+    private var lastLoggedActivity: String?
+    private static func activityLabel(_ a: CMMotionActivity) -> String {
+        var parts: [String] = []
+        if a.automotive { parts.append("automotive") }
+        if a.cycling { parts.append("cycling") }
+        if a.running { parts.append("running") }
+        if a.walking { parts.append("walking") }
+        if a.stationary { parts.append("stationary") }
+        if a.unknown || parts.isEmpty { parts.append("unknown") }
+        let confidence: String
+        switch a.confidence {
+        case .low: confidence = "low"
+        case .medium: confidence = "medium"
+        case .high: confidence = "high"
+        @unknown default: confidence = "?"
+        }
+        return parts.joined(separator: "+") + " (" + confidence + ")"
+    }
+
     private func vehicleIsStoppedOnGround(correctedSpeed: Double) -> Bool {
         // NOTHING THAT IS CLIMBING OR DESCENDING IS STOPPED.
         //
@@ -1890,6 +1927,11 @@ class WorkoutSession: ObservableObject {
         }
         locationManager.onBarometricAltitudeUpdate = { [weak self] relativeAltitude, pressure, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
+            // Every reading, for rebuilding the flight phase after a flight (build 82).
+            if let pressure {
+                self.sessionDiagnostics.recordBarometer(relativeAltitude: relativeAltitude,
+                                                        pressureKPa: pressure, at: timestamp)
+            }
             // INSIDE A PRESSURISED CABIN THIS IS NOT ALTITUDE.
             //
             // The barometer measures the air around the phone, and in an airliner that air is
@@ -1951,11 +1993,15 @@ class WorkoutSession: ObservableObject {
 
     func handleAppWillTerminate() {
         guard isActive else { return }
+        sessionDiagnostics.recordEvent("terminating")
+        sessionDiagnostics.flushAll()
         persistActiveWorkoutSnapshot(force: true, reason: "willTerminate", shouldLog: true)
     }
 
     private func handleDidEnterBackground() {
         guard isActive else { return }
+        // Buffered log lines go to disk now: a backgrounded app can be ended without warning.
+        sessionDiagnostics.flushAll()
         print("📱 App entered background with active workout - requesting transition background task")
         beginTransitionBackgroundTask()
         logBackgroundRefreshStatus()
@@ -2005,6 +2051,9 @@ class WorkoutSession: ObservableObject {
         lastSnapshotSaveDate = snapshot.savedAt
 
         print("✅ Restored active workout snapshot: id=\(flight.id), locations=\(flight.locations.count), distance=\(String(format: "%.2f", currentMetrics.totalDistance/1000))km, paused=\(isPaused)")
+        // The logs carry on in this workout's own files (build 82): before, a relaunch mid-flight
+        // started unnamed new ones and everything held in memory was gone.
+        sessionDiagnostics.resume(workoutStart: flight.startDate, sessionDetail: diagnosticsSessionDetail())
         if launchedForLocationEvent {
             print("📍 Restore path triggered by location launch event")
         }
@@ -2331,7 +2380,7 @@ class WorkoutSession: ObservableObject {
         movingAmplitudeLog = 0
         movingAmplitudeSamples = 0
         workoutStartTime = Date()
-        sessionDiagnostics.reset()
+        sessionDiagnostics.reset(workoutStart: flight.startDate, sessionDetail: diagnosticsSessionDetail())
         flightPhase.reset()
         launchIntegrator.reset()
         flightTilt.reset()
@@ -3345,6 +3394,7 @@ class WorkoutSession: ObservableObject {
         let startDate = Date()
         flight = Flight(startDate: startDate)
         flight.workoutType = workoutType.rawValue
+        sessionDiagnostics.reset(workoutStart: startDate, sessionDetail: "synthetic flight replay")
         isActive = true
         isPaused = false
         lastRealLocationTime = startDate
@@ -4917,6 +4967,8 @@ class WorkoutSession: ObservableObject {
 
     private func startEstimatedLocationFallback(anchor: FlightLocation?, gapSeconds: TimeInterval) {
         isUsingEstimatedLocationFallback = true
+        sessionDiagnostics.recordEvent("gap_start", detail: forceMotionFallback
+            ? "velocity mode" : String(format: "last fix %.0f s ago", gapSeconds))
         lastEstimatedFallbackTick = nil
         let anchorSpeed = anchor.map { max($0.speed, 0.0) } ?? 0.0
         // No speed cap — seed from the best known speed.
@@ -5154,6 +5206,11 @@ class WorkoutSession: ObservableObject {
                     self.lastVehicleEvidenceTime = Date()
                     self.lastAutomotiveClassificationTime = Date()
                 }
+                let label = Self.activityLabel(activity)
+                if label != self.lastLoggedActivity {
+                    self.lastLoggedActivity = label
+                    self.sessionDiagnostics.recordEvent("activity", detail: label, at: activity.startDate)
+                }
             }
             print("📍 🚗 Activity classifier engaged (stationary/automotive detection)")
         }
@@ -5176,6 +5233,8 @@ class WorkoutSession: ObservableObject {
     private func endEstimatedLocationFallback(reason: String) {
         guard isUsingEstimatedLocationFallback else { return }
         print("📍 Estimated-location fallback ended: \(reason)")
+        sessionDiagnostics.recordEvent("gap_end", detail: reason)
+        lastLoggedActivity = nil
         isUsingEstimatedLocationFallback = false
         lastEstimatedFallbackTick = nil
         estimatedFallbackSpeed = 0.0
@@ -5669,6 +5728,8 @@ class WorkoutSession: ObservableObject {
     }
 
     private func processNewLocation(_ location: FlightLocation) {
+        // Every fix Core Location delivers, before any filter or mode decides what to do with it.
+        if isActive, !isPaused { sessionDiagnostics.recordGPSFix(location) }
         // FORCED VELOCITY MODE: the user has made velocity/acceleration dead reckoning the
         // SOLE distance source from the workout UI. Ignore GPS fixes entirely so they
         // can't double-count against the integrated motion distance. Turning the toggle
@@ -6010,6 +6071,7 @@ class WorkoutSession: ObservableObject {
             print("⚠️ Cannot pause - workout not active")
             return
         }
+        sessionDiagnostics.recordEvent("pause")
 
         guard !isPaused else {
             print("⚠️ Cannot pause - already paused")
@@ -6072,6 +6134,7 @@ class WorkoutSession: ObservableObject {
             print("⚠️ Cannot resume - workout not active")
             return
         }
+        sessionDiagnostics.recordEvent("resume")
 
         guard isPaused else {
             print("⚠️ Cannot resume - workout not paused")

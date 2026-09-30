@@ -10,8 +10,15 @@ import UIKit
 /// feature, the fitted coefficients, the calibration coverage, and the raw sensor values — at
 /// the moment a wrong number is produced, and read them back.
 ///
-/// Deliberately allocation-light and bounded: a fixed-capacity ring buffer, one small struct per
-/// second, so a multi-hour flight cannot exhaust memory.
+/// Every file is streamed to disk as it grows and named after its workout from the first line
+/// (build 82), so a flight that ends in a crash, a flat battery or iOS closing the app keeps its
+/// logs, and a restored workout carries on in the same files. Nothing is deleted automatically.
+/// Three files per workout, all keyed by the workout's start:
+///   velocity_debug_<start>.csv    one row per second of dead reckoning (this struct)
+///   velocity_raw50hz_<start>.csv  the 50 Hz sensor trace, the whole workout
+///   velocity_events_<start>.csv   every GPS fix, barometer reading, classifier change, gap,
+///                                 mode change and pause, whatever mode the workout is in, plus
+///                                 the wall-clock start of each raw file
 final class SessionDiagnosticsRecorder: ObservableObject {
 
     struct Row {
@@ -206,8 +213,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let stepRefractory: Double
     }
 
-    /// ~4 hours at 1 Hz. Oldest rows are dropped rather than growing without bound.
+    /// The last ~4 hours at 1 Hz, kept in memory for the live screen only. The file has every row.
     private let capacity = 15000
+    /// The workout's own stamp, yyyy-MM-dd_HHmmss of its start.
+    private var stamp: String?
+    private var debugStream: CSVStream?
+    private var eventStream: CSVStream?
     private var rows: [Row] = []
     /// Published only as a count so views can show progress without copying the buffer.
     @Published private(set) var rowCount: Int = 0
@@ -220,7 +231,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// answer is fixed for the whole recording, however the setting is flipped meanwhile.
     private var loggingEnabled = true
 
-    func reset() {
+    func reset(workoutStart: Date, sessionDetail: String) {
+        closeStreams()
         try? rawFileHandle?.close()
         rawFileHandle = nil
         rawFileURL = nil
@@ -232,9 +244,35 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         rowCount = 0
         latest = nil
         loggingEnabled = WorkoutSession.diagnosticsLoggingEnabled
+        stamp = Self.stamp(for: workoutStart)
         if !loggingEnabled {
             print("📉 Diagnostics logging off — no CSVs will be written for this workout")
+            return
         }
+        recordEvent("session", detail: sessionDetail)
+    }
+
+    /// Carry on logging a workout restored after the app was relaunched. The debug and event files
+    /// are appended to; the raw trace starts a `_part2` file with its own clock (see openRawStream).
+    func resume(workoutStart: Date, sessionDetail: String) {
+        loggingEnabled = WorkoutSession.diagnosticsLoggingEnabled
+        stamp = Self.stamp(for: workoutStart)
+        guard loggingEnabled else { return }
+        recordEvent("resumed", detail: sessionDetail)
+    }
+
+    /// Write out whatever is buffered, without closing anything. Called when the app goes to the
+    /// background or is about to be terminated.
+    func flushAll() {
+        flushRawToDisk()
+        try? rawFileHandle?.synchronize()
+        debugStream?.flush()
+        eventStream?.flush()
+    }
+
+    private func closeStreams() {
+        debugStream?.close(); debugStream = nil
+        eventStream?.close(); eventStream = nil
     }
 
     func record(_ row: Row) {
@@ -246,7 +284,56 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         rows.append(row)
         if rows.count > capacity { rows.removeFirst(rows.count - capacity) }
         rowCount = rows.count
+        if debugStream == nil, let stamp {
+            debugStream = CSVStream(url: Self.logDirectory.appendingPathComponent("velocity_debug_\(stamp).csv"),
+                                    header: Self.debugHeader, flushEvery: 30)
+        }
+        debugStream?.append(Self.line(row))
     }
+
+    // MARK: - Events: GPS, barometer, classifier, gaps (build 82)
+    //
+    // The debug rows exist only while dead reckoning runs, so a workout in the automatic mode kept
+    // no GPS fixes and no barometer outside its gaps, and the flight phase could not be rebuilt
+    // from any file. These rows are written for the whole workout, whatever the mode, as each
+    // reading arrives. Times are the reading's own.
+    static let eventHeader = "time,unix_s,kind,lat,lon,alt_m,h_acc_m,v_acc_m,speed_ms,speed_acc_ms,course_deg,pressure_kpa,rel_alt_m,detail\n"
+
+    func recordEvent(_ kind: String, detail: String = "", at time: Date = Date()) {
+        appendEvent(time: time, kind: kind, fields: Array(repeating: "", count: 10), detail: detail)
+    }
+
+    func recordGPSFix(_ l: FlightLocation) {
+        let age = Date().timeIntervalSince(l.timestamp)
+        appendEvent(time: l.timestamp, kind: "gps", fields: [
+            Self.fmt(l.latitude, 7), Self.fmt(l.longitude, 7), Self.fmt(l.altitude, 2),
+            Self.fmt(l.horizontalAccuracy, 1), Self.fmt(l.verticalAccuracy, 1),
+            Self.fmt(l.speed, 3), Self.fmt(l.speedAccuracy, 3), Self.fmt(l.course, 1),
+            Self.fmt(l.pressure, 4), ""], detail: String(format: "age=%.1f", age))
+    }
+
+    func recordBarometer(relativeAltitude: Double, pressureKPa: Double, at time: Date) {
+        appendEvent(time: time, kind: "baro", fields: [
+            "", "", "", "", "", "", "", "", Self.fmt(pressureKPa, 4), Self.fmt(relativeAltitude, 3)],
+                    detail: "")
+    }
+
+    private func appendEvent(time: Date, kind: String, fields: [String], detail: String) {
+        guard loggingEnabled, let stamp else { return }
+        if eventStream == nil {
+            eventStream = CSVStream(url: Self.logDirectory.appendingPathComponent("velocity_events_\(stamp).csv"),
+                                    header: Self.eventHeader, flushEvery: 30)
+        }
+        var line = Self.isoFormatter.string(from: time) + "," + String(format: "%.3f", time.timeIntervalSince1970)
+        line += "," + Self.csvField(kind) + "," + fields.joined(separator: ",") + "," + Self.csvField(detail) + "\n"
+        eventStream?.append(line)
+    }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 
     var isEmpty: Bool { rows.isEmpty }
 
@@ -354,8 +441,9 @@ final class SessionDiagnosticsRecorder: ObservableObject {
 
     func recordRaw(verticalAccel: Double, north: Double = 0, east: Double = 0, at time: Date) {
         // The 50 Hz stream is by far the most expensive thing here — a file handle, a write per
-        // sample, and tens of megabytes over a long ride. With logging off it does not start.
-        guard loggingEnabled else { return }
+        // sample, and tens of megabytes over a long ride. With logging off it does not start, and
+        // outside a workout (no stamp) there is nothing to write it to.
+        guard loggingEnabled, stamp != nil else { return }
         if rawStart == nil { rawStart = time }
         guard let start = rawStart else { return }
         var sample = RawSample(t: time.timeIntervalSince(start),
@@ -391,19 +479,36 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     private func flushRawToDisk() {
         guard !raw.isEmpty else { return }
         if rawFileHandle == nil {
-            let df = DateFormatter()
-            df.dateFormat = "yyyyMMdd_HHmmss"
-            let stamp = df.string(from: rawStart ?? Date())
             do {
-                let base = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
-                                                       appropriateFor: nil, create: true)
-                let dir = base.appendingPathComponent("VelocityLogs", isDirectory: true)
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let url = dir.appendingPathComponent("velocity_raw50hz_\(stamp).csv")
+                let dir = Self.logDirectory
+                // Named after the workout from the first sample (build 82); it used to take the first
+                // sample's clock and be renamed at Stop, so a trace cut short by a crash kept a name
+                // no workout could find. t_seconds counts from this file's first sample, as before.
+                // A trace for this workout already on disk means the app was relaunched mid-workout:
+                // this process's samples go to a new part with its own clock rather than restarting
+                // t_seconds inside the old one.
+                var url: URL
+                if let stamp {
+                    url = dir.appendingPathComponent("velocity_raw50hz_\(stamp).csv")
+                    var part = 2
+                    while FileManager.default.fileExists(atPath: url.path) {
+                        url = dir.appendingPathComponent("velocity_raw50hz_\(stamp)_part\(part).csv")
+                        part += 1
+                    }
+                } else {
+                    let df = DateFormatter()
+                    df.dateFormat = "yyyyMMdd_HHmmss"
+                    url = dir.appendingPathComponent("velocity_raw50hz_\(df.string(from: rawStart ?? Date())).csv")
+                }
                 FileManager.default.createFile(atPath: url.path, contents: Self.rawHeader().data(using: .utf8))
                 rawFileHandle = try FileHandle(forWritingTo: url)
                 rawFileHandle?.seekToEndOfFile()
                 rawFileURL = url
+                // Where t_seconds = 0 is on the wall clock, so the trace can be joined to the GPS
+                // and barometer rows exactly.
+                if let rawStart {
+                    recordEvent("raw_start", detail: url.lastPathComponent, at: rawStart)
+                }
             } catch {
                 print("❌ Could not open raw trace for streaming: \(error)")
                 raw.removeAll()
@@ -486,53 +591,48 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         return df.string(from: workoutStart)
     }
 
-    /// Write both logs for a finished workout. Cheap enough to do on the main actor at stop.
+    /// Close a finished workout's files. Everything was written as it went, so this only flushes
+    /// the tails.
+    ///
+    /// NOTHING IS DELETED AUTOMATICALLY ANY MORE (build 82). Only the newest 40 files were kept,
+    /// about twenty workouts, so a flight's logs were gone after a few weeks of ordinary use,
+    /// and a flight cannot be recorded again. Logs stay until they are deleted from the Developer
+    /// screen; on one phone the whole folder held 176 MB.
     func persistToDisk(workoutStart: Date) {
         guard loggingEnabled else { return }
-        // Close the stream first: the raw trace has been written as it went, so this only has to
-        // flush the tail. Nothing here re-serialises hours of samples.
+        if stamp == nil { stamp = Self.stamp(for: workoutStart) }
+        recordEvent("stop")
         let streamed = finishRawStream()
-        guard !rows.isEmpty || streamed != nil else { return }
+        let ticks = debugStream?.linesWritten ?? 0
+        closeStreams()
         let s = Self.stamp(for: workoutStart)
-        let dir = Self.logDirectory
-        if !rows.isEmpty {
-            try? csv().write(to: dir.appendingPathComponent("velocity_debug_\(s).csv"),
-                             atomically: true, encoding: .utf8)
-        }
-        // The stream names itself from the first sample's clock; rename it to the workout's own
-        // stamp so both files for a session share one name.
-        if let streamed {
-            let target = dir.appendingPathComponent("velocity_raw50hz_\(s).csv")
-            if streamed != target {
-                try? FileManager.default.removeItem(at: target)
+        // A trace opened before the workout's stamp was known is named by its first sample; give
+        // it the workout's name, unless one is already taken.
+        if let streamed, !streamed.lastPathComponent.contains(s) {
+            let target = Self.logDirectory.appendingPathComponent("velocity_raw50hz_\(s).csv")
+            if !FileManager.default.fileExists(atPath: target.path) {
                 try? FileManager.default.moveItem(at: streamed, to: target)
             }
         }
         let minutes = Double(rawSamplesWritten) / 50.0 / 60.0
-        print("💾 Velocity logs saved for \(s): \(rows.count) ticks, \(rawSamplesWritten) raw samples (\(String(format: "%.0f", minutes)) min)")
-        Self.pruneOldLogs()
+        print("💾 Velocity logs saved for \(s): \(ticks) ticks, \(rawSamplesWritten) raw samples (\(String(format: "%.0f", minutes)) min)")
+        // Nothing more belongs to this workout: teardown after Stop must not reopen its files.
+        stamp = nil
     }
 
-    /// Files already saved for a given workout, newest formats first. Empty if none.
+    /// Files already saved for a given workout: its raw trace and any parts, the debug rows and the
+    /// events. Empty if none.
     static func savedLogs(forWorkoutStart start: Date) -> [URL] {
         let s = stamp(for: start)
         let dir = logDirectory
-        return ["velocity_raw50hz_\(s).csv", "velocity_debug_\(s).csv"]
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
+        return names
+            .filter { name in
+                ["velocity_raw50hz_", "velocity_debug_", "velocity_events_"]
+                    .contains { name.hasPrefix($0 + s) }
+            }
+            .sorted()
             .map { dir.appendingPathComponent($0) }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-    }
-
-    /// Raw traces are large. Keep the twenty most recent workouts' worth and drop the rest.
-    private static func pruneOldLogs() {
-        let dir = logDirectory
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
-        let sorted = files.sorted {
-            let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-            let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-            return a > b
-        }
-        for old in sorted.dropFirst(40) { try? FileManager.default.removeItem(at: old) }
     }
 
     /// Share previously saved logs for a workout, from anywhere in the app.
@@ -571,6 +671,10 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     }
 
     func csv() -> String {
+        Self.debugHeader + rows.map(Self.line).joined()
+    }
+
+    static let debugHeader: String = {
         var out = "time,source,activity,reported_speed_ms,reported_speed_kmh,distance_m,"
         out += "heading_deg,compass_deg,offset_deg,"
         out += "vib_feature_u,fit_p0,fit_p1,fit_p2,cal_min_u,cal_max_u,"
@@ -586,11 +690,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "flight_net_ms,flight_store_ms,flight_min,flight_tilt60_deg,"
         out += "mag_turn_deg,mag_scatter_ut,mag_verified,"
         out += "ped_steps,ped_distance_m,imu_steps,step_refractory_s\n"
+        return out
+    }()
 
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        for r in rows {
-            out += iso.string(from: r.t) + ","
+    static func line(_ r: Row) -> String {
+        var out = isoFormatter.string(from: r.t) + ","
+        do {
             // A COMMA IN A TAG SILENTLY DESTROYS THE FILE.
             //
             // "LEARN(held, in hand)" shipped in build 146 and added a 42nd field to a 41-column
@@ -635,13 +740,24 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let stamp = df.string(from: Date())
         var items: [Any] = []
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("velocity_debug_\(stamp).csv")
-        do {
-            try csv().write(to: url, atomically: true, encoding: .utf8)
-            items.append(url)
-        } catch {
-            print("❌ diagnostics export failed: \(error)")
+        // The debug rows and the events are on disk already, complete; share those files. Only a
+        // workout begun before build 82 has rows in memory alone.
+        if let debugStream {
+            debugStream.flush()
+            items.append(debugStream.url)
+        } else {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("velocity_debug_\(stamp).csv")
+            do {
+                try csv().write(to: url, atomically: true, encoding: .utf8)
+                items.append(url)
+            } catch {
+                print("❌ diagnostics export failed: \(error)")
+            }
+        }
+        if let eventStream {
+            eventStream.flush()
+            items.append(eventStream.url)
         }
         // The raw 50 Hz trace, which is what a spectrum can actually be computed from.
         // The raw trace lives on disk already — it was streamed there as the workout ran, so

@@ -40,6 +40,9 @@ struct ContentView: View {
         }
         .onAppear {
             requestPermissions()
+            // A workout the watch never stopped (the app ended mid-workout) is finished and sent
+            // to the iPhone now, not only when the next workout begins.
+            WorkoutSession.finalizeUnfinishedFlightsAtLaunch()
             // DEBUG: `-replayFlight` drives a synthesized flight through the real dead-reckoning
             // pipeline and opens the live view, so Force Velocity can be seen on the watch
             // simulator (which has no Core Motion). Inert without the argument.

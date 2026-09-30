@@ -1,72 +1,54 @@
 import SwiftUI
+import HealthKit
 
+/// The watch's saved workouts, newest first (build 82).
+///
+/// This tab never read anything: loading was a placeholder, so it always said "No Workouts Yet"
+/// however many workouts the watch had kept, and a swipe to delete only removed a row from the
+/// screen. It now lists what FlightDataStore holds - the summaries the watch saves as a workout
+/// runs - and opens the full route and charts from disk on a tap.
 struct FlightHistoryView: View {
-    @State private var flights: [Flight] = []
-    @State private var selectedFlight: Flight?
-    @State private var showingSummary = false
+    @ObservedObject private var store = FlightDataStore.shared
+    @State private var openedFlight: Flight?
+
+    private var flights: [Flight] {
+        store.savedFlights.sorted { $0.startDate > $1.startDate }
+    }
 
     var body: some View {
-        NavigationView {
-            VStack {
+        NavigationStack {
+            Group {
                 if flights.isEmpty {
-                    EmptyFlightsView()
+                    ScrollView { EmptyFlightsView() }
                 } else {
                     List {
-                        ForEach(flights) { flight in
-                            FlightRow(flight: flight)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    selectedFlight = flight
-                                    showingSummary = true
+                        Section {
+                            ForEach(flights) { flight in
+                                Button {
+                                    // The list holds summaries without their points; the summary
+                                    // screen needs the route, so read the full workout.
+                                    openedFlight = store.loadFlightDetails(id: flight.id) ?? flight
+                                } label: {
+                                    FlightRow(flight: flight)
                                 }
+                            }
+                            .onDelete(perform: deleteFlights)
                         }
-                        .onDelete(perform: deleteFlights)
-                    }
-
-                    // Statistics
-                    VStack(spacing: 8) {
-                        Text("Total Statistics")
-                            .font(.headline)
-                            .padding(.top)
-
-                        HStack(spacing: 20) {
-                            StatisticItem(
-                                title: "Flights",
-                                value: "\(flights.count)"
-                            )
-
-                            StatisticItem(
-                                title: "Distance",
-                                value: String(format: "%.0f km", totalDistance)
-                            )
-
-                            StatisticItem(
-                                title: "Time",
-                                value: formatTotalDuration(totalDuration)
-                            )
+                        Section("Total") {
+                            HStack(spacing: 8) {
+                                StatisticItem(title: flights.count == 1 ? "Workout" : "Workouts",
+                                              value: "\(flights.count)")
+                                StatisticItem(title: "km", value: String(format: "%.0f", totalDistance))
+                                StatisticItem(title: "Time", value: formatTotalDuration(totalDuration))
+                            }
+                            .frame(maxWidth: .infinity)
                         }
-                        .padding()
-                        .background(Color.systemGray6)
-                        .cornerRadius(12)
-                        .padding(.horizontal)
                     }
                 }
             }
             .navigationTitle("Flights")
-            #if !os(watchOS)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-            }
-            #endif
-            .sheet(isPresented: $showingSummary) {
-                if let flight = selectedFlight {
-                    SummaryView(flight: flight)
-                }
-            }
-            .onAppear {
-                loadFlights()
+            .sheet(item: $openedFlight) { flight in
+                SummaryView(flight: flight, fromHistory: true)
             }
         }
     }
@@ -79,14 +61,11 @@ struct FlightHistoryView: View {
         flights.reduce(0) { $0 + $1.duration }
     }
 
-    private func loadFlights() {
-        // TODO: Load flights from persistent storage
-        // For now, using empty array
-    }
-
     private func deleteFlights(at offsets: IndexSet) {
-        flights.remove(atOffsets: offsets)
-        // TODO: Delete from persistent storage
+        let shown = flights
+        for index in offsets where shown.indices.contains(index) {
+            store.deleteFlight(shown[index])
+        }
     }
 
     private func formatTotalDuration(_ duration: TimeInterval) -> String {
@@ -113,7 +92,7 @@ struct FlightRow: View {
                     )
                     .frame(width: 36, height: 36)
 
-                Image(systemName: "figure.run")
+                Image(systemName: kind.symbol)
                     .font(.system(size: 16))
                     .foregroundColor(.purple)
             }
@@ -125,7 +104,7 @@ struct FlightRow: View {
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                 } else {
-                    Text("Workout")
+                    Text(kind.title)
                         .font(.system(size: 13, weight: .semibold))
                 }
 
@@ -172,18 +151,30 @@ struct FlightRow: View {
         let minutes = Int(duration) / 60 % 60
         return String(format: "%dh %dm", hours, minutes)
     }
+
+    /// The same names and symbols as the workout picker.
+    private var kind: (title: String, symbol: String) {
+        switch flight.workoutType.flatMap({ HKWorkoutActivityType(rawValue: $0) }) {
+        case .cycling?: return ("Cycling", "bicycle")
+        case .running?: return ("Running", "figure.run")
+        case .walking?: return ("Walking", "figure.walk")
+        case .hiking?: return ("Hiking", "mountain.2.fill")
+        case .other?: return ("Flight", "airplane")
+        case .traditionalStrengthTraining?: return ("General", "figure.mixed.cardio")
+        default: return ("Workout", "figure.run")
+        }
+    }
 }
 
 struct EmptyFlightsView: View {
     var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "figure.run")
-                .font(.system(size: 60))
+        VStack(spacing: 10) {
+            Image(systemName: "airplane")
+                .font(.system(size: 34))
                 .foregroundColor(.gray)
 
             Text("No Workouts Yet")
-                .font(.title2)
-                .fontWeight(.semibold)
+                .font(.headline)
 
             Text("Start tracking your first workout to see it here")
                 .font(.subheadline)
@@ -199,15 +190,18 @@ struct StatisticItem: View {
     let value: String
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 2) {
             Text(value)
-                .font(.title3)
-                .fontWeight(.bold)
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
 
             Text(title)
-                .font(.caption)
+                .font(.system(size: 10))
                 .foregroundColor(.secondary)
         }
+        .frame(maxWidth: .infinity)
     }
 }
 
