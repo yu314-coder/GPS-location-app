@@ -66,7 +66,9 @@ class WorkoutSession: NSObject, ObservableObject {
         var iPhone: Double?             // m/s, relayed from the iPhone while fresh
         var gps: Double?                // m/s, the watch's own GPS while fresh (reference only)
         var driving = "—"               // GPS, iPhone, Neural, Algorithm, Steps, Held, —
-        var choice: LearnedSpeedEstimator.Engine = .auto
+        var storeStatus = "no window yet"   // the iPhone's store status: answered, too few examples, ...
+        var choice: WatchSpeedEngine = .auto
+        var developer = false
         var velocityMode = false
     }
     @Published var engineReadout = SpeedEngineReadout()
@@ -193,6 +195,45 @@ class WorkoutSession: NSObject, ObservableObject {
     /// One row per dead-reckoning tick, handed to the iPhone when the workout ends. Every fault
     /// found in this app was found by reading one of these on the phone; the watch had none.
     let watchDiagnostics = WatchDiagnosticsRecorder()
+
+    // VEHICLE CONTEXT, AS ON THE iPHONE (build 80). The iPhone teaches its speed store only in a
+    // vehicle, never on foot, and the watch now runs the iPhone's store, so it learns under the same
+    // rule. Evidence of a vehicle, each exactly the iPhone's test: Apple's classifier says
+    // automotive; three consecutive GPS fixes over 5.5 m/s at under 20 m accuracy with no steps
+    // for 20 s; or, in Velocity Mode, three consecutive engine readings over 5.5 m/s with no steps.
+    // It lasts five minutes. Steps come from the watch's own pedometer, which counts all workout.
+    private var lastVehicleEvidenceTime: Date?
+    private var consecutiveVehicleSpeedFixes = 0
+    private var consecutiveVehicleModelTicks = 0
+    private let VEHICLE_EVIDENCE_TTL: TimeInterval = 300
+    private var lastNativeStepTime: Date?
+    private var watchIsStepping: Bool {
+        let now = Date()
+        let recent: (Date?) -> Bool = { t in t.map { now.timeIntervalSince($0) < 20.0 } ?? false }
+        return recent(lastNativeStepTime) || recent(lastStepIncrementTime)
+    }
+    private var vehicleContextIsCurrent: Bool {
+        if isVehicleByActivity { return true }
+        guard let seen = lastVehicleEvidenceTime else { return false }
+        return Date().timeIntervalSince(seen) < VEHICLE_EVIDENCE_TTL
+    }
+    private func confirmVehicleFromGPS(_ location: FlightLocation) {
+        guard location.speed > 5.5, location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy < 20.0, !watchIsStepping else {
+            consecutiveVehicleSpeedFixes = 0
+            return
+        }
+        consecutiveVehicleSpeedFixes += 1
+        if consecutiveVehicleSpeedFixes >= 3 { lastVehicleEvidenceTime = Date() }
+    }
+    private func confirmVehicleFromModel(reading: Double?) {
+        guard !watchIsStepping, let reading, reading > 5.5 else {
+            consecutiveVehicleModelTicks = 0
+            return
+        }
+        consecutiveVehicleModelTicks += 1
+        if consecutiveVehicleModelTicks >= 3 { lastVehicleEvidenceTime = Date() }
+    }
 
     private let activityManager = CMMotionActivityManager()
     private var activityUpdatesActive = false
@@ -511,6 +552,7 @@ class WorkoutSession: NSObject, ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] stepCount, distance in
                 guard let self = self else { return }
+                if stepCount > self.nativePedometerStepCount { self.lastNativeStepTime = Date() }
                 self.nativePedometerStepCount = stepCount
                 self.nativePedometerDistanceMeters = max(0, distance)
                 guard self.isActive else { return }
@@ -670,6 +712,10 @@ class WorkoutSession: NSObject, ObservableObject {
             // Everything this watch has learned about this vehicle outlives the workout.
             learnedSpeed.resetWindow()
             learnedSpeed.load()
+            // Attribute everything this workout teaches to this workout, so regimes stay separable
+            // (the iPhone's store keys its regime checks on the session).
+            learnedSpeed.beginSession()
+            lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             watchDiagnostics.reset()
             startActivityClassifier()
             lastLocationTime = Date()
@@ -2107,18 +2153,20 @@ class WorkoutSession: NSObject, ObservableObject {
     }
 
     private func refreshEngineReadout(now: Date) {
-        let answers = learnedSpeed.bothAnswers()
+        let answers = learnedSpeed.bothAnswers(airborne: false)
         var r = SpeedEngineReadout()
         r.network = answers.network
-        r.familiarity = answers.familiarity
+        r.familiarity = answers.networkFamiliarity
         r.store = answers.store
+        r.storeStatus = answers.storeStatus
         r.storeExamples = learnedSpeed.groundObservationCount
         if let relayed = iPhoneDRSpeed, let ts = iPhoneDRTimestamp,
            now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE { r.iPhone = relayed }
         if watchDiagnostics.latestGPSSpeed >= 0, now.timeIntervalSince(lastLocationTime) <= 5 {
             r.gps = watchDiagnostics.latestGPSSpeed
         }
-        r.choice = LearnedSpeedEstimator.chosenEngine
+        r.choice = WatchSpeedEngine.effective
+        r.developer = WatchSpeedEngine.developerUnlocked
         r.velocityMode = forceMotionFallback
         if !isUsingMotionFallback {
             r.driving = "GPS"
@@ -2504,18 +2552,25 @@ class WorkoutSession: NSObject, ObservableObject {
             // then the watch's own last GPS-measured speed, held; then nothing at all. Never
             // integration.
             //
-            // THE WATCH'S OWN ENGINES (build 79): the bundled network or the store, chosen as on the
-            // iPhone (LearnedSpeedEstimator.estimate). In Auto the iPhone still leads when its
-            // relay is fresh; with an engine pinned in Settings the watch answers for itself and
-            // the relay only covers seconds its engine cannot.
+            // THE WATCH'S OWN ENGINES: the iPhone's engine, copied exactly (WatchSpeedEngine). In
+            // Auto the iPhone's relayed speed leads while fresh, then estimate() - the network until
+            // the store holds 3,000 ground examples, the store after. With an engine pinned in the
+            // developer options the watch answers from that one alone, and the relay only covers
+            // seconds it cannot.
             let relayedSpeed: Double? = {
                 guard let relayed = iPhoneDRSpeed, let ts = iPhoneDRTimestamp,
                       now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE else { return nil }
                 return relayed
             }()
-            let engineChoice = LearnedSpeedEstimator.chosenEngine
-            let ownAnswer = (engineChoice == .auto && relayedSpeed != nil) ? nil : learnedSpeed.estimate(airborne: false)
-            let ownUsedNetwork = learnedSpeed.lastEstimateUsedNetwork
+            let engineChoice = WatchSpeedEngine.effective
+            let ownAnswer: Double?
+            switch engineChoice {
+            case .auto: ownAnswer = relayedSpeed != nil ? nil : learnedSpeed.estimate(airborne: false)
+            case .network: ownAnswer = learnedSpeed.bothAnswers(airborne: false).network
+            case .store: ownAnswer = learnedSpeed.bothAnswers(airborne: false).store
+            }
+            let ownUsedNetwork = engineChoice == .network || (engineChoice == .auto && learnedSpeed.lastEstimateUsedNetwork)
+            if forceMotionFallback { confirmVehicleFromModel(reading: ownAnswer ?? relayedSpeed) }
             if engineChoice == .auto, let relayed = relayedSpeed {
                 motionFallbackSpeed = relayed
                 accelSource = "iPhone-DR"
@@ -2573,7 +2628,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Keep the DISPLAYED speed in sync every tick, not only when a point is appended, so
         // it matches the DR status and reflects ZUPT zeroing while standing still.
-        let engineAnswers = learnedSpeed.bothAnswers()
+        let engineAnswers = learnedSpeed.bothAnswers(airborne: false)
         currentMetrics.currentSpeed = motionFallbackSpeed
         currentMetrics.smoothedSpeed = motionFallbackSpeed
 
@@ -2595,7 +2650,7 @@ class WorkoutSession: NSObject, ObservableObject {
             accelMagnitude: lastMotionAccelMagnitude,
             rotationRate: lastMotionRotationMagnitude,
             networkSpeed: engineAnswers.network,
-            networkFamiliarity: engineAnswers.familiarity,
+            networkFamiliarity: engineAnswers.networkFamiliarity,
             storeSpeed: engineAnswers.store,
             storeGroundExamples: learnedSpeed.groundObservationCount,
             features: learnedSpeed.currentFeatures()))
@@ -3038,7 +3093,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // make Velocity Mode silently GPS-powered. These join the searchable store when the
             // workout ends, so they teach the next trip and not this one.
             if location.speed >= 0, location.horizontalAccuracy >= 0,
-               location.horizontalAccuracy < 35.0 {
+               location.horizontalAccuracy < 35.0, vehicleContextIsCurrent {
                 learnedSpeed.learn(gpsSpeed: location.speed, quarantined: true)
             }
             let fixAge = Date().timeIntervalSince(location.timestamp)
@@ -3119,8 +3174,10 @@ class WorkoutSession: NSObject, ObservableObject {
             if location.speed > 1.0, location.course >= 0, location.course <= 360 {
                 learnCompassMisalignmentWatch(courseDegrees: location.course)
             }
-            // Ordinary GPS: learn directly, since nothing here is answering from it.
-            if location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0 {
+            // Ordinary GPS: learn directly, since nothing here is answering from it - in a vehicle
+            // only, as on the iPhone (see vehicleContextIsCurrent).
+            if !forceMotionFallback { confirmVehicleFromGPS(location) }
+            if location.horizontalAccuracy >= 0, location.horizontalAccuracy < 35.0, vehicleContextIsCurrent {
                 learnedSpeed.learn(gpsSpeed: location.speed)
             }
         }

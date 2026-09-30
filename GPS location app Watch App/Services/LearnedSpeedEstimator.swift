@@ -54,23 +54,13 @@ final class LearnedSpeedEstimator {
         ring[ringIndex] = vertical
         ringIndex = (ringIndex + 1) % windowSize
         if ringFilled < windowSize { ringFilled += 1 }
-        samplesIngested &+= 1
     }
 
-    /// The fingerprint is asked for several times a second (the speed, both engines' readouts,
-    /// the log); it only changes when a sample arrives, so it is computed once per sample.
-    private var samplesIngested = 0
-    private var cachedFeatures: (at: Int, f: [Double])?
-
+    /// Vibration amplitude of the most recent window, m/s^2. The caller compares it against this
+    /// vehicle's own moving level to recognise a standstill; see WorkoutSession.vibrationSaysParked.
+    private(set) var lastWindowAmplitude: Double?
     /// Log band energies plus two time-domain terms, or nil until the window is full.
     func currentFeatures() -> [Double]? {
-        if let c = cachedFeatures, c.at == samplesIngested { return c.f }
-        guard let f = computeFeatures() else { return nil }
-        cachedFeatures = (samplesIngested, f)
-        return f
-    }
-
-    private func computeFeatures() -> [Double]? {
         guard ringFilled >= windowSize else { return nil }
         var x = [Double](repeating: 0, count: windowSize)
         for i in 0..<windowSize { x[i] = ring[(ringIndex + i) % windowSize] }
@@ -82,6 +72,7 @@ final class LearnedSpeedEstimator {
             if i > 0 { absDiff += abs(x[i] - x[i - 1]) }
         }
         sd = (sd / Double(windowSize)).squareRoot()
+        lastWindowAmplitude = sd
         absDiff /= Double(windowSize - 1)
 
         // Hann window, then a real FFT. Removing the mean first keeps any DC offset out of the
@@ -211,53 +202,195 @@ final class LearnedSpeedEstimator {
     /// applied". Those need opposite fixes and look identical from the outside.
     var calibration: (slope: Double, intercept: Double) { (calibrationSlope, calibrationIntercept) }
     var quarantinedCount: Int { quarantined.count }
-
-    // BOTH ENGINES, AS ON THE IPHONE (build 79).
-    //
-    // The iPhone answers from a small network bundled with the app until its own store holds
-    // 3,000 ground examples, and from the store after (paper, "A new phone"). The watch only had
-    // the store, with a warm-up pool of this trip's own GPS-labelled seconds standing in while it
-    // was empty - the path the iPhone retired in build 49, because it made Velocity Mode partly
-    // GPS-powered. Now the watch carries the same network (SpeedNetwork.swift, same weights) and
-    // the same rule, and the warm-up pool is gone.
-    //
-    // One difference, for the wrist: the network was trained on phones in pockets and on mounts,
-    // and a wrist moves in ways it has never seen, so it will refuse more fingerprints (farther
-    // from all its training clusters than 99.5% of them). In Auto a refused second falls to the
-    // watch's own store, which learns the wrist from the watch's GPS, instead of to nothing.
-    // The user may also pin either engine (watch Settings, "Speed engine").
-    enum Engine: String, CaseIterable {
-        case auto, network, store
-        var title: String {
-            switch self {
-            case .auto: return "Auto"
-            case .network: return "Neural"
-            case .store: return "Algorithm"
-            }
-        }
+    /// Set by the last estimate() call: true when the answer came from within-session evidence
+    /// rather than the store built on previous trips. The distinction has to reach the log,
+    /// because only the second kind predicts what happens when GPS has been gone for hours.
+    /// Why the store's last lookup gave what it gave - for the log only, never read by the tick.
+    enum StoreStatus: String {
+        case answered = "answered"
+        case tooFewExamples = "too few examples"
+        case unlearnedRegime = "unlearned regime"
+        case noCloseMatch = "no close match"
+        case locallyUnreliable = "locally unreliable"
     }
-    static let engineDefaultsKey = "watchSpeedEngine"
-    static var chosenEngine: Engine {
-        Engine(rawValue: UserDefaults.standard.string(forKey: engineDefaultsKey) ?? "") ?? .auto
-    }
-    /// The iPhone's threshold: below this many ground examples its store read less accurately
-    /// than the network on recordings neither had seen.
+    private(set) var lastStoreStatus: StoreStatus = .tooFewExamples
+    /// The last estimate came from the bundled SpeedNetwork, not the store.
+    private(set) var lastEstimateUsedNetwork = false
+    /// Below this many ground observations the store is less accurate than the bundled network.
     static let NETWORK_UNTIL_OBSERVATIONS = 3000
     var groundObservationCount: Int { observations.reduce(0) { $0 + ($1.airborne ? 0 : 1) } }
-    /// Set by the last estimate(): the answer came from the bundled network, not the store.
-    private(set) var lastEstimateUsedNetwork = false
-    /// Whether Auto would ask the network first right now.
-    var networkLeadsInAuto: Bool {
-        groundObservationCount < Self.NETWORK_UNTIL_OBSERVATIONS && SpeedNetwork.bundled != nil
+
+    /// Fingerprint distance beyond which this workout is a regime the model has never learned,
+    /// and its answers about it should not be trusted however close the individual matches look.
+    ///
+    /// Calibrated against the eight instrumented sessions in the paper: the same vehicle carried
+    /// the same way sits 0.54-1.70 apart, the same vehicle carried differently 1.81-2.87, and a
+    /// different vehicle 4.30-6.97. Three separates "a carry I can absorb" from "something I have
+    /// not seen". The motorcycle-in-pocket ride that produced the worst result yet measured sat
+    /// at 3.51 for its whole 19 minutes.
+    private let REGIME_DISTANCE_LIMIT = 3.0
+
+    /// How many of this workout's own observations its fingerprint must rest on before the
+    /// distance may REFUSE an answer. Twenty is enough to compute one and far too few to act on.
+    ///
+    /// A motorcycle ride (2026-09-15) collected its first 20 observations while stopping, pulling
+    /// away and briefly holding the phone; GPS then stopped reporting a usable speed, so nothing
+    /// more was ever learned. The fingerprint froze at 6.12 - "a different vehicle" - on the
+    /// same motorcycle that had sat at 0.29-1.88 that morning, and the gate refused every tick
+    /// for 9.5 minutes: 4.3 km ridden, 20 m recorded.
+    ///
+    /// SIXTY WAS STILL TOO FEW. It was chosen because across 21 sessions the distance never
+    /// passed 2.57 after sixty observations; the next ride (2026-09-17) read 4.27 at sixty-four
+    /// and refused 21 ticks, 201 m, before settling to 1.2 by two hundred. Replayed over every
+    /// recording since, 150 observations produces no refusal at all, and neither does 100 - so
+    /// this threshold currently costs nothing and the only refusals it has ever produced on real
+    /// data were wrong.
+    ///
+    /// Two reasons not to delete the gate outright. A genuinely different vehicle would hold a
+    /// large distance with hundreds of observations, which this still catches; and the ride the
+    /// gate was built for - a pocketed motorcycle reporting a flat 50 km/h - turned out to be the
+    /// store's own composition rather than an unlearned regime, which naturalSpeedCounts now
+    /// corrects at source. The gate is the backstop, not the fix.
+    private let REGIME_MIN_OBSERVATIONS = 150
+    /// How long the distance must stay past the limit before it may refuse. A fingerprint built
+    /// while stopping and pulling away starts unrepresentative and settles: on the ride above it
+    /// sat above 3 for about 40 s out of 19 minutes.
+    private let REGIME_CONFIRM_SECONDS: TimeInterval = 60
+    private var regimeUnlearnedSince: Date?
+
+    /// SPEED BINS AS THEY WERE ACTUALLY RIDDEN, not as the store ended up holding them.
+    ///
+    /// insert() evicts from the most crowded speed bin, which is what stops a rare 100 km/h
+    /// sample being squeezed out by thousands of red lights. The cost was invisible until it was
+    /// replayed: the store stops resembling the riding. Measured over 44 recordings, 24% of
+    /// observations are under 5 km/h and 45% above 30, while the store that rule produces holds
+    /// 5% and 69%. A lookup that lands between regimes then averages mostly fast neighbours,
+    /// which is exactly the measured failure - 15-30 km/h reported as ~50, +30-50% distance on
+    /// six rides - while 50+ km/h, where the store is dense either way, reads correctly.
+    ///
+    /// So each neighbour is weighted by how over- or under-represented its speed is. Replayed
+    /// leave-one-ride-out with the TRUE riding distribution, that takes mean distance error from
+    /// 20% to 8%.
+    ///
+    /// ON ITS OWN IT DID NOT CONVERGE, and 1.4 (14)'s prior_w column showed it: median weight
+    /// 1.01 at 15-30 km/h where about 4 was needed. A decayed count describes the last few rides,
+    /// while the store was built over months, so the ratio between them is not the correction the
+    /// store needs - replayed as shipped it gave 22% against 22% with no weighting at all. What
+    /// converges is changing the eviction itself (evictionIndex). The weighting stays as a small
+    /// residual correction while an old store turns over, worth 13% -> 11% in that replay.
+    ///
+    /// Decayed rather than cumulative: a half-life of about 1400 observations means this tracks
+    /// how the phone is being used now, and that a store carried over from an older build stops
+    /// dominating after two or three rides.
+    private static let PRIOR_BINS = 101
+    private static let PRIOR_BIN_WIDTH = 2.0 / 3.6            // 2 km/h, in m/s
+    private let PRIOR_DECAY = 0.9995
+    private var naturalSpeedCounts = [Double](repeating: 0, count: LearnedSpeedEstimator.PRIOR_BINS)
+    private var naturalSpeedTotal: Double = 0
+    private var storeSpeedCounts = [Double](repeating: 0, count: LearnedSpeedEstimator.PRIOR_BINS)
+    private var storeDistributionIsStale = true
+
+    private func speedBin(_ speed: Double) -> Int {
+        min(max(Int(speed / Self.PRIOR_BIN_WIDTH), 0), Self.PRIOR_BINS - 1)
     }
 
-    /// Both engines' answers for this second, whichever one is driving: the network's speed (nil
-    /// when it refuses) and how familiar the fingerprint is (1.0 or less answers), and the
-    /// store's speed (nil when it has too little evidence or no close match). m/s.
-    func bothAnswers() -> (network: Double?, familiarity: Double?, store: Double?) {
-        guard let f = currentFeatures() else { return (nil, nil, nil) }
-        let net = SpeedNetwork.bundled?.diagnose(features: f)
-        return (net?.speed, net?.familiarity, storeEstimate(features: f, airborne: false))
+    /// Record what was actually ridden, before any eviction decides what to keep.
+    private func noteNaturalSpeed(_ speed: Double) {
+        for i in 0..<naturalSpeedCounts.count { naturalSpeedCounts[i] *= PRIOR_DECAY }
+        naturalSpeedCounts[speedBin(speed)] += 1
+        naturalSpeedTotal = naturalSpeedTotal * PRIOR_DECAY + 1
+    }
+
+    private func refreshStoreDistributionIfNeeded() {
+        guard storeDistributionIsStale else { return }
+        storeDistributionIsStale = false
+        storeSpeedCounts = [Double](repeating: 0, count: Self.PRIOR_BINS)
+        for o in observations where !o.airborne { storeSpeedCounts[speedBin(o.speed)] += 1 }
+    }
+
+    /// How much a neighbour's speed should count, given how over-represented that speed is in
+    /// the store. 1 while the store is faithful to the riding; below 1 for the fast samples
+    /// eviction preserves, above 1 for the slow ones it thins. Clamped so a bin holding almost
+    /// nothing cannot carry an answer on its own, and inert until there is a distribution worth
+    /// trusting - a fresh install answers exactly as before.
+    private func representationWeight(for speed: Double) -> Double {
+        let storeTotal = storeSpeedCounts.reduce(0, +)
+        guard naturalSpeedTotal > 200, storeTotal > 0 else { return 1 }
+        let bin = speedBin(speed)
+        let natural = naturalSpeedCounts[bin] / naturalSpeedTotal
+        let held = storeSpeedCounts[bin] / storeTotal
+        guard natural > 0, held > 0 else { return 1 }
+        return min(max(natural / held, 0.05), 20)
+    }
+
+    /// True when the last estimate was refused because the workout is an unlearned regime.
+    /// Recorded so a log can tell "declined, correctly" from "answered, wrongly" - the two are
+    /// indistinguishable from the outside and need opposite fixes.
+    private(set) var lastEstimateDeclinedUnlearnedRegime = false
+
+    /// Mean absolute error, in m/s, of the neighbourhood the last estimate was drawn from —
+    /// measured by holding each near neighbour out and predicting it from the others.
+    private(set) var lastLocalError: Double?
+    /// Mean representation weight over the neighbours the last estimate used, or nil when it did
+    /// not answer. 1 means the store's speed mix matched the riding and the weighting changed
+    /// nothing; above 1 means the answer was pulled toward under-represented (slow) neighbours.
+    /// Recorded because a correction that silently fails to engage is indistinguishable from one
+    /// that engaged and did not help - which is the position this project was in for three weeks.
+    private(set) var lastNeighbourWeight: Double?
+    /// True when the last estimate was refused because that error was too large to interpolate
+    /// through.
+    private(set) var lastEstimateDeclinedUnreliableLocally = false
+    /// Above this, the stored labels around the query disagree so much that a weighted mean of
+    /// them is not a measurement of anything. 4 m/s is 14 km/h — larger than the worst honest
+    /// band error in the paper, so it fires on genuinely incoherent neighbourhoods rather than
+    /// on ordinary spread.
+    private let MAX_LOCAL_ERROR: Double = 4.0
+    /// How many neighbours to hold out, and how many to predict each from.
+    private let LOO_HELD_OUT = 8
+    private let LOO_POOL = 24
+
+    /// `distanceToNearestKnownRegime` walks every observation of every session to rebuild the
+    /// fingerprints, which is far too much to repeat per tick. It only moves as the session
+    /// accumulates evidence, so it is recomputed on a slow cadence and held in between.
+    private var cachedRegimeDistance: Double?
+    private var cachedRegimeDistanceAt: Date = .distantPast
+    private let REGIME_CACHE_TTL: TimeInterval = 20
+
+    /// The cached view of how far this workout sits from anything already learned.
+    var regimeDistanceCached: Double? {
+        if Date().timeIntervalSince(cachedRegimeDistanceAt) > REGIME_CACHE_TTL {
+            cachedRegimeDistance = distanceToNearestKnownRegime
+            cachedSessionObservations = observations.filter { $0.session == currentSession }.count
+                + quarantined.filter { $0.session == currentSession }.count
+            cachedRegimeDistanceAt = Date()
+        }
+        return cachedRegimeDistance
+    }
+    private var cachedSessionObservations = 0
+    /// How many observations the current fingerprint was built from, refreshed with the distance.
+    var regimeObservationsCached: Int {
+        _ = regimeDistanceCached
+        return cachedSessionObservations
+    }
+
+    /// Whether this workout looks like something the model has never been taught.
+    ///
+    /// Deliberately false when the answer is unknown. The distance needs 20 observations in the
+    /// session before it means anything, and needs at least one other session to compare with, so
+    /// a first-ever workout has no answer - and refusing on "no answer" would record nothing at
+    /// all, which is the worse failure of the two.
+    var regimeIsUnlearned: Bool {
+        guard let d = regimeDistanceCached,
+              cachedSessionObservations >= REGIME_MIN_OBSERVATIONS,
+              d > REGIME_DISTANCE_LIMIT else {
+            regimeUnlearnedSince = nil
+            return false
+        }
+        guard let since = regimeUnlearnedSince else {
+            regimeUnlearnedSince = Date()
+            return false
+        }
+        return Date().timeIntervalSince(since) >= REGIME_CONFIRM_SECONDS
     }
 
     /// Observations recorded while Velocity Mode was forced. Held apart from the searchable
@@ -345,9 +478,13 @@ final class LearnedSpeedEstimator {
                                       t: isQuarantined ? Date() : nil,
                                       session: currentSession)
         if isQuarantined {
+            // The speed tally waits for the quarantine too. Every answer weights its neighbours by
+            // how common their speed is in naturalSpeedCounts, so counting this fix now would pull
+            // Velocity Mode's answers toward the speeds GPS is measuring on this very trip.
             if quarantined.count < capacity { quarantined.append(observation) }
             return
         }
+        if !airborne { noteNaturalSpeed(gpsSpeed) }
         insert(observation)
         // Re-measure the model's own compression as evidence accumulates. Rare enough that the
         // leave-one-out pass costs nothing noticeable, often enough that a drive which visits
@@ -362,56 +499,13 @@ final class LearnedSpeedEstimator {
     private var sinceLastCalibration = 0
 
     private func insert(_ observation: Observation) {
+        storeDistributionIsStale = true
+        insertsSinceProtectionUpdate += 1
         if observations.count < capacity {
             observations.append(observation)
-        } else if let victim = mostRedundantIndex(for: observation.speed) {
+        } else if let victim = evictionIndex(for: observation) {
             observations[victim] = observation
         }
-    }
-
-    /// TEACH THE MODEL FROM A LOG THAT WAS ALREADY RECORDED.
-    ///
-    /// The 14 August flight carried GPS the whole way - valid speed on all 1323 ticks, up to
-    /// 706 km/h - and its cabin vibration predicts its own airspeed to a leave-one-out MAE of
-    /// 43.3 km/h against a 253.7 km/h baseline: skill +0.83, the same as the best mounted car
-    /// drives. The signal was there. What was missing is that those observations were never
-    /// committed to the airborne partition, because the partition did not exist yet and the
-    /// store was reset afterwards.
-    ///
-    /// Nothing about a flight has to be inferred here. The log has the speeds GPS measured, so
-    /// this replays the raw 50 Hz vertical acceleration through the same window and records the
-    /// same (signature -> speed) pairs a live session would have. It reads only what is in the
-    /// file; it decides nothing.
-    ///
-    /// Returns how many observations were taken.
-    @discardableResult
-    func importRawLog(at url: URL, airborne: Bool, everyNSamples: Int = 25) -> Int {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let header = lines.first else { return 0 }
-        let cols = header.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-        guard let vIdx = cols.firstIndex(of: "vertical_accel_ms2"),
-              let sIdx = cols.firstIndex(of: "gps_speed_ms") else { return 0 }
-        lines.removeFirst()
-
-        beginSession()
-        resetWindow()
-        var taken = 0, sinceLast = 0
-        for line in lines {
-            let parts = line.split(separator: ",", omittingEmptySubsequences: false)
-            guard parts.count > max(vIdx, sIdx), let a = Double(parts[vIdx]) else { continue }
-            ingest(vertical: a)
-            sinceLast += 1
-            guard sinceLast >= everyNSamples, let speed = Double(parts[sIdx]), speed >= 0 else { continue }
-            sinceLast = 0
-            let before = observations.count
-            learn(gpsSpeed: speed, airborne: airborne)
-            if observations.count > before || observations.count == capacity { taken += 1 }
-        }
-        recalibrate()
-        save()
-        print("🧠 Learned speed model: imported \(taken) observations from \(url.lastPathComponent) (airborne: \(airborne))")
-        return taken
     }
 
     /// Fold everything learned during a forced session into the searchable store. Called when
@@ -419,21 +513,72 @@ final class LearnedSpeedEstimator {
     func commitQuarantinedObservations() {
         guard !quarantined.isEmpty else { return }
         let count = quarantined.count
-        for var o in quarantined { o.t = nil; insert(o) }
+        for var o in quarantined {
+            if !o.airborne { noteNaturalSpeed(o.speed) }
+            o.t = nil; insert(o)
+        }
         quarantined.removeAll()
         observationsAtLastCalibration = 0
         recalibrate()
         print("🧠 Learned speed model: folded in \(count) observations held back during Velocity Mode")
     }
 
-    /// Index of an observation whose speed bucket is the most crowded, so replacing it preserves
-    /// coverage. Returns nil if this sample's own bucket is the crowded one, i.e. nothing to gain.
-    private func mostRedundantIndex(for incoming: Double) -> Int? {
-        var counts = [Int: Int]()
-        for o in observations { counts[Int(o.speed / 2.0), default: 0] += 1 }
-        guard let crowded = counts.max(by: { $0.value < $1.value })?.key else { return nil }
-        if crowded == Int(incoming / 2.0) { return nil }
-        return observations.firstIndex { Int($0.speed / 2.0) == crowded }
+    /// Which stored observation to give up for an incoming one, once the store is full.
+    ///
+    /// RANDOM, NOT THE MOST CROWDED SPEED BIN.
+    ///
+    /// Evicting from the most crowded bin kept the store flat across speeds, which is what let a
+    /// rare fast sample survive thousands of red lights - and it is also why the store stopped
+    /// resembling the riding (5% of it below 5 km/h, where the riding is 24%) and why every
+    /// ambiguous lookup averaged mostly fast neighbours. Worse, it cannot recover: the rule
+    /// throws away incoming slow observations for exactly as long as slow is the crowded bin.
+    /// Replayed from a store built that way through seven motorcycle rides in order, it stayed at
+    /// 5% slow the whole time and the last four rides averaged 82% distance error.
+    ///
+    /// Replacing a random observation lets real riding flow back in. The same replay reaches 11%
+    /// slow and 13% mean error over those four rides - improving from the very next ride - and 11%
+    /// with the representation weighting kept alongside. Nothing is deleted; old observations are
+    /// simply outlived.
+    ///
+    /// Two things random replacement would eventually lose, so they are protected:
+    /// - FLIGHT DATA. Ground observations never evict airborne ones. An airborne observation
+    ///   evicts a ground one while the air partition holds under a quarter of the store, so a
+    ///   flight is still learned into a store full of roads.
+    /// - THE FASTEST GROUND SPEEDS. The top 2% are never chosen, so the store keeps the evidence
+    ///   that lets it answer at speeds it rarely sees rather than capping itself at a commute.
+    private func evictionIndex(for incoming: Observation) -> Int? {
+        guard !observations.isEmpty else { return nil }
+        refreshProtectedSpeedIfNeeded()
+        let airCount = observations.reduce(0) { $0 + ($1.airborne ? 1 : 0) }
+        let victimsAreAirborne = incoming.airborne && airCount >= capacity / 4
+        func eligible(_ o: Observation) -> Bool {
+            guard o.airborne == victimsAreAirborne else { return false }
+            return o.airborne || o.speed < protectedGroundSpeed
+        }
+        for _ in 0..<16 {
+            let i = Int.random(in: 0..<observations.count)
+            if eligible(observations[i]) { return i }
+        }
+        // A heavily partitioned store can defeat a handful of random draws; scan instead so new
+        // evidence is still accepted.
+        return observations.indices.filter { eligible(observations[$0]) }.randomElement()
+    }
+
+    /// Ground speed at or above which an observation is never evicted: the 98th percentile of
+    /// what the store holds, re-measured every 200 insertions. Unset until there are enough ground
+    /// observations to make a percentile mean something.
+    private var protectedGroundSpeed: Double = .greatestFiniteMagnitude
+    private var insertsSinceProtectionUpdate = 200
+
+    private func refreshProtectedSpeedIfNeeded() {
+        guard insertsSinceProtectionUpdate >= 200 else { return }
+        insertsSinceProtectionUpdate = 0
+        let ground = observations.filter { !$0.airborne }.map(\.speed).sorted()
+        guard ground.count >= 50 else {
+            protectedGroundSpeed = .greatestFiniteMagnitude
+            return
+        }
+        protectedGroundSpeed = ground[Int(Double(ground.count - 1) * 0.98)]
     }
 
     private func updateNormalisation(_ f: [Double]) {
@@ -453,25 +598,79 @@ final class LearnedSpeedEstimator {
     /// evidence. Distance-weighted so a near-exact match dominates a merely similar one.
     func estimate(airborne: Bool = false) -> Double? {
         lastEstimateUsedNetwork = false
+        lastEstimateDeclinedUnlearnedRegime = false
+        lastEstimateDeclinedUnreliableLocally = false
+        lastLocalError = nil
+        lastNeighbourWeight = nil
         guard let f = currentFeatures() else { return nil }
-        // On the ground: the network first while the store is young (or when pinned), the store
-        // otherwise, and the store again when the network refuses a wrist it does not recognise.
-        // The network never answers in the air - nothing in its training flew.
-        if !airborne {
-            let choice = Self.chosenEngine
-            if choice == .network || (choice == .auto && networkLeadsInAuto),
-               let net = SpeedNetwork.bundled?.speed(features: f) {
-                lastEstimateUsedNetwork = true
-                return net
-            }
-            if choice == .network { return nil }
+
+        // TOO LITTLE OF THE USER'S OWN DATA: THE BUNDLED NETWORK ANSWERS.
+        //
+        // Replayed on every recording, a store of 60 examples missed by 10.6 km/h a half-minute,
+        // 1,000 by 8.8 and 2,000 by 8.5, while the network - trained offline, scored only on
+        // recordings it never saw - missed by 8.3; the store draws level at about 3,000 (8.4).
+        // So until the ground store holds NETWORK_UNTIL_OBSERVATIONS of the user's own
+        // examples, the network answers; after that the store, which keeps adapting to this
+        // user's own vehicle and phone placement, takes over.
+        // It needs nothing from the current trip, which is what lets Velocity Mode stay free of
+        // GPS on a first install or after the store is cleared: the old fallback here answered
+        // from this trip's own GPS-labelled samples. Ground only; the air partition is its own.
+        if !airborne, groundObservationCount < Self.NETWORK_UNTIL_OBSERVATIONS,
+           let network = SpeedNetwork.bundled {
+            lastEstimateUsedNetwork = true
+            return network.speed(features: f)
         }
-        return storeEstimate(features: f, airborne: airborne)
+        return storeEstimate(f, airborne: airborne)
     }
 
-    /// The store alone: the closest stored signatures, distance-weighted, or nil. See estimate().
-    private func storeEstimate(features f: [Double], airborne: Bool) -> Double? {
-        guard featureMean.count == f.count, isUsable(airborne: airborne) else { return nil }
+    /// The learned store's own answer for one fingerprint. Split out of estimate() so the log can
+    /// record it every tick, even while the bundled network is the one being used.
+    private func storeEstimate(_ f: [Double], airborne: Bool) -> Double? {
+        lastStoreStatus = .tooFewExamples
+        guard featureMean.count == f.count else { return nil }
+
+        // REFUSE TO ANSWER ABOUT A REGIME THIS WORKOUT HAS NEVER BEEN TAUGHT.
+        //
+        // The per-match gate below asks "have I seen a signature like this one?". That is not
+        // the same question as "does the speed attached to it transfer to what I am riding now",
+        // and the difference is where the worst measured result in this project came from.
+        //
+        // A motorcycle with the phone in a trouser pocket: every individual 4-second signature
+        // matched something in the store closely enough to clear MAX_MATCH_DISTANCE_SQUARED, so
+        // the model answered on essentially every tick - and the answers carried no information
+        // at all. Reported speed against real speed came out at R = +0.13, the vibration feature
+        // against real speed at R = -0.02, and it read a steady ~50 km/h whether the motorcycle
+        // was at 64 km/h or standing at a red light. Engine vibration through clothing tracks
+        // engine speed, not road speed, and is undiminished at a standstill in gear; there is no
+        // speed in the input for any estimator to recover.
+        //
+        // What did know was the fingerprint: 3.51 for the entire ride, outside the same-vehicle
+        // range and heading toward different-vehicle. It was computed every tick, written to the
+        // diagnostics file, and never consulted. Consulting it is this gate.
+        //
+        // Declining is not the same as failing. The caller falls through to the last speed GPS
+        // actually measured, which is a far better answer than a confident number about a
+        // vehicle the model has never ridden - and, unlike that number, it is honest about what
+        // it is. Airborne is exempt: the air partition is small and separately judged, and there
+        // is no ground truth to have built fingerprints from in the first place.
+        if !airborne, regimeIsUnlearned {
+            lastEstimateDeclinedUnlearnedRegime = true
+            lastStoreStatus = .unlearnedRegime
+            return nil
+        }
+
+        // COLD START MUST NOT MEAN NO ROUTE.
+        //
+        // A 16 km drive recorded ZERO metres: every tick fell through to HOLD, because the
+        // store had just been reset and everything this session taught was quarantined until
+        // the workout ended. The quarantine reasoning was right and its consequence was not -
+        // an empty model made the whole workout unrecordable, which is a worse failure than
+        // the leak it was guarding against.
+        //
+        // That case is now the network's (above). The aged quarantine that used to stand in here
+        // answered from this trip's own GPS-labelled samples, so it is gone: quarantined samples
+        // are never searched before the workout ends.
+        guard isUsable(airborne: airborne) else { return nil }
         let pool = observations.filter { $0.airborne == airborne }
 
         var best = [(d: Double, s: Double)]()
@@ -493,6 +692,7 @@ final class LearnedSpeedEstimator {
             }
         }
         guard !best.isEmpty else { return nil }
+        lastStoreStatus = .noCloseMatch
 
         // REFUSE TO ANSWER FROM A DISTANT MATCH.
         //
@@ -512,13 +712,131 @@ final class LearnedSpeedEstimator {
         // fitted curve cannot.
         if best[0].d > MAX_MATCH_DISTANCE_SQUARED { return nil }
 
-        var num = 0.0, den = 0.0
-        for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
+        // IS THIS NEIGHBOURHOOD ACTUALLY ABLE TO PREDICT?
+        //
+        // Closeness says the signature has been seen before. It says nothing about whether the
+        // speeds attached to those signatures agree well enough for a weighted mean of them to
+        // mean anything. Where the store holds a region labelled with a wide range of speeds —
+        // the same vibration recorded at a crawl and at a cruise — the lookup still returns a
+        // confident number, and it is an average of contradictions.
+        //
+        // Neighbour SPREAD does not measure this; the paper reports it failing in the wrong
+        // direction, because out-of-distribution queries land consistently in one wrong region
+        // and so look tighter than honest ones. What does measure it is holding each near
+        // neighbour out and predicting it from the others: that asks whether interpolation
+        // works HERE, which is the assumption the whole estimate rests on, rather than whether
+        // the neighbours happen to resemble each other.
+        //
+        // Note what this cannot do, so it is not mistaken for a general safety net: a query that
+        // lands in a region that is internally consistent and simply wrong — walking vibration
+        // matching stored motorcycle observations that all agree on 38 km/h — has a LOW local
+        // error and passes. Consistency is not correctness. That case needs evidence from
+        // outside the model, which is why the caller also refuses to hold a vehicle speed while
+        // the pedometer is counting steps.
+        if let mae = localError(around: f, pool: pool), mae > MAX_LOCAL_ERROR {
+            lastLocalError = mae
+            lastEstimateDeclinedUnreliableLocally = true
+            lastStoreStatus = .locallyUnreliable
+            return nil
+        }
+
+        refreshStoreDistributionIfNeeded()
+        var num = 0.0, den = 0.0, weightSum = 0.0
+        for b in best {
+            // Undo the store's rebalancing; see naturalSpeedCounts. The air partition is small
+            // and separately judged, so it answers unweighted.
+            let representation = airborne ? 1 : representationWeight(for: b.s)
+            weightSum += representation
+            let w = (1.0 / (b.d + 1e-6)) * representation
+            num += w * b.s
+            den += w
+        }
         guard den > 0 else { return nil }
+        lastNeighbourWeight = weightSum / Double(best.count)
         // The compression curve is fitted on GROUND observations, where there are thousands of
         // them. Applying it to the air partition would be extrapolating a road correction into a
         // regime it has never seen, so the air answers raw until it has enough of its own.
-        return max(0, airborne ? num / den : calibrated(num / den))
+        // The air curve is empty until the air partition has its own evidence, and calibrated()
+        // returns the raw value unchanged in that case - so a first flight behaves as before.
+        lastStoreStatus = .answered
+        return max(0, calibrated(num / den, airborne: airborne))
+    }
+
+    /// BOTH ENGINES, FOR THE LOG.
+    ///
+    /// Only one of them drives the speed at a time - the network until the store holds
+    /// NETWORK_UNTIL_OBSERVATIONS, the store after - but a log that recorded only the one in use
+    /// could never show how close the other would have come on the same seconds. This asks both,
+    /// and leaves every flag the tick reads (declines, local error, neighbour weight, which engine
+    /// answered) exactly as the real estimate set them.
+    func bothAnswers(airborne: Bool)
+        -> (network: Double?, networkFamiliarity: Double?, store: Double?, storeStatus: String) {
+        let saved = (lastEstimateUsedNetwork, lastEstimateDeclinedUnlearnedRegime,
+                     lastEstimateDeclinedUnreliableLocally, lastLocalError, lastNeighbourWeight)
+        defer {
+            (lastEstimateUsedNetwork, lastEstimateDeclinedUnlearnedRegime,
+             lastEstimateDeclinedUnreliableLocally, lastLocalError, lastNeighbourWeight) = saved
+        }
+        guard let f = currentFeatures() else { return (nil, nil, nil, "no window yet") }
+        // The network is logged in the air as well: it never drives there, but what it would have
+        // said is exactly what a log is for.
+        let net = SpeedNetwork.bundled?.diagnose(features: f)
+        let store = storeEstimate(f, airborne: airborne)
+        return (net?.speed, net?.familiarity, store, lastStoreStatus.rawValue)
+    }
+
+    /// Whether estimate() would use the bundled network right now.
+    func networkIsInUse(airborne: Bool) -> Bool {
+        !airborne && groundObservationCount < Self.NETWORK_UNTIL_OBSERVATIONS && SpeedNetwork.bundled != nil
+    }
+
+    /// Mean absolute error of predicting each of the nearest few observations from the others.
+    ///
+    /// Bounded work: the nearest `LOO_POOL` are collected in one pass, then `LOO_HELD_OUT` of
+    /// them are predicted from the rest of that set — a few hundred operations, not a rescan of
+    /// several thousand observations per tick.
+    private func localError(around f: [Double], pool: [Observation]) -> Double? {
+        var near = [(d: Double, o: Observation)]()
+        near.reserveCapacity(LOO_POOL + 1)
+        for o in pool {
+            var d = 0.0
+            for i in 0..<f.count {
+                let sd = max(featureVar[i].squareRoot(), 1e-6)
+                let z = (f[i] - featureMean[i]) / sd - (o.f[i] - featureMean[i]) / sd
+                d += z * z
+            }
+            if near.count < LOO_POOL {
+                near.append((d, o))
+                if near.count == LOO_POOL { near.sort { $0.d < $1.d } }
+            } else if d < near[LOO_POOL - 1].d {
+                near[LOO_POOL - 1] = (d, o)
+                var i = LOO_POOL - 1
+                while i > 0 && near[i].d < near[i - 1].d { near.swapAt(i, i - 1); i -= 1 }
+            }
+        }
+        guard near.count >= LOO_HELD_OUT + 4 else { return nil }
+
+        var total = 0.0, counted = 0
+        for h in 0..<min(LOO_HELD_OUT, near.count) {
+            let held = near[h].o
+            var num = 0.0, den = 0.0
+            for (j, other) in near.enumerated() where j != h {
+                var d = 0.0
+                for i in 0..<held.f.count {
+                    let sd = max(featureVar[i].squareRoot(), 1e-6)
+                    let z = (held.f[i] - featureMean[i]) / sd - (other.o.f[i] - featureMean[i]) / sd
+                    d += z * z
+                }
+                let w = 1.0 / (d + 1e-6)
+                num += w * other.o.speed; den += w
+            }
+            guard den > 0 else { continue }
+            total += abs(num / den - held.speed); counted += 1
+        }
+        guard counted > 0 else { return nil }
+        let mae = total / Double(counted)
+        lastLocalError = mae
+        return mae
     }
 
     // MARK: - Self-calibration against its own measured bias
@@ -553,9 +871,35 @@ final class LearnedSpeedEstimator {
     /// Tested by fitting on one drive and scoring on another, all six ordered pairs of three
     /// drives. The curve beat the line on error in every one, and average distance bias across
     /// them fell from 21% to 10%.
+    ///
+    /// MAPPED BY QUANTILE, NOT BY NEIGHBOUR AVERAGE. Binning held-out predictions and mapping
+    /// each bin's mean to its mean actual cannot undo the flattening, because a conditional mean
+    /// IS the flattening: averaging twelve neighbours pulls every answer toward the middle of
+    /// whatever the store holds. Matching the distributions instead - the estimate's tenth
+    /// percentile to the true tenth percentile - restores the spread. Replayed over eight recent
+    /// rides against the old fit: 5-15 km/h +162% -> +99%, 15-30 +45% -> +28%, 50-80 -22%
+    /// unchanged, whole-ride +7% -> -4%, with mean absolute speed error identical at 9.7 km/h.
+    ///
+    /// Fitted on EVERY observation, not only moving ones. Excluding the stationary ones was right
+    /// when eviction kept the store artificially flat and they would have dominated the fit; with
+    /// the store now holding what was actually ridden they belong in it, and leaving them out is
+    /// what made the old fit map a raw 9 km/h estimate onto 30.
     private var calibrationCurve: [(estimate: Double, actual: Double)] = []
+    /// THE AIR NEEDS ITS OWN CURVE, and used to get none.
+    ///
+    /// The ground curve is fitted on road observations, so applying it in the air would
+    /// extrapolate a road correction into a regime it has never seen - which is why the air
+    /// answered raw. But raw is not neutral: a nearest-neighbour mean flattens in the air exactly
+    /// as it does on the road. Replayed on the 14 August flight, learning from alternate two-minute
+    /// blocks and predicting the others, the air answer improves from 49.5 to 34.4 km/h mean error
+    /// and from -11% to +1% distance once it is calibrated against air observations alone.
+    ///
+    /// It stays empty until the air partition has enough of its own evidence, so a first flight
+    /// still answers raw rather than through a curve borrowed from the road.
+    private var calibrationCurveAir: [(estimate: Double, actual: Double)] = []
 
-    private func calibrated(_ raw: Double) -> Double {
+    private func calibrated(_ raw: Double, airborne: Bool = false) -> Double {
+        let calibrationCurve = airborne ? calibrationCurveAir : self.calibrationCurve
         guard calibrationCurve.count >= 2 else {
             return calibrationIntercept + calibrationSlope * raw
         }
@@ -594,7 +938,12 @@ final class LearnedSpeedEstimator {
         guard observations.count >= MIN_OBSERVATIONS * 2, !featureMean.isEmpty else { return }
         guard observations.count != observationsAtLastCalibration else { return }
         observationsAtLastCalibration = observations.count
+        recalibrate(airborne: false)
+        recalibrate(airborne: true)
+    }
 
+    private func recalibrate(airborne: Bool) {
+        refreshStoreDistributionIfNeeded()
         let stride = max(1, observations.count / 300)
         var n = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0
         var samples: [(predicted: Double, actual: Double)] = []
@@ -606,10 +955,10 @@ final class LearnedSpeedEstimator {
             // measured; and a stopped vehicle is now recognised directly rather than estimated,
             // so the correction has no reason to describe it. Measured on the drive above:
             // fitting on everything gives x1.15 and MAE 5.3, fitting on movement x1.26 and 5.0.
-            guard held.speed >= 1.5, !held.airborne else { index += stride; continue }
+            guard held.airborne == airborne else { index += stride; continue }
             var best = [(d: Double, s: Double)]()
             best.reserveCapacity(K)
-            for (j, o) in observations.enumerated() where j != index && !o.airborne {
+            for (j, o) in observations.enumerated() where j != index && o.airborne == airborne {
                 var d = 0.0
                 for i in 0..<held.f.count {
                     let sd = max(featureVar[i].squareRoot(), 1e-6)
@@ -628,7 +977,11 @@ final class LearnedSpeedEstimator {
             index += stride
             guard best.count == K, best[0].d <= MAX_MATCH_DISTANCE_SQUARED else { continue }
             var num = 0.0, den = 0.0
-            for b in best { let w = 1.0 / (b.d + 1e-6); num += w * b.s; den += w }
+            for b in best {
+                let w = (1.0 / (b.d + 1e-6)) * (airborne ? 1 : representationWeight(for: b.s))
+                num += w * b.s
+                den += w
+            }
             guard den > 0 else { continue }
             let predicted = num / den
             n += 1; sx += predicted; sy += held.speed
@@ -637,26 +990,27 @@ final class LearnedSpeedEstimator {
         }
 
         guard n >= 40 else { return }
-        // The curve, in equal-count bins so every part of the range carries the same evidence.
-        samples.sort { $0.predicted < $1.predicted }
-        let binCount = min(8, max(2, samples.count / 20))
-        let perBin = samples.count / binCount
+        // Quantile mapping: the q-th percentile of what the model predicts becomes the q-th
+        // percentile of what was actually measured. Monotone by construction, and it restores the
+        // spread that averaging neighbours removes.
+        let predictedSorted = samples.map(\.predicted).sorted()
+        let actualSorted = samples.map(\.actual).sorted()
+        let points = 21
         var curve: [(estimate: Double, actual: Double)] = []
-        var binStart = 0
-        while binStart + perBin <= samples.count, curve.count < binCount {
-            let chunk = samples[binStart..<(binStart + perBin)]
-            let meanPredicted = chunk.reduce(0.0) { $0 + $1.predicted } / Double(chunk.count)
-            var meanActual = chunk.reduce(0.0) { $0 + $1.actual } / Double(chunk.count)
-            // Monotone: a faster signature must never map to a slower answer, whatever the
-            // sampling noise in one bin says.
-            if let previous = curve.last, meanActual < previous.actual { meanActual = previous.actual }
-            curve.append((meanPredicted, meanActual))
-            binStart += perBin
+        for i in 0..<points {
+            let q = Double(i) / Double(points - 1)
+            let index = Int((Double(samples.count - 1) * q).rounded())
+            let estimate = predictedSorted[index], actual = actualSorted[index]
+            // Interpolation needs strictly increasing estimates; repeated values carry no extra
+            // information, and a flat segment would divide by zero in calibrated().
+            if let previous = curve.last, estimate <= previous.estimate + 1e-6 { continue }
+            curve.append((estimate, actual))
         }
-        calibrationCurve = curve.count >= 4 ? curve : []
-        if !calibrationCurve.isEmpty {
-            print("🧠 Learned speed curve over \(Int(n)) held-out samples: " +
-                  calibrationCurve.map { String(format: "%.0f→%.0f", $0.estimate * 3.6, $0.actual * 3.6) }
+        let fitted = curve.count >= 4 ? curve : []
+        if airborne { calibrationCurveAir = fitted } else { calibrationCurve = fitted }
+        if !fitted.isEmpty {
+            print("🧠 Learned speed curve (\(airborne ? "air" : "ground")) over \(Int(n)) held-out samples: " +
+                  fitted.map { String(format: "%.0f→%.0f", $0.estimate * 3.6, $0.actual * 3.6) }
                       .joined(separator: " "))
         }
 
@@ -671,6 +1025,7 @@ final class LearnedSpeedEstimator {
             print("🧠 Calibration rejected (slope \(String(format: "%.2f", slope)), intercept \(String(format: "%.1f", intercept)))")
             return
         }
+        guard !airborne else { return }
         calibrationSlope = slope
         calibrationIntercept = intercept
         print("🧠 Learned speed calibrated over \(Int(n)) held-out samples: ×\(String(format: "%.2f", slope)) \(String(format: "%+.1f", intercept)) m/s")
@@ -701,14 +1056,35 @@ final class LearnedSpeedEstimator {
             seen = 0
             for o in saved { updateNormalisation(o.f) }
         }
+        // A STORE FROM AN OLDER BUILD HAS NO RECORD OF WHAT WAS RIDDEN, only of what survived
+        // eviction. Seeding the prior from it makes every weight 1, so the first ride behaves
+        // exactly as before and the decay in noteNaturalSpeed lets real riding take over within
+        // two or three of them. Inventing a distribution here would be worse than waiting.
+        if let pdata = try? Data(contentsOf: Self.priorURL),
+           let counts = try? JSONDecoder().decode([Double].self, from: pdata),
+           counts.count == Self.PRIOR_BINS {
+            naturalSpeedCounts = counts
+        } else {
+            naturalSpeedCounts = [Double](repeating: 0, count: Self.PRIOR_BINS)
+            for o in saved where !o.airborne { naturalSpeedCounts[speedBin(o.speed)] += 1 }
+        }
+        naturalSpeedTotal = naturalSpeedCounts.reduce(0, +)
+        storeDistributionIsStale = true
         print("🧠 Learned speed model: restored \(saved.count) observations")
         // Re-measure the compression against everything restored, so the first drive after a
         // launch is corrected too rather than waiting for 200 fresh observations.
         recalibrate()
     }
 
-    /// Ground examples in the saved store, read without loading it into an estimator - for the
-    /// home screen, before any workout has started. Call off the main thread.
+    /// What was ridden, kept beside what was stored. Without it every launch would start with a
+    /// flat prior and answer unweighted until a few minutes of fresh evidence arrived.
+    private static let priorURL: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("learned_speed_prior_v1.json")
+    }()
+
+    /// Ground examples in the saved store, read without loading it into an estimator - for a
+    /// screen shown before any workout has started. Call off the main thread.
     static func savedGroundExampleCount() -> Int {
         guard let data = try? Data(contentsOf: storeURL),
               let saved = try? JSONDecoder().decode([Observation].self, from: data) else { return 0 }
@@ -718,12 +1094,10 @@ final class LearnedSpeedEstimator {
     func save() {
         guard !observations.isEmpty, let data = try? JSONEncoder().encode(observations) else { return }
         try? data.write(to: Self.storeURL, options: .atomic)
+        if let pdata = try? JSONEncoder().encode(naturalSpeedCounts) {
+            try? pdata.write(to: Self.priorURL, options: .atomic)
+        }
         print("🧠 Learned speed model: saved \(observations.count) observations")
-    }
-
-    func forget() {
-        observations.removeAll(); featureMean = []; featureVar = []; seen = 0
-        try? FileManager.default.removeItem(at: Self.storeURL)
     }
 
     /// Per-workout signal state only. The learned observations deliberately survive.

@@ -34,6 +34,9 @@ for arg in "$@"; do
   esac
 done
 
+# --- the watch runs the iPhone's engine ---------------------------------------
+"$ROOT/scripts/check_watch_engine.sh"
+
 # --- credentials ------------------------------------------------------------
 if [[ ! -f "$CONFIG" ]]; then
   cat >&2 <<EOF

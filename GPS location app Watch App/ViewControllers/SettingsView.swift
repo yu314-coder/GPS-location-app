@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchKit
 
 struct SettingsView: View {
     @AppStorage("distanceUnit") private var distanceUnit = "km"
@@ -7,7 +8,13 @@ struct SettingsView: View {
     @AppStorage("mapStyle") private var mapStyle = "standard"
     @AppStorage("kalmanSensitivity") private var kalmanSensitivity = "medium"
     @AppStorage("healthKitExportType") private var healthKitExportType = "auto"
-    @AppStorage(LearnedSpeedEstimator.engineDefaultsKey) private var speedEngine = LearnedSpeedEstimator.Engine.auto.rawValue
+    @AppStorage(WatchSpeedEngine.defaultsKey) private var speedEngine = WatchSpeedEngine.auto.rawValue
+    // Hidden options, as on the iPhone: five taps on the version turn them on.
+    @AppStorage(WatchSpeedEngine.developerKey) private var developerUnlocked = false
+    @State private var versionTapCount = 0
+    @State private var lastVersionTap = Date.distantPast
+    @State private var versionTapHint: String?
+    private let tapsToUnlock = 5
 
     @State private var locationPermissionStatus = "Not Determined"
     @State private var healthKitPermissionStatus = "Not Determined"
@@ -15,16 +22,6 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                // Which engine sets the speed in Velocity Mode (build 79)
-                Section(header: Text("Speed engine"),
-                        footer: Text(SpeedEngineChoiceView.explanation(LearnedSpeedEstimator.Engine(rawValue: speedEngine) ?? .auto))) {
-                    Picker("Engine", selection: $speedEngine) {
-                        ForEach(LearnedSpeedEstimator.Engine.allCases, id: \.rawValue) { engine in
-                            Text(engine.title).tag(engine.rawValue)
-                        }
-                    }
-                }
-
                 // Permissions Section
                 Section(header: Text("Permissions")) {
                     HStack {
@@ -75,22 +72,6 @@ struct SettingsView: View {
                     }
                 }
 
-                // Advanced Settings Section
-                Section(header: Text("Advanced"),
-                       footer: Text("Higher sensitivity provides smoother tracking but may introduce slight lag")) {
-                    Picker("Kalman Filter Sensitivity", selection: $kalmanSensitivity) {
-                        Text("Low").tag("low")
-                        Text("Medium").tag("medium")
-                        Text("High").tag("high")
-                    }
-                }
-
-                // Workout Configuration Section
-                Section(header: Text("Workout Configuration")) {
-                    Toggle("Auto-save to HealthKit", isOn: .constant(true))
-                    Toggle("Track Heart Rate", isOn: .constant(false))
-                }
-
                 // Fitness Export Type
                 Section(header: Text("Fitness Export Type")) {
                     Picker("Export As", selection: $healthKitExportType) {
@@ -129,15 +110,20 @@ struct SettingsView: View {
                 }
 
                 // About Section
-                Section(header: Text("About")) {
-                    HStack {
-                        Text("Version")
-                        Spacer()
-                        Text("1.0.0")
-                            .foregroundColor(.secondary)
+                Section(header: Text("About"), footer: Group {
+                    if let versionTapHint { Text(versionTapHint).foregroundColor(.accentColor) }
+                }) {
+                    Button(action: registerVersionTap) {
+                        HStack {
+                            Text("Version")
+                            Spacer()
+                            Text(Self.versionText)
+                                .foregroundColor(.secondary)
+                        }
                     }
+                    .buttonStyle(.plain)
 
-                    Link(destination: URL(string: "https://github.com")!) {
+                    Link(destination: URL(string: "https://github.com/yu314-coder")!) {
                         HStack {
                             Text("GitHub")
                             Spacer()
@@ -146,8 +132,71 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                if developerUnlocked {
+                    developerSection
+                }
             }
             .navigationTitle("Settings")
+        }
+    }
+}
+
+extension SettingsView {
+    static var versionText: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
+    /// Testing options, hidden until the version is tapped five times.
+    @ViewBuilder var developerSection: some View {
+        Section(header: Text("Developer: speed engine"),
+                footer: Text(SpeedEngineChoiceView.explanation(WatchSpeedEngine(rawValue: speedEngine) ?? .auto))) {
+            Picker("Engine", selection: $speedEngine) {
+                ForEach(WatchSpeedEngine.allCases, id: \.rawValue) { engine in
+                    Text(engine.title).tag(engine.rawValue)
+                }
+            }
+        }
+        Section(header: Text("Developer: tracking"),
+                footer: Text("Higher sensitivity provides smoother tracking but may introduce slight lag")) {
+            Picker("Kalman Filter Sensitivity", selection: $kalmanSensitivity) {
+                Text("Low").tag("low")
+                Text("Medium").tag("medium")
+                Text("High").tag("high")
+            }
+            Toggle("Auto-save to HealthKit", isOn: .constant(true))
+            Toggle("Track Heart Rate", isOn: .constant(false))
+        }
+        Section {
+            Button("Turn off developer options") {
+                developerUnlocked = false
+                versionTapHint = nil
+            }
+            .foregroundColor(.red)
+        }
+    }
+
+    func registerVersionTap() {
+        let now = Date()
+        if now.timeIntervalSince(lastVersionTap) > 2.0 { versionTapCount = 0 }
+        lastVersionTap = now
+        guard !developerUnlocked else {
+            versionTapHint = "Developer options are already on."
+            return
+        }
+        versionTapCount += 1
+        let remaining = tapsToUnlock - versionTapCount
+        if remaining <= 0 {
+            developerUnlocked = true
+            versionTapCount = 0
+            versionTapHint = "Developer options are on."
+            WKInterfaceDevice.current().play(.success)
+        } else if remaining <= 3 {
+            versionTapHint = remaining == 1 ? "1 more tap." : "\(remaining) more taps."
+            WKInterfaceDevice.current().play(.click)
         }
     }
 }

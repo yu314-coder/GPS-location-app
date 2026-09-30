@@ -182,7 +182,8 @@ After stopping a session, a full summary is presented:
 ### Apple Watch Companion
 
 - Full standalone watch app with live tracking
-- Both speed engines on the wrist in Velocity Mode: the bundled neural network (the same weights as the iPhone) and the watch's own learned store (the algorithm). Auto follows the iPhone's rule — the iPhone's speed first while it is connected, then the network until the watch has learned 3,000 examples of its own, then the store — and either engine can be pinned in the watch's Settings. When the network does not recognise a wrist's motion, the store answers instead
+- The iPhone's speed engine on the wrist in Velocity Mode — the same code and the same network weights, checked byte for byte before every release (`scripts/check_watch_engine.sh`): the iPhone's relayed speed first while it is connected, then the bundled neural network until the watch has learned 3,000 examples of its own, then its learned store (the algorithm). Like the iPhone it learns only in a vehicle. Pinning one engine is a developer option
+- Developer options hidden as on the iPhone: five taps on the version in the watch's Settings show the engine choice, tracking sensitivity, network refresh, GPS and debug readouts, and the HealthKit test tab
 - Swipe-through live pages: the speed with what set it (GPS, iPhone, Neural, Algorithm, steps), both engines side by side against the iPhone and GPS, a live route map, controls, and full details
 - Real-time metrics, maps, signal quality, iPhone-assisted scalar motion acceleration, GPS quality, and climb rate on-wrist
 - Syncs sessions and data with iPhone via WatchConnectivity

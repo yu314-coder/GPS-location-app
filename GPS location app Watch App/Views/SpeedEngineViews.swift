@@ -1,7 +1,8 @@
 import SwiftUI
 
-// The watch's two speed engines on screen (build 79): which one is setting the speed now, what
-// each of them reads this second, and the choice between them. See LearnedSpeedEstimator.
+// The watch's two speed engines on screen: which one is setting the speed now and what each of
+// them reads this second. The engine is the iPhone's (see WatchSpeedEngine); choosing one engine
+// over the other is a developer option.
 
 /// What set the displayed speed, as a small labelled badge.
 struct SpeedSourceBadge: View {
@@ -76,14 +77,16 @@ struct SpeedEnginesPage: View {
                     Text("Speed engines")
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                     Spacer()
-                    Button { showChoice = true } label: {
-                        Text(readout.choice.title)
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Color.white.opacity(0.14), in: Capsule())
+                    if readout.developer {
+                        Button { showChoice = true } label: {
+                            Text(readout.choice.title)
+                                .font(.system(size: 12, weight: .semibold))
+                                .padding(.horizontal, 8).padding(.vertical, 3)
+                                .background(Color.white.opacity(0.14), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Speed engine: \(readout.choice.title). Change")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Speed engine: \(readout.choice.title). Change")
                 }
 
                 EngineRow(name: "Neural", symbol: "brain", tint: .purple,
@@ -120,10 +123,16 @@ struct SpeedEnginesPage: View {
         return f <= 1 ? "Recognises this motion" : "Unfamiliar motion, not answering"
     }
 
+    /// The iPhone store's own status for this second, in words.
     private var storeDetail: String {
-        if readout.store != nil { return "\(readout.storeExamples.formatted()) of your examples" }
-        if readout.storeExamples < 60 { return "Learning: \(readout.storeExamples) examples" }
-        return "No close example yet"
+        switch readout.storeStatus {
+        case "answered": return "\(readout.storeExamples.formatted()) of your examples"
+        case "too few examples": return "Learning: \(readout.storeExamples.formatted()) examples"
+        case "unlearned regime": return "A kind of ride it hasn't learned"
+        case "no close match": return "No close example"
+        case "locally unreliable": return "Unsure at this speed"
+        default: return "Needs 5 s of motion"
+        }
     }
 }
 
@@ -224,12 +233,12 @@ struct ExamplesProgress: View {
 
 /// Choose which engine sets the watch's speed in Velocity Mode.
 struct SpeedEngineChoiceView: View {
-    @AppStorage(LearnedSpeedEstimator.engineDefaultsKey) private var choice = LearnedSpeedEstimator.Engine.auto.rawValue
+    @AppStorage(WatchSpeedEngine.defaultsKey) private var choice = WatchSpeedEngine.auto.rawValue
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
-            ForEach(LearnedSpeedEstimator.Engine.allCases, id: \.rawValue) { engine in
+            ForEach(WatchSpeedEngine.allCases, id: \.rawValue) { engine in
                 Button {
                     choice = engine.rawValue
                     dismiss()
@@ -250,32 +259,37 @@ struct SpeedEngineChoiceView: View {
         .navigationTitle("Speed engine")
     }
 
-    static func explanation(_ engine: LearnedSpeedEstimator.Engine) -> String {
+    static func explanation(_ engine: WatchSpeedEngine) -> String {
         switch engine {
         case .auto:
-            return "iPhone first when it's connected. Otherwise Neural until the watch has learned \(LearnedSpeedEstimator.NETWORK_UNTIL_OBSERVATIONS.formatted()) examples, then the Algorithm."
+            return "The iPhone's rule: its speed first when it's connected, otherwise Neural until the watch has learned \(LearnedSpeedEstimator.NETWORK_UNTIL_OBSERVATIONS.formatted()) examples, then the Algorithm."
         case .network:
-            return "The built-in neural network, trained on recorded trips. Works from the first ride."
+            return "Testing: the built-in neural network only."
         case .store:
-            return "The watch's own examples, learned from its GPS. Gets better the more you ride."
+            return "Testing: the watch's own learned examples only."
         }
     }
 }
 
 /// The engines' state before a workout starts: the choice and how much the algorithm has learned.
 struct SpeedEngineStatusCard: View {
-    @AppStorage(LearnedSpeedEstimator.engineDefaultsKey) private var choice = LearnedSpeedEstimator.Engine.auto.rawValue
+    @AppStorage(WatchSpeedEngine.defaultsKey) private var choice = WatchSpeedEngine.auto.rawValue
+    @AppStorage(WatchSpeedEngine.developerKey) private var developerUnlocked = false
     @State private var examples: Int?
     @State private var showChoice = false
 
+    private var inUse: WatchSpeedEngine {
+        developerUnlocked ? (WatchSpeedEngine(rawValue: choice) ?? .auto) : .auto
+    }
+
     var body: some View {
-        Button { showChoice = true } label: {
+        Button { if developerUnlocked { showChoice = true } } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
                     Label("Speed engine", systemImage: "gauge.with.dots.needle.67percent")
                         .font(.system(size: 13, weight: .semibold))
                     Spacer()
-                    Text((LearnedSpeedEstimator.Engine(rawValue: choice) ?? .auto).title)
+                    Text(inUse.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.purple)
                 }

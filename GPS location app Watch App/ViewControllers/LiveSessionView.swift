@@ -17,6 +17,9 @@ struct LiveSessionView: View {
     @State private var selectedWorkoutType: HKWorkoutActivityType = .walking
     @State private var livePage = 0
     @AppStorage("velocityModeEnabled") private var velocityModeBeforeStart = false
+    // Testing controls (engine choice, network refresh, GPS and debug readouts) show only with the
+    // developer options on - see the watch's Settings, five taps on the version.
+    @AppStorage(WatchSpeedEngine.developerKey) private var developerUnlocked = false
     @AppStorage("speedUnit") private var speedUnit = "km/h"
     @AppStorage("distanceUnit") private var distanceUnit = "km"
 
@@ -289,13 +292,15 @@ struct LiveSessionView: View {
                         workoutSession.forceMotionFallback.toggle()
                         print("⌚ 🔘 Force Velocity toggled -> \(workoutSession.forceMotionFallback ? "ON" : "OFF")")
                     }
-                    ControlTile(title: workoutSession.engineReadout.choice.title, symbol: "brain",
-                                tint: .purple, caption: "Speed engine") { showEngineChoice = true }
-                    // Manual cellular/WiFi refresh (useful in tunnels / poor GPS areas).
-                    ControlTile(title: "Refresh net", symbol: "antenna.radiowaves.left.and.right",
-                                tint: .blue) {
-                        print("⌚ 🔘 Refresh Net button tapped by user")
-                        workoutSession.refreshCellularFallback()
+                    if developerUnlocked {
+                        ControlTile(title: workoutSession.engineReadout.choice.title, symbol: "brain",
+                                    tint: .purple, caption: "Speed engine") { showEngineChoice = true }
+                        // Manual cellular/WiFi refresh (useful in tunnels / poor GPS areas).
+                        ControlTile(title: "Refresh net", symbol: "antenna.radiowaves.left.and.right",
+                                    tint: .blue) {
+                            print("⌚ 🔘 Refresh Net button tapped by user")
+                            workoutSession.refreshCellularFallback()
+                        }
                     }
                 }
                 Button(role: .destructive) { showStopConfirmation = true } label: {
@@ -320,6 +325,7 @@ struct LiveSessionView: View {
                     nativeStepDistanceMeters: workoutSession.nativePedometerDistanceMeters
                 )
 
+                if developerUnlocked {
                 // GPS Tracking Status - Critical for monitoring GPS health
                 GPSTrackingStatusView(
                     signalQuality: workoutSession.locationManager.gpsSignalQuality,
@@ -340,6 +346,7 @@ struct LiveSessionView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                }
             }
             .padding(.horizontal, 2)
         }

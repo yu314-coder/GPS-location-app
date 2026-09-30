@@ -1,7 +1,3 @@
-// WATCH COPY of the iPhone's GPS location app/Services/SpeedNetwork.swift, with the same weights
-// (Resources/speed_network.json is a byte-for-byte copy). Keep the two in step: the network only
-// means anything with the exact fingerprint it was trained on, and LearnedSpeedEstimator computes
-// that fingerprint identically on both devices.
 import Foundation
 
 /// A small network that reads speed from the same 11-number vibration fingerprint as the learned

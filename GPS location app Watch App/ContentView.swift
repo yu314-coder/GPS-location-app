@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showLiveSession = false
     @StateObject private var locationManager = LocationManager()
     @StateObject private var healthKitManager = HealthKitManager()
+    @AppStorage(WatchSpeedEngine.developerKey) private var developerUnlocked = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -27,9 +28,11 @@ struct ContentView: View {
             SettingsView()
                 .tag(2)
 
-            // HealthKit Simulation Test Tab
-            HealthKitSimulationTestView()
-                .tag(3)
+            // HealthKit simulation test: a developer tool, so only with the developer options on.
+            if developerUnlocked {
+                HealthKitSimulationTestView()
+                    .tag(3)
+            }
         }
         .tabViewStyle(.page)
         .sheet(isPresented: $showLiveSession) {

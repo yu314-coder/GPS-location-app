@@ -217,8 +217,8 @@ final class LearnedSpeedEstimator {
     /// The last estimate came from the bundled SpeedNetwork, not the store.
     private(set) var lastEstimateUsedNetwork = false
     /// Below this many ground observations the store is less accurate than the bundled network.
-    private let NETWORK_UNTIL_OBSERVATIONS = 3000
-    private var groundObservationCount: Int { observations.reduce(0) { $0 + ($1.airborne ? 0 : 1) } }
+    static let NETWORK_UNTIL_OBSERVATIONS = 3000
+    var groundObservationCount: Int { observations.reduce(0) { $0 + ($1.airborne ? 0 : 1) } }
 
     /// Fingerprint distance beyond which this workout is a regime the model has never learned,
     /// and its answers about it should not be trusted however close the individual matches look.
@@ -615,7 +615,7 @@ final class LearnedSpeedEstimator {
         // It needs nothing from the current trip, which is what lets Velocity Mode stay free of
         // GPS on a first install or after the store is cleared: the old fallback here answered
         // from this trip's own GPS-labelled samples. Ground only; the air partition is its own.
-        if !airborne, groundObservationCount < NETWORK_UNTIL_OBSERVATIONS,
+        if !airborne, groundObservationCount < Self.NETWORK_UNTIL_OBSERVATIONS,
            let network = SpeedNetwork.bundled {
             lastEstimateUsedNetwork = true
             return network.speed(features: f)
@@ -787,7 +787,7 @@ final class LearnedSpeedEstimator {
 
     /// Whether estimate() would use the bundled network right now.
     func networkIsInUse(airborne: Bool) -> Bool {
-        !airborne && groundObservationCount < NETWORK_UNTIL_OBSERVATIONS && SpeedNetwork.bundled != nil
+        !airborne && groundObservationCount < Self.NETWORK_UNTIL_OBSERVATIONS && SpeedNetwork.bundled != nil
     }
 
     /// Mean absolute error of predicting each of the nearest few observations from the others.
@@ -1082,6 +1082,14 @@ final class LearnedSpeedEstimator {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("learned_speed_prior_v1.json")
     }()
+
+    /// Ground examples in the saved store, read without loading it into an estimator - for a
+    /// screen shown before any workout has started. Call off the main thread.
+    static func savedGroundExampleCount() -> Int {
+        guard let data = try? Data(contentsOf: storeURL),
+              let saved = try? JSONDecoder().decode([Observation].self, from: data) else { return 0 }
+        return saved.reduce(0) { $0 + ($1.airborne ? 0 : 1) }
+    }
 
     func save() {
         guard !observations.isEmpty, let data = try? JSONEncoder().encode(observations) else { return }
