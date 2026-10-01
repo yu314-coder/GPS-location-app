@@ -71,7 +71,9 @@ A store still filling up does worse (60 examples: 9.5 km/h; 4,000: 7.9) and on t
 **In the air**, a smooth cabin reads as standing still, so the phone measures the takeoff for two minutes from the still moment before the roll, and then hands over to one of two flight engines. Both were trained on 302 airline flights from NASA's public DASHlink flight recorder data, and both read only what the phone senses: minutes since the roll began and how the phone is tilted. One is a small neural network (4 → 32 → 32 → 1). The other is a store of 4,000 examples answered like the ground store. Neither uses GPS. On NASA flights each engine had never seen, the network counted a median 102% of the distance (68% of flights within 10%) and the store 104% (65%), against 68% (7%) for holding the takeoff speed. They give the speed an airliner typically has at that point of a flight, so wind or a different aircraft will move them. Drawn whole with no GPS after the first point, the recorded flight stays within about a kilometre of GPS through the taxi and takeoff and ends 15.6 km (network) and 15.2 km (store) from where GPS did: in the air the direction settles about 11° to one side of the track.
 
 **What it cannot do.** A phone held in the hand loses the speed signal (the signature stops
-varying with speed: measured flat from 10 to 65 km/h). In an aircraft the speed after the
+varying with speed: measured flat from 10 to 65 km/h). Held in the hand for a whole car drive, the
+app read 77% of the distance GPS measured, and 31 km/h above 50 km/h where GPS said 65; that drive is
+kept out of the results above, which all had the phone in a pocket, lying flat or on a mount. In an aircraft the speed after the
 takeoff is the speed an airliner typically has at that point of a flight, learned from NASA's flight
 data, not a measurement of this flight: a strong wind or a much faster or slower aircraft will read
 off. A vehicle the model has never learned reads wrong until it has. And the angle the phone

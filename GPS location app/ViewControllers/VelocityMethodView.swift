@@ -544,7 +544,7 @@ struct VelocityMethodView: View {
                 Limitation("A short drive in slow traffic.",
                            "The angle is learned only while the speed reads above 14 km/h, so a short, slow drive rests on a few turns. On one ten-minute drive at a median 9 km/h, the speeds read on the day kept \(N.SlowAppPct)% of graded seconds within 30°; replayed with a speed model rebuilt from the other journeys, a different handful of turns set the angle and \(N.SlowReplayPct)% were.")
                 Limitation("A phone that moves.",
-                           "A hand on the phone can lower the speed but not raise it, and a phone picked up while slowing keeps the speed it had when it was picked up. A phone that shifts in a pocket turns the drawn route by about as much as it moved, until enough new turns have been learned.")
+                           "A hand on the phone can lower the speed but not raise it, and a phone picked up while slowing keeps the speed it had when it was picked up. Held in the hand for a whole car drive, the phone read \(N.HandDist)% of the distance GPS measured, and \(N.HandFastApp) km/h where GPS said \(N.HandFastGps) above 50 km/h: the speed needs the phone resting in a pocket, flat or on a mount. A phone that shifts in a pocket turns the drawn route by about as much as it moved, until enough new turns have been learned.")
                 Limitation("Keep the phone away from magnets.",
                            "Beside a car's MagSafe charger the phone read up to 2,600 µT, fifty times Earth's field, yet reported its compass as well calibrated. The app ignores such a field. On the drive with the charger there throughout, a few turning minutes still showed Earth's field and the seconds within 30° rose from \(N.MagSafeF)% to \(N.MagSafeG)%; a phone that never leaves such a field cannot be corrected.")
                 Limitation("Walking with the phone in some pockets.",
@@ -2079,6 +2079,12 @@ enum VelocityMethodData {
         static let FlSpeedDiff = "3.5"
         static let FlWithin = "4"
         static let GpsFlightKm = "74.1"
+        static let HandDist = "77"
+        static let HandFastApp = "31"
+        static let HandFastGps = "65"
+        static let HandFlagged = "83"
+        static let HandMae = "13.7"
+        static let HandSteady = "66"
         static let HoldAirErr = "196"
         static let HoldKm = "45.4"
         static let HoldShare = "61"
