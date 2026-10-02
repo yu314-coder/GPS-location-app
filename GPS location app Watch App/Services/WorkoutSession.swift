@@ -3470,6 +3470,16 @@ class WorkoutSession: NSObject, ObservableObject {
         if location.horizontalAccuracy <= GOOD_FIX_ACCURACY, fixIsCurrent {
             lastGoodFixTimeWatch = Date()
         }
+        // THE SPEED SHOWN FOLLOWS EVERY FIX, not only the ones kept for the route (build 86). The
+        // filters below drop many fixes from a stopped watch, so a fix reading 0 never reached the
+        // display and the last moving speed stayed there. Doppler speed is a measurement in its own
+        // right; the route keeps its own rules about positions.
+        if !isUsingMotionFallback, fixIsCurrent, location.speed >= 0,
+           location.horizontalAccuracy >= 0, location.horizontalAccuracy <= MAX_HORIZONTAL_ACCURACY {
+            currentMetrics.currentSpeed = location.speed
+            currentMetrics.smoothedSpeed = currentMetrics.smoothedSpeed == 0
+                ? location.speed : 0.3 * location.speed + 0.7 * currentMetrics.smoothedSpeed
+        }
 
         // GPS RETURN AFTER A DEAD-RECKONING GAP (pedometer OR motion fallback).
         // While a fallback runs, the last appended point is a DRIFTED ESTIMATE, so the

@@ -326,8 +326,19 @@ struct FlightMetrics: Codable {
             // with 17 m accuracy each read as 9 m/s and gave a 4.2 km/h walk a 33 km/h maximum.
             let combinedUncertainty = max(location.horizontalAccuracy, 0) + max(previous.horizontalAccuracy, 0)
             let movementIsResolvable = distance >= combinedUncertainty * 0.5
-            if timeDelta >= 0.2 && distance > 0 && movementIsResolvable {
+            // MEASURE THE SPEED, DON'T INFER IT FROM TWO POSITIONS - the iPhone's rule (build 86).
+            // Core Location's Doppler speed does not depend on how vague the position is. The watch
+            // only ever divided distance by time, and only when the step cleared the fixes' error,
+            // so once a car stopped nothing cleared it and the last moving speed stayed on screen:
+            // on one drive it showed 17.9 km/h for seven minutes parked, and 220 km/h at the start
+            // from two jumpy fixes while GPS itself said 1.9 m/s. Geometry is now only the fallback
+            // for a fix with no speed, and below the error it reads 0 rather than keeping the last.
+            if location.speed >= 0 {
+                currentSpeed = location.speed
+            } else if timeDelta >= 0.2 && distance > 0 && movementIsResolvable {
                 currentSpeed = distance / timeDelta
+            } else if timeDelta > 0 {
+                currentSpeed = 0.0
             }
 
             if timeDelta > 0.5 {
