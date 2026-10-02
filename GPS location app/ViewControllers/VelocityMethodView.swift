@@ -758,14 +758,14 @@ enum VelocityMethodData {
 
     // BEGIN GENERATED (paper/app_numbers.py)
     static let overview: [Overview] = [
-        .init(name: "Motorcycle", recorded: "44 recordings, 12.4 hours, 197 km checked by GPS; phone in a trouser pocket",
-              distance: "−11.9%", speed: "9.0 km/h", speedLabel: "average speed error",
+        .init(name: "Motorcycle", recorded: "45 recordings, 12.5 hours, 199 km checked by GPS; phone in a trouser pocket",
+              distance: "−12.3%", speed: "9.1 km/h", speedLabel: "average speed error",
               direction: "75%"),
         .init(name: "Car", recorded: "44 recordings, 12.6 hours, 239 km checked by GPS; phone in a pocket, flat or in a mount",
               distance: "−0.9%", speed: "6.4 km/h", speedLabel: "average speed error",
               direction: "87%"),
-        .init(name: "Walking", recorded: "80 straight stretches and 7 walks; phone in a pocket, distance counted by steps",
-              distance: "+10.2%", speed: "5.4 km/h", speedLabel: "where GPS measured 4.5",
+        .init(name: "Walking", recorded: "81 straight stretches and 7 walks; phone in a pocket, distance counted by steps",
+              distance: "+9.0%", speed: "5.4 km/h", speedLabel: "where GPS measured 4.6",
               direction: "93%"),
         .init(name: "Plane", recorded: "1 flight, 74 km; the takeoff measured, then the flight network",
               distance: "+3.3%", speed: "38 km/h", speedLabel: "speed error in the air",
@@ -773,29 +773,29 @@ enum VelocityMethodData {
     ]
 
     static let distance: [Distance] = [
-        .init(name: "Motorcycle", detail: "44 journeys, 79% within 20%",
-              appKm: 173.8, gpsKm: 197.4, errorPercent: -11.9),
+        .init(name: "Motorcycle", detail: "45 journeys, 77% within 20%",
+              appKm: 174.7, gpsKm: 199.1, errorPercent: -12.3),
         .init(name: "Car", detail: "44 journeys, 72% within 20%",
               appKm: 236.9, gpsKm: 238.9, errorPercent: -0.9),
-        .init(name: "Walking", detail: "80 straight stretches, counted by steps",
-              appKm: 3.6, gpsKm: 3.26, errorPercent: 10.2),
+        .init(name: "Walking", detail: "81 straight stretches, counted by steps",
+              appKm: 3.62, gpsKm: 3.32, errorPercent: 9.0),
         .init(name: "Plane", detail: "1 flight: takeoff, then the flight network",
               appKm: 76.5, gpsKm: 74.1, errorPercent: 3.3)
     ]
 
     static let speedBands: [SpeedBand] = [
         .init(band: "0–10", motorcycleGPS: 2.6, motorcycleApp: 2.5, carGPS: 2.7, carApp: 2.7),
-        .init(band: "10–20", motorcycleGPS: 15.2, motorcycleApp: 19.2, carGPS: 15.0, carApp: 14.9),
+        .init(band: "10–20", motorcycleGPS: 15.1, motorcycleApp: 19.2, carGPS: 15.0, carApp: 14.9),
         .init(band: "20–30", motorcycleGPS: 24.9, motorcycleApp: 26.7, carGPS: 25.0, carApp: 24.5),
-        .init(band: "30–40", motorcycleGPS: 35.0, motorcycleApp: 30.3, carGPS: 35.1, carApp: 34.1),
+        .init(band: "30–40", motorcycleGPS: 35.0, motorcycleApp: 30.1, carGPS: 35.1, carApp: 34.1),
         .init(band: "40–50", motorcycleGPS: 44.0, motorcycleApp: 34.0, carGPS: 44.0, carApp: 44.9),
-        .init(band: "50–60", motorcycleGPS: 53.5, motorcycleApp: 37.1, carGPS: 54.7, carApp: 55.7),
+        .init(band: "50–60", motorcycleGPS: 53.8, motorcycleApp: 37.1, carGPS: 54.7, carApp: 55.7),
         .init(band: "60–80", motorcycleGPS: 65.9, motorcycleApp: 38.8, carGPS: 69.0, carApp: 64.3),
         .init(band: "80+", motorcycleGPS: 98.4, motorcycleApp: 40.8, carGPS: 88.2, carApp: 74.0, plotted: false)
     ]
 
     static let direction: [Direction] = [
-        .init(name: "Motorcycle", graded: "45 recordings", medianDegrees: 16, within30: 75),
+        .init(name: "Motorcycle", graded: "46 recordings", medianDegrees: 16, within30: 75),
         .init(name: "Car", graded: "34 recordings", medianDegrees: 14, within30: 87),
         .init(name: "Walking", graded: "7 walks", medianDegrees: 10, within30: 93),
         .init(name: "Plane", graded: "1 flight", medianDegrees: 10, within30: 99)
@@ -1986,10 +1986,10 @@ enum VelocityMethodData {
 
     /// Every data-dependent number the paper's text quotes (tables/numbers.tex), for the page's own text.
     enum Num {
-        static let AblBigA = "7"
-        static let AblBigC = "7"
-        static let AblBigF = "6"
-        static let AblBigG = "5"
+        static let AblBigA = "8"
+        static let AblBigC = "8"
+        static let AblBigF = "7"
+        static let AblBigG = "6"
         static let AblCarRtA = "69"
         static let AblCarRtC = "77"
         static let AblCarRtF = "83"
@@ -2008,9 +2008,9 @@ enum VelocityMethodData {
         static let AblMotoSpan = "2"
         static let AblPush = "+1"
         static let AblTurn = "+1"
-        static let BothAppKm = "411"
-        static let BothGpsKm = "436"
-        static let BothShort = "5.9"
+        static let BothAppKm = "412"
+        static let BothGpsKm = "438"
+        static let BothShort = "6.0"
         static let CarAppKm = "237"
         static let CarBandEightyApp = "74"
         static let CarBandEightyGps = "88"
@@ -2050,13 +2050,13 @@ enum VelocityMethodData {
         static let CleanSampRecs = "9"
         static let CleanSampWorst = "166"
         static let EchoBetter = "39"
-        static let EchoN = "80"
-        static let EchoNow = "+10.2"
+        static let EchoN = "81"
+        static let EchoNow = "+9.0"
         static let EchoOver = "33"
-        static let EchoScaled = "+2.1"
-        static let EchoWorse = "7"
+        static let EchoScaled = "+0.9"
+        static let EchoWorse = "8"
         static let EchoWorseTxt = "all but one of them already short, and that one within 1% of GPS"
-        static let EchoWtwentyNow = "45"
+        static let EchoWtwentyNow = "44"
         static let EchoWtwentyScaled = "59"
         static let FifthMagD = "100"
         static let FifthMagG = "99"
@@ -2089,8 +2089,8 @@ enum VelocityMethodData {
         static let HoldKm = "45.5"
         static let HoldShare = "61"
         static let Hours = "25"
-        static let Journeys = "88"
-        static let KmChecked = "436"
+        static let Journeys = "89"
+        static let KmChecked = "438"
         static let LongDriftEarth = "93"
         static let LongDriftEvery = "41"
         static let LongDriftNone = "88"
@@ -2098,13 +2098,13 @@ enum VelocityMethodData {
         static let LongDriveG = "93"
         static let LongDriveTurn = "0"
         static let MagCars = "10"
-        static let MagMotos = "5"
+        static let MagMotos = "6"
         static let MagOffD = "30"
         static let MagOffE = "18"
         static let MagPooledF = "88"
-        static let MagPooledG = "91"
-        static let MagRecs = "16"
-        static let MagRecsTurn = "13"
+        static let MagPooledG = "90"
+        static let MagRecs = "17"
+        static let MagRecsTurn = "14"
         static let MagSafeClean = "51"
         static let MagSafeF = "0"
         static let MagSafeG = "41"
@@ -2114,8 +2114,8 @@ enum VelocityMethodData {
         static let MainCarMae = "6.4"
         static let MainCarShare = "99.1"
         static let MainMotoMae = "9.0"
-        static let MainMotoShare = "88.2"
-        static let MotoAppKm = "174"
+        static let MainMotoShare = "87.9"
+        static let MotoAppKm = "175"
         static let MotoBandEightyApp = "41"
         static let MotoBandEightyGps = "98"
         static let MotoBandSixtyApp = "39"
@@ -2127,45 +2127,45 @@ enum VelocityMethodData {
         static let MotoBandTwentyApp = "27"
         static let MotoBandTwentyGps = "25"
         static let MotoDirMed = "16"
-        static let MotoDirRec = "45"
-        static let MotoDist = "-11.9"
+        static let MotoDirRec = "46"
+        static let MotoDist = "-12.3"
         static let MotoDistTxt = "12% short"
         static let MotoDrift = "17"
         static let MotoFourClean = "13"
         static let MotoFourG = "90"
         static let MotoFourTurn = "0"
-        static let MotoGpsKm = "197"
-        static let MotoHalf = "919"
-        static let MotoHours = "12.4"
-        static let MotoMae = "9.0"
+        static let MotoGpsKm = "199"
+        static let MotoHalf = "927"
+        static let MotoHours = "12.5"
+        static let MotoMae = "9.1"
         static let MotoMagClean = "88"
         static let MotoMagD = "90"
         static let MotoMagF = "97"
         static let MotoMagG = "94"
         static let MotoMagN = "69"
         static let MotoMagTurn = "5"
-        static let MotoMedJourneyTxt = "4.8% short"
+        static let MotoMedJourneyTxt = "5.7% short"
         static let MotoMidMax = "17"
-        static let MotoNinety = "58"
-        static let MotoRec = "44"
-        static let MotoRoutes = "46"
-        static let MotoRtBig = "3"
+        static let MotoNinety = "59"
+        static let MotoRec = "45"
+        static let MotoRoutes = "47"
+        static let MotoRtBig = "4"
         static let MotoRtBigShort = "3"
         static let MotoRtMed = "11"
-        static let MotoRtWthirty = "89"
-        static let MotoSize = "0.81"
+        static let MotoRtWthirty = "87"
+        static let MotoSize = "0.82"
         static let MotoThreeD = "81"
         static let MotoThreeG = "81"
         static let MotoTwoG = "33"
         static let MotoWthirty = "75"
-        static let MotoWtwenty = "79"
+        static let MotoWtwenty = "77"
         static let NetAirErr = "38"
-        static let NetAll = "7.4"
+        static let NetAll = "7.5"
         static let NetCarMae = "6.0"
         static let NetCarShare = "99.9"
         static let NetKm = "76.5"
-        static let NetMotoMae = "9.0"
-        static let NetMotoShare = "92.6"
+        static let NetMotoMae = "9.1"
+        static let NetMotoShare = "92.2"
         static let NetShare = "103"
         static let NetVsStore = "a little more accurate than"
         static let PlaneDirMed = "10"
@@ -2181,12 +2181,12 @@ enum VelocityMethodData {
         static let SlowReplayHigh = "100"
         static let SlowReplayLow = "41"
         static let SlowReplayPct = "41"
-        static let SlowReplayRuns = "5"
+        static let SlowReplayRuns = "6"
         static let StoreAirErr = "37"
-        static let StoreFourK = "7.6"
+        static let StoreFourK = "7.7"
         static let StoreKm = "74.0"
         static let StoreShare = "100"
-        static let StoreSixty = "9.1"
+        static let StoreSixty = "9.2"
         static let StoreThousand = "8.0"
         static let StoreVsNet = "still a little behind"
         static let TaxiApp = "16"
@@ -2198,7 +2198,7 @@ enum VelocityMethodData {
         static let TurnFixed = "89"
         static let TurnMedFixed = "8.0"
         static let TurnMedNow = "14.7"
-        static let TurnN = "79"
+        static let TurnN = "80"
         static let TurnNow = "81"
         static let TurnSampFifteen = "86"
         static let TurnSampMed = "6"
@@ -2208,12 +2208,12 @@ enum VelocityMethodData {
         static let WalkAfterTxt = "12% more"
         static let WalkApp = "5.4"
         static let WalkDirMed = "10"
-        static let WalkDist = "+10.2"
-        static let WalkDistTxt = "10% more"
-        static let WalkGps = "4.5"
-        static let WalkOtherTxt = "7% more"
-        static let WalkShare = "108.8"
-        static let WalkStretches = "80"
+        static let WalkDist = "+9.0"
+        static let WalkDistTxt = "9% more"
+        static let WalkGps = "4.6"
+        static let WalkOtherTxt = "4% more"
+        static let WalkShare = "107.3"
+        static let WalkStretches = "81"
         static let WalkWthirty = "93"
         static let Walks = "7"
     }

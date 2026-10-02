@@ -1,21 +1,21 @@
 {
  "categories": {
   "motorcycle": {
-   "recordings": 44,
-   "hours": 12.4,
-   "gps_km": 197.4,
-   "gps_km_whole": 197,
-   "app_km": 173.8,
-   "total_pct": -11.9,
-   "within20": 79,
-   "speed_mae": 9.0,
-   "half_minutes": 919,
-   "dir_recordings": 45,
+   "recordings": 45,
+   "hours": 12.5,
+   "gps_km": 199.1,
+   "gps_km_whole": 199,
+   "app_km": 174.7,
+   "total_pct": -12.3,
+   "within20": 77,
+   "speed_mae": 9.1,
+   "half_minutes": 927,
+   "dir_recordings": 46,
    "dir_median": 16,
    "dir_within30": 75,
-   "routes": 46,
+   "routes": 47,
    "route_median": 11,
-   "route_within30": 89
+   "route_within30": 87
   },
   "car": {
    "recordings": 44,
@@ -35,13 +35,13 @@
    "route_within30": 86
   },
   "walking": {
-   "stretches": 80,
+   "stretches": 81,
    "walks": 7,
-   "gps_km": 3.26,
-   "app_km": 3.6,
-   "total_pct": 10.2,
+   "gps_km": 3.32,
+   "app_km": 3.62,
+   "total_pct": 9.0,
    "speed_app": 5.4,
-   "speed_gps": 4.5,
+   "speed_gps": 4.6,
    "dir_median": 10,
    "dir_within30": 93
   },
@@ -59,7 +59,7 @@
   {
    "band": "0–10",
    "motorcycle": {
-    "n": 284,
+    "n": 285,
     "gps": 2.6,
     "app": 2.5
    },
@@ -72,8 +72,8 @@
   {
    "band": "10–20",
    "motorcycle": {
-    "n": 183,
-    "gps": 15.2,
+    "n": 186,
+    "gps": 15.1,
     "app": 19.2
    },
    "car": {
@@ -85,7 +85,7 @@
   {
    "band": "20–30",
    "motorcycle": {
-    "n": 153,
+    "n": 154,
     "gps": 24.9,
     "app": 26.7
    },
@@ -98,9 +98,9 @@
   {
    "band": "30–40",
    "motorcycle": {
-    "n": 118,
+    "n": 120,
     "gps": 35.0,
-    "app": 30.3
+    "app": 30.1
    },
    "car": {
     "n": 137,
@@ -124,8 +124,8 @@
   {
    "band": "50–60",
    "motorcycle": {
-    "n": 46,
-    "gps": 53.5,
+    "n": 47,
+    "gps": 53.8,
     "app": 37.1
    },
    "car": {
