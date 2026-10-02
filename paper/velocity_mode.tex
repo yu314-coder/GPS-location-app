@@ -730,8 +730,10 @@ but a very short ride may never learn the angle well.
 \item \textbf{A short, slow drive.} The angle is learned only while the speed model reads more than
 $14$~km/h, so on a short drive in traffic it rests on a few turns, and which turns depends on the speed
 model. On one car drive, ten minutes at a median $9$~km/h, the speeds the app read on the day kept
-$\nSlowAppPct\%$ of the $\nSlowGraded$ graded seconds within $30\dg$ of GPS; replayed with the speed model rebuilt from the
-other journeys, a different handful of turns set the angle and $\nSlowReplayPct\%$ were.
+$\nSlowAppPct\%$ of the $\nSlowGraded$ graded seconds within $30\dg$ of GPS. Replayed with the speed model rebuilt from the
+other journeys, a different handful of turns sets the angle each time that model changes: over the last
+$\nSlowReplayRuns$ re-runs, which differed only in the journeys added, between $\nSlowReplayLow\%$ and $\nSlowReplayHigh\%$ of
+those seconds were within $30\dg$.
 \item \textbf{A phone that moves.} A hand shakes the phone and shaking reads as speed. A hand can no
 longer raise the speed, but a phone picked up while slowing keeps the speed it had when it was picked
 up. A phone that shifts in the pocket turns the drawn route by about as much as it moved, until enough
