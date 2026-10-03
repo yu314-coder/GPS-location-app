@@ -22,11 +22,11 @@
    "hours": 13.8,
    "gps_km": 269.1,
    "gps_km_whole": 269,
-   "app_km": 271.0,
+   "app_km": 270.9,
    "total_pct": 0.7,
    "within20": 71,
    "speed_mae": 6.3,
-   "half_minutes": 1158,
+   "half_minutes": 1157,
    "dir_recordings": 37,
    "dir_median": 14,
    "dir_within30": 87,
@@ -64,7 +64,7 @@
     "app": 2.5
    },
    "car": {
-    "n": 331,
+    "n": 330,
     "gps": 2.9,
     "app": 2.4
    }

@@ -776,7 +776,7 @@ enum VelocityMethodData {
         .init(name: "Motorcycle", detail: "45 journeys, 73% within 20%",
               appKm: 174.5, gpsKm: 199.1, errorPercent: -12.4),
         .init(name: "Car", detail: "47 journeys, 71% within 20%",
-              appKm: 271.0, gpsKm: 269.1, errorPercent: 0.7),
+              appKm: 270.9, gpsKm: 269.1, errorPercent: 0.7),
         .init(name: "Walking", detail: "81 straight stretches, counted by steps",
               appKm: 3.62, gpsKm: 3.32, errorPercent: 9.0),
         .init(name: "Plane", detail: "1 flight: takeoff, then the flight network",
@@ -2028,13 +2028,13 @@ enum VelocityMethodData {
         static let CarDistTxt = "0.7% long"
         static let CarDrift = "18"
         static let CarGpsKm = "269"
-        static let CarHalf = "1,158"
+        static let CarHalf = "1,157"
         static let CarHours = "13.8"
         static let CarMae = "6.3"
         static let CarMedJourneyTxt = "0.4% long"
         static let CarMidMax = "2"
         static let CarNinety = "34"
-        static let CarParks = "7"
+        static let CarParks = "8"
         static let CarRec = "47"
         static let CarRoutes = "38"
         static let CarRtBig = "2"
