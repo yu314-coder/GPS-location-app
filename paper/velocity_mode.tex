@@ -763,10 +763,11 @@ charger beside the phone throughout, a few turning minutes still showed Earth's 
 corrected at all.
 \item \textbf{Car-park ramps and rides never recognised.} A car crawling up a concrete ramp shakes like
 one at $40$~km/h, so distance is withheld while climbing and turning together; once that test fired on
-an ordinary road and dropped $9$~seconds at $48$~km/h, about $115$~m. On one short ride Apple's
-classifier never said ``driving'' and the step counter took the engine for footsteps; as recorded, the
-app counted $1.0$ of $2.4$~km. Stretches counted by steps while GPS showed riding speed are left out
-of the comparisons (Section~\ref{sec:eval}), so that ride is not among the graded ones.
+an ordinary road and dropped $9$~seconds at $48$~km/h, about $115$~m. On $\nStepRideN$ journeys
+the step counter took the engine for footsteps: as recorded, $\nStepRideGps$~km that GPS measured at
+$10$~km/h or more were counted by steps as $\nStepRideLive$~km. On $\nStepRideBig$ of them that was a fifth of the
+ride or more, at worst $\nStepRideWorst\%$. Stretches counted by steps while GPS showed riding speed are
+left out of the comparisons (Section~\ref{sec:eval}), so this loss is not in the distances reported above.
 \item \textbf{In the air, a typical speed.} The flight engines give the speed an airliner of one type
 typically has at that point of a flight, not a measurement of this one. A headwind or tailwind, a
 faster or slower aircraft, a long hold or a short hop will make them read high or low: on NASA's
