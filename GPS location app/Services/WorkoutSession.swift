@@ -2042,6 +2042,9 @@ class WorkoutSession: ObservableObject {
         flight = snapshot.flight
         currentMetrics = snapshot.currentMetrics
         workoutType = HKWorkoutActivityType(rawValue: snapshot.workoutTypeRawValue) ?? .walking
+        // Velocity Mode is the user's standing choice. Restored before the workout counts as
+        // active, so the resumed log states the mode the workout actually carries on in.
+        setForceMotionFallback(UserDefaults.standard.bool(forKey: "velocityModeEnabled"), persist: false)
         isActive = true
         isPaused = snapshot.isPaused
         totalPausedTime = snapshot.totalPausedTime
@@ -2054,6 +2057,8 @@ class WorkoutSession: ObservableObject {
         // The logs carry on in this workout's own files (build 82): before, a relaunch mid-flight
         // started unnamed new ones and everything held in memory was gone.
         sessionDiagnostics.resume(workoutStart: flight.startDate, sessionDetail: diagnosticsSessionDetail())
+        // The sensors, the speed model and the raw log, exactly as a new workout arms them.
+        armMotionPipeline()
         if launchedForLocationEvent {
             print("📍 Restore path triggered by location launch event")
         }
@@ -2064,6 +2069,7 @@ class WorkoutSession: ObservableObject {
         if !isPaused {
             locationManager.startTracking()
         }
+        startEstimatedFallbackTimer()
 
         // Re-arm notifications and Live Activity after process relaunch.
         notificationManager.requestAuthorization { [weak self] granted in
@@ -2296,31 +2302,12 @@ class WorkoutSession: ObservableObject {
         }
     }
 
-    func startWorkout() {
-        guard !isActive else {
-            print("⚠️ startWorkout ignored: workout already active")
-            NotificationCenter.default.post(name: .openLiveSessionRequested, object: nil)
-            return
-        }
-
-        print("🚀 Starting workout session...")
-        ensureMotionPermission()
-        clearActiveWorkoutSnapshot(reason: "newWorkoutStart")
-
-        // Initialize flight first
-        let startDate = Date()
-        flight = Flight(startDate: startDate)
-        flight.workoutType = workoutType.rawValue
-        isActive = true
-        lastRealLocationTime = startDate
-        lastGoodAccuracyFixTime = .distantPast
-        pendingUnanchoredMovement = []
-        lastEstimatedAppendTime = Date()
-        isUsingEstimatedLocationFallback = false
-        lastEstimatedFallbackTick = nil
-        estimatedFallbackSpeed = 0.0
-        displaySpeedFilter = 0.0
-        estimatedFallbackDistanceAdded = 0.0
+    /// Everything that turns the motion sensors into speed, direction and the raw log, and the
+    /// user's Velocity Mode choice. Armed when a workout starts AND when one is resumed after the
+    /// app was relaunched: until build 99 a resume restored the route and the logs only, so the
+    /// rest of the workout ran on GPS with Velocity Mode off and no motion recorded (seen when iOS
+    /// ended the app in the background during the walk after a ride, 2026-10-05).
+    private func armMotionPipeline() {
         // Restore the user's standing choice instead of forcing it off. Turning it on has to be
         // possible BEFORE the first fix is recorded, otherwise the opening seconds are GPS.
         setForceMotionFallback(UserDefaults.standard.bool(forKey: "velocityModeEnabled"), persist: false)
@@ -2380,7 +2367,6 @@ class WorkoutSession: ObservableObject {
         movingAmplitudeLog = 0
         movingAmplitudeSamples = 0
         workoutStartTime = Date()
-        sessionDiagnostics.reset(workoutStart: flight.startDate, sessionDetail: diagnosticsSessionDetail())
         flightPhase.reset()
         launchIntegrator.reset()
         flightTilt.reset()
@@ -2394,6 +2380,35 @@ class WorkoutSession: ObservableObject {
         driftMotionSession = -1
         previousUncorrectedDatum = nil
         locationManager.headingDriftCorrection = 0
+    }
+
+    func startWorkout() {
+        guard !isActive else {
+            print("⚠️ startWorkout ignored: workout already active")
+            NotificationCenter.default.post(name: .openLiveSessionRequested, object: nil)
+            return
+        }
+
+        print("🚀 Starting workout session...")
+        ensureMotionPermission()
+        clearActiveWorkoutSnapshot(reason: "newWorkoutStart")
+
+        // Initialize flight first
+        let startDate = Date()
+        flight = Flight(startDate: startDate)
+        flight.workoutType = workoutType.rawValue
+        isActive = true
+        lastRealLocationTime = startDate
+        lastGoodAccuracyFixTime = .distantPast
+        pendingUnanchoredMovement = []
+        lastEstimatedAppendTime = Date()
+        isUsingEstimatedLocationFallback = false
+        lastEstimatedFallbackTick = nil
+        estimatedFallbackSpeed = 0.0
+        displaySpeedFilter = 0.0
+        estimatedFallbackDistanceAdded = 0.0
+        armMotionPipeline()
+        sessionDiagnostics.reset(workoutStart: flight.startDate, sessionDetail: diagnosticsSessionDetail())
         NotificationCenter.default.post(name: .workoutDidStart, object: nil)
 
         print("✅ Flight initialized at: \(startDate)")
