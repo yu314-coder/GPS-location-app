@@ -184,7 +184,9 @@ stored fingerprints closest to the current one and averages their speeds, nearer
 \hat v = \frac{\sum_{j=1}^{12} v_j / d_j^2}{\sum_{j=1}^{12} 1 / d_j^2},
 \end{equation}
 where $v_j$ is a stored speed and $d_j$ the distance between fingerprints. If even the closest stored
-fingerprint is far away, the phone gives no answer rather than a guess. Averaging pulls every answer
+fingerprint is far away, or the closest ones disagree among themselves, the store gives no answer
+rather than a guess, and the starting network below answers in its place: the speed never waits for
+GPS and never stalls while the vehicle moves. Averaging pulls every answer
 toward the middle, so a correction learned from the stored examples stretches the answers back out.
 
 \paragraph{A starting network.} A new phone has no examples, so until it holds $3{,}000$ it uses a
@@ -315,8 +317,9 @@ roll, taken as the last moment under $30$~knots before liftoff.
 So that every result describes the newest version, each recording was replayed through the current
 method from its raw sensor data:
 \begin{itemize}
-\item \textbf{Speed:} the same fingerprint, the same $12$-neighbour average, refusals and correction,
-and the same rules for stops, a phone in the hand, and holding the last answer. The store holds
+\item \textbf{Speed:} the same fingerprint, the same $12$-neighbour average and correction, refusals
+answered by a starting network trained without that recording, and the same rules for stops and a
+phone in the hand. The store holds
 $4{,}000$ examples drawn at random from every \emph{other} journey, so no journey is measured with its
 own GPS in the store. Each example keeps the same chance of being drawn whatever recordings are added,
 so a new recording changes the other journeys' stores only by its own examples. On $\nRecN$ recent
@@ -732,13 +735,18 @@ but a very short ride may never learn the angle well.
 $14$~km/h, so on a short drive in traffic it rests on a few turns, and which turns depends on the speed
 model. On one car drive, ten minutes at a median $9$~km/h, the speeds the app read on the day kept
 $\nSlowAppPct\%$ of the $\nSlowGraded$ graded seconds within $30\dg$ of GPS. Replayed with the speed model rebuilt from the
-other journeys, a different handful of turns sets the angle each time that model changes: over the last
-$\nSlowReplayRuns$ re-runs, which differed only in the journeys added, between $\nSlowReplayLow\%$ and $\nSlowReplayHigh\%$ of
-those seconds were within $30\dg$.
+other journeys, a different handful of turns sets the angle each time that model changes:
+\nSlowReplayTxt{} of those seconds were within $30\dg$.
 \item \textbf{A phone that moves.} A hand shakes the phone and shaking reads as speed. A hand can no
 longer raise the speed, but a phone picked up while slowing keeps the speed it had when it was picked
 up. A phone that shifts in the pocket turns the drawn route by about as much as it moved, until enough
 new turns have been learned.
+\item \textbf{A store full of another vehicle.} The store keeps $4{,}000$ examples and each new one
+replaces a random old one, so a run of car drives leaves it mostly car. On the next two motorcycle
+rides it declined $\nForgetDeclLo$--$\nForgetDeclHi\%$ of the riding seconds, and the app, which then held its last
+answer, read $\nForgetLiveA\%$ and $\nForgetLiveB\%$ of GPS as recorded. The newest version answers those seconds
+with the starting network, which on the same seconds reads $\nForgetNetA\%$ and $\nForgetNetB\%$. The re-run draws its
+store from every journey, so it cannot show the forgetting itself.
 \item \textbf{A disturbed field at stops.} On one $49$-minute drive the field read about $80~\mu$T at stops
 and $165$ at speed. The stops then measured a drift that did not happen while moving, and the route turned
 further off every minute: with every still second counted, $\nLongDriftEvery\%$ of seconds were within $30\dg$; with no drift
