@@ -620,7 +620,22 @@ final class LearnedSpeedEstimator {
             lastEstimateUsedNetwork = true
             return network.speed(features: f)
         }
-        return storeEstimate(f, airborne: airborne)
+        if let store = storeEstimate(f, airborne: airborne) { return store }
+        // THE SPEED NEVER STALLS (build 103). When the store declines - no close match, a
+        // neighbourhood that cannot predict, a regime it has not learned - the network answers.
+        // It needs no GPS and always answers. Before, a declined tick held the last answer for
+        // up to two minutes and then read zero, and a store full of one vehicle declines most of
+        // the time in another: after a week of car drives, two motorcycle rides were declined on
+        // 41-44% of their seconds and read 49% and 58% of GPS live. The network on those seconds
+        // takes them to 89% and 88%. Replayed on every recording: motorcycle 82% -> 87% of GPS,
+        // journeys within 20% 62% -> 72% (37 closer, 7 further); car 97% -> 96.5%, error 7.3 ->
+        // 7.1 km/h. Ground only: the network is a road model, and the air has its own engines.
+        // The decline flags stay set, so the log still shows why the store did not answer.
+        if !airborne, let network = SpeedNetwork.bundled, let answer = network.speed(features: f) {
+            lastEstimateUsedNetwork = true
+            return answer
+        }
+        return nil
     }
 
     /// The learned store's own answer for one fingerprint. Split out of estimate() so the log can
@@ -707,8 +722,8 @@ final class LearnedSpeedEstimator {
         //
         // Beyond about 2 the answer is worse than useless. Declining there costs a quarter of
         // the ticks and takes MAE from 9.3 to 7.8 on the rest; the declined ticks fall through
-        // to the last GPS-measured speed, which is a far better guess than an unrecognised
-        // signature. Knowing when it does not know is the property a lookup can offer and a
+        // to the bundled network (estimate()), which is a far better guess than an unrecognised
+        // signature and needs no GPS. Knowing when it does not know is the property a lookup can offer and a
         // fitted curve cannot.
         if best[0].d > MAX_MATCH_DISTANCE_SQUARED { return nil }
 
