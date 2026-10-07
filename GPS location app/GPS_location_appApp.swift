@@ -27,6 +27,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         _ = WatchConnectivityManager.shared  // Ensure watch connectivity is active for background watch messages
         WorkoutSession.shared.handleAppLaunch(launchOptions: launchOptions)
         TempFileSweeper.sweep()   // half-written saves and old share copies left in tmp/
+        ExitDiagnostics.shared.start()   // the system's account of how the app last ended
 
         // The road-alignment API key has been removed from the app. Clear anything a previous
         // build stored: without the settings field there is no way to see or change it, so a

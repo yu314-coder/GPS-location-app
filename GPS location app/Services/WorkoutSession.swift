@@ -1981,7 +1981,23 @@ class WorkoutSession: ObservableObject {
                 self?.handleWillEnterForeground()
             }
             .store(in: &cancellables)
+
+        // iOS warns before it ends an app for memory; the warning and the footprint go in the log
+        // at once, so a workout that stops dead says whether memory was the reason.
+        NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)
+            .sink { [weak self] _ in
+                guard let self, self.isActive else { return }
+                self.sessionDiagnostics.recordEvent("memory_warning", detail: Self.footprintDetail())
+                self.sessionDiagnostics.flushAll()
+            }
+            .store(in: &cancellables)
     }
+
+    /// The app's memory footprint for the events log (see ExitDiagnostics).
+    private static func footprintDetail() -> String {
+        String(format: "%.0f MB", ExitDiagnostics.footprintMB())
+    }
+    private var lastFootprintLog: Date?
 
     func handleAppLaunch(launchOptions: [UIApplication.LaunchOptionsKey: Any]?) {
         let launchedForLocation = launchOptions?[.location] != nil
@@ -2000,6 +2016,7 @@ class WorkoutSession: ObservableObject {
 
     private func handleDidEnterBackground() {
         guard isActive else { return }
+        sessionDiagnostics.recordEvent("background", detail: Self.footprintDetail())
         // Buffered log lines go to disk now: a backgrounded app can be ended without warning.
         sessionDiagnostics.flushAll()
         print("📱 App entered background with active workout - requesting transition background task")
@@ -2013,6 +2030,7 @@ class WorkoutSession: ObservableObject {
     }
 
     private func handleWillEnterForeground() {
+        if isActive { sessionDiagnostics.recordEvent("foreground", detail: Self.footprintDetail()) }
         persistActiveWorkoutSnapshot(force: true, reason: "enteredForeground", shouldLog: true)
         endTransitionBackgroundTaskIfNeeded()
     }
@@ -3854,6 +3872,11 @@ class WorkoutSession: ObservableObject {
 
     private func checkEstimatedLocationFallback() {
         guard isActive && !isPaused else { return }
+        // The memory footprint once a minute, so a workout ended by iOS shows whether it was rising.
+        if lastFootprintLog.map({ Date().timeIntervalSince($0) >= 60 }) ?? true {
+            lastFootprintLog = Date()
+            sessionDiagnostics.recordEvent("memory", detail: Self.footprintDetail())
+        }
         // THE AUTOMATIC SWITCH MUST RUN AT THE SAME RATE AS THE FORCED ONE.
         //
         // This enabled 50 Hz only while Velocity Mode was forced, and 2 Hz otherwise. The
