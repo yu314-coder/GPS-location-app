@@ -2082,7 +2082,9 @@ class WorkoutSession: ObservableObject {
         }
         logBackgroundRefreshStatus()
 
-        let activityType: CLActivityType = (workoutType == .other) ? .airborne : .fitness
+        // THE WORKOUT TYPE ONLY NAMES THE WORKOUT IN APPLE HEALTH (owner, 2026-10-08). Every recording,
+        // the flights included, was made as Walking, so every type now behaves as Walking did.
+        let activityType: CLActivityType = .fitness
         locationManager.updateActivityType(activityType)
         if !isPaused {
             locationManager.startTracking()
@@ -2432,7 +2434,9 @@ class WorkoutSession: ObservableObject {
         print("✅ Flight initialized at: \(startDate)")
         persistActiveWorkoutSnapshot(force: true, reason: "startWorkout", shouldLog: true)
 
-        let activityType: CLActivityType = (workoutType == .other) ? .airborne : .fitness
+        // THE WORKOUT TYPE ONLY NAMES THE WORKOUT IN APPLE HEALTH (owner, 2026-10-08). Every recording,
+        // the flights included, was made as Walking, so every type now behaves as Walking did.
+        let activityType: CLActivityType = .fitness
         locationManager.updateActivityType(activityType)
 
         // Apply current thermal state immediately (device may already be warm).
@@ -3120,8 +3124,9 @@ class WorkoutSession: ObservableObject {
     private func calculateTotalDistance(from locations: [FlightLocation]) -> Double {
         guard locations.count > 1 else { return 0 }
 
-        let isFlight = workoutType == .other
-        let maxJump = isFlight ? 2000.0 : 1000.0
+        // A jump between two fixes is allowed to be longer only when GPS itself measured aircraft
+        // speed at both (over 50 m/s, 180 km/h, which no road recording reaches) - sensed, never the
+        // workout type, which only names the workout in Apple Health.
         let maxAccuracy = 1000.0
 
         var totalDistance: Double = 0
@@ -3137,6 +3142,7 @@ class WorkoutSession: ObservableObject {
             }
 
             let distance = current.distance(to: previous)
+            let maxJump = (current.speed > 50 && previous.speed > 50) ? 2000.0 : 1000.0
             if distance <= maxJump {
                 totalDistance += distance
             }

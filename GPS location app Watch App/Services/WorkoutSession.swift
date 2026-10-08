@@ -790,7 +790,9 @@ class WorkoutSession: NSObject, ObservableObject {
             lastLocationTime = Date()
             latestIPhoneMotionAssist = nil
 
-            let activityType: CLActivityType = (workoutType == .other) ? .airborne : .fitness
+            // THE WORKOUT TYPE ONLY NAMES THE WORKOUT IN APPLE HEALTH (owner, 2026-10-08). Every recording,
+            // the flights included, was made as Walking, so every type now behaves as Walking did.
+            let activityType: CLActivityType = .fitness
             locationManager.updateActivityType(activityType)
 
             // Start location tracking
@@ -1537,12 +1539,11 @@ class WorkoutSession: NSObject, ObservableObject {
             return
         }
         let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
-        let isStepBasedActivity = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
-
-        // Only use pedometer fallback for step-based activities where pedometer is running
-        guard isStepBasedActivity, pedometerManager.isPedometerAvailable else {
+        // Every workout type may fall back to the pedometer, as Walking always could: the type only
+        // names the workout in Apple Health.
+        guard pedometerManager.isPedometerAvailable else {
             if isUsingPedometerFallback {
-                endPedometerFallback(reason: "activity not step-based or pedometer unavailable")
+                endPedometerFallback(reason: "pedometer unavailable")
             }
             return
         }
@@ -2044,8 +2045,8 @@ class WorkoutSession: NSObject, ObservableObject {
             heldSpeedCorrection = min(max(heldSpeedCorrection + alongTrack * dtS, -DR_MAX_SPEED), DR_MAX_SPEED)
         }
 
-        let isStep = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
-        guard forceMotionFallback || !isStep else { return }
+        // As for Walking, whatever the workout type: integrated only while Velocity Mode is on.
+        guard forceMotionFallback else { return }
 
         let rX = worldAccelX - accelBiasX
         let rY = worldAccelY - accelBiasY
@@ -2074,10 +2075,10 @@ class WorkoutSession: NSObject, ObservableObject {
         } else {
             hardQuietDuration = 0
         }
-        // While the watch's own workout context says we are moving in a vehicle, quiet does not
-        // mean stopped — a smooth cruise is quiet. This removes the 0 km/h-while-driving reads.
-        let drivingNow = self.workoutType == .other && self.motionFallbackSpeed > 8.0
-        let stationary = !drivingNow && (softStationary || hardQuietDuration >= HARD_ZUPT_WINDOW)
+        // A smooth-cruise exception here applied only to the "Other" workout type and is gone: the
+        // type only names the workout in Apple Health, and Walking, which every recording used, never
+        // had it.
+        let stationary = softStationary || hardQuietDuration >= HARD_ZUPT_WINDOW
         isInertialStationary = stationary
         if stationary {
             motionVelX = 0
@@ -2371,7 +2372,6 @@ class WorkoutSession: NSObject, ObservableObject {
         // dead pedometer (0 Hz, 0 steps — an elevator/vehicle/plane) left the watch
         // stuck forever on "GPS OK" with a frozen track. Motion now owns the gap by
         // default; the pedometer only takes over while it is genuinely counting steps.
-        let isStepBased = (workoutType == .walking || workoutType == .running || workoutType == .hiking)
         let timeSinceLastGPS = Date().timeIntervalSince(lastLocationTime)
 
         // MANUAL OVERRIDE: when the user forces velocity (motion) mode ON from the
@@ -2449,7 +2449,7 @@ class WorkoutSession: NSObject, ObservableObject {
                     motionVelY = -speed * sin(h)
                 }
                 motionHeadingDegrees = normalizedHeading(heading)
-            } else if forceMotionFallback || !isStepBased,
+            } else if forceMotionFallback,   // as for Walking, whatever the workout type
                       let assist = recentIPhoneMotionAssist(near: now) {
                 // Legacy path: only a relayed acceleration magnitude is available.
                 accelSource = "iPhone-accel"
@@ -3184,8 +3184,7 @@ class WorkoutSession: NSObject, ObservableObject {
     private func calculateTotalDistance(from locations: [FlightLocation]) -> Double {
         guard locations.count > 1 else { return 0 }
 
-        let isFlight = workoutType == .other
-        let maxJump = isFlight ? 2000.0 : 1000.0
+        // Longer jumps only where GPS measured aircraft speed at both fixes (see processNewLocation).
         let maxAccuracy = 1000.0
 
         var totalDistance: Double = 0
@@ -3201,6 +3200,7 @@ class WorkoutSession: NSObject, ObservableObject {
             }
 
             let distance = current.distance(to: previous)
+            let maxJump = (current.speed > 50 && previous.speed > 50) ? 2000.0 : 1000.0
             if distance <= maxJump {
                 totalDistance += distance
             }
@@ -3367,7 +3367,9 @@ class WorkoutSession: NSObject, ObservableObject {
 
         // Check user setting for raw GPS mode
         let useRawGPS = UserDefaults.standard.bool(forKey: "useRawGPS")
-        let isFlight = workoutType == .other
+        // Aircraft allowances when GPS itself measures aircraft speed (over 50 m/s, 180 km/h, which no
+        // road recording reaches) - sensed, never the workout type, which only names it in Apple Health.
+        let isFlight = location.speed > 50
         let sourceLabel: String = {
             switch source {
             case .watchGPS:
