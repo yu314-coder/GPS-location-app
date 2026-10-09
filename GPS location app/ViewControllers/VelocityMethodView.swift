@@ -442,13 +442,16 @@ struct VelocityMethodView: View {
                 two minutes from the still moment before the roll: 265 km/h forty seconds in, where \
                 GPS measured 266. Holding the 317 km/h it reached misses the climb to 680.
 
-                After the two minutes one of two flight engines takes over: a small neural network, \
-                or a store of 4,000 examples answered like the ground store. Both were trained on 302 \
-                airline flights from NASA's public DASHlink flight recorder data. Both read only what the \
-                phone senses: minutes since the roll began and how the phone is tilted. Neither uses GPS. \
-                On NASA flights they had never seen, the network came within 10% of the distance on 68% \
-                of flights; holding the takeoff speed did on 7%. What they give is a typical airliner's \
-                speed at that point of a flight, so wind or a different aircraft will move it. \
+                After that the speed is the median of 302 airline flights from NASA's public DASHlink \
+                flight recorder data at the same point: minutes since the takeoff roll on the clock, and, \
+                once the cabin pressure has started down, minutes since the descent began. The cabin is \
+                used for that timing only, never as an altitude. No tilt is read, so a phone that turns \
+                over in a bag or moves in a hand reads the same, and a pause by iOS is made up afterwards. \
+                Neither GPS nor an aircraft speed is used. On NASA flights it had never seen, it counted \
+                a median of 103% of the distance, within 10% on 62% of flights. On a four-hour flight \
+                graded by the aircraft's public ADS-B track it counted 87%; the earlier tilt-reading \
+                engines (shown above) counted 39% on a phone in a bag. What it gives is a typical \
+                airliner's speed, so wind or a faster aircraft will move it. \
                 Direction in the air: \(N.FlAir)° median error.
                 """)
                 .font(.caption2).foregroundStyle(.secondary)
@@ -554,7 +557,7 @@ struct VelocityMethodView: View {
                 Limitation("A ride that is never recognised.",
                            "On one short ride Apple's motion classifier never said \u{201C}driving\u{201D} and the step counter took the engine for footsteps: as recorded, the app counted 1.0 of 2.4 km.")
                 Limitation("In an aircraft, the speed after the takeoff is a typical airliner's.",
-                           "Learned from NASA flight data, not measured on this flight: a strong wind or a much faster or slower aircraft reads off. On NASA flights the middle 80% counted 91–118% of the distance.")
+                           "Learned from NASA flight data, not measured on this flight: a strong wind or a much faster or slower aircraft reads off. On NASA flights the middle 80% counted 90–121% of the distance; NASA's regional jet cruised at a median 760 km/h, so a long-haul jet near 900 reads about 15% low in cruise.")
                 Limitation("These numbers are one phone and one person.",
                            "\(N.Journeys) motorcycle and car journeys (\(N.Hours) hours, \(N.KmChecked) km that GPS could check), \(N.WalkStretches) straight stretches and \(N.Walks) walks on foot, and one flight, mostly in one city. Other people, phones and vehicles may behave differently, the built-in network most of all.")
             }

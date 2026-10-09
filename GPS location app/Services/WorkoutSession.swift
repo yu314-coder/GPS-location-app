@@ -287,6 +287,24 @@ class WorkoutSession: ObservableObject {
     /// FlightSpeedEngines. Their latest answers (m/s) and inputs are kept for the log.
     private var flightTilt = FlightSpeedEngines.Tilt()
     private var lastFlightAnswers: (network: Double?, store: Double?, features: FlightSpeedEngines.Features?) = (nil, nil, nil)
+    /// THE TAKEOFF ROLL, ON THE WALL CLOCK (build 112), for FlightProfile. The moment an integration
+    /// passed 30 kt (NASA's roll start) and then reached 200 km/h within 30 s; a candidate until
+    /// then. BR215's roll took 17-18 s on both phones; across all 41 logs with the integration, no
+    /// road ever did it in under 36 s (integration drift took six past 200 km/h, slowly). Kept
+    /// across re-anchors, so only a newer roll replaces it.
+    private var takeoffRollAt: Date?
+    private var rollCandidateAt: Date?
+    private var rollCandidateAnchor = -1
+    private static let ROLL_START_SPEED = 15.43          // m/s, 30 kt
+    private static let ROLL_CONFIRM_SPEED = 55.6         // m/s, 200 km/h
+    private static let ROLL_CONFIRM_WITHIN: TimeInterval = 30
+    /// When the cabin first said airborne on this flight; nil on the ground.
+    private var airborneSince: Date?
+    /// Distance the air speed owes for time the app was paused by iOS (build 112): on BR215 the
+    /// iPhone 17 was paused 61 minutes in the air and counted nothing for them. FlightProfile is a
+    /// function of time, so what it would have counted is known; it is paid back at no more than the
+    /// current speed again per tick, so no single step of the route jumps.
+    private var airDistanceOwed: Double = 0
     /// Learns speed from the accelerometer's spectral signature, on-device, from GPS labels.
     /// Replaces the hand-crafted vibration model — see LearnedSpeedEstimator for the measurements
     /// showing why a learned lookup finds what five hand-built features could not.
@@ -2362,6 +2380,7 @@ class WorkoutSession: ObservableObject {
                 gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
                 rotation: [motion.rotationRate.x, motion.rotationRate.y, motion.rotationRate.z],
                 dt: dt, airborne: self.isAirborneForEstimation)
+            self.noteTakeoffRoll()
             self.flightTilt.ingest(gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
                                    dt: dt, launch: self.launchIntegrator)
             self.sessionDiagnostics.noteDeviceMotion(
@@ -2391,6 +2410,8 @@ class WorkoutSession: ObservableObject {
         launchIntegrator.reset()
         flightTilt.reset()
         lastFlightAnswers = (nil, nil, nil)
+        takeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1
+        airborneSince = nil; airDistanceOwed = 0
         locationManager.freezeDeclination = false   // this trip's own, until its first point
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
         driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
@@ -3876,6 +3897,66 @@ class WorkoutSession: ObservableObject {
         }
     }
 
+    /// Follows the integration for the takeoff roll: see takeoffRollAt.
+    private func noteTakeoffRoll() {
+        if launchIntegrator.anchorCount != rollCandidateAnchor {
+            rollCandidateAnchor = launchIntegrator.anchorCount; rollCandidateAt = nil
+        }
+        guard let v = launchIntegrator.speed else { return }
+        let now = Date()
+        if v < Self.ROLL_START_SPEED {
+            rollCandidateAt = nil
+        } else if rollCandidateAt == nil {
+            rollCandidateAt = now
+        }
+        if let start = rollCandidateAt, v >= Self.ROLL_CONFIRM_SPEED, takeoffRollAt != start,
+           now.timeIntervalSince(start) <= Self.ROLL_CONFIRM_WITHIN {
+            takeoffRollAt = start
+        }
+    }
+
+    /// When this flight's takeoff roll began: the roll found by noteTakeoffRoll, if it came within
+    /// 15 minutes before the cabin said airborne (on BR215 the roll began at 10:18:12 and the cabin
+    /// said airborne at 10:20:19-22). Nil without one: the cabin alone also climbs on a hill road
+    /// (a car drive on 4 Oct read as airborne for a 98 m climb), and no road gives the roll.
+    private func flightRollStart(at now: Date) -> Date? {
+        let detected = airborneSince ?? now
+        guard let roll = takeoffRollAt, roll <= detected,
+              detected.timeIntervalSince(roll) < 15 * 60 else { return nil }
+        return roll
+    }
+
+    /// FlightProfile's speed now, in m/s; nil without a takeoff roll.
+    private func flightProfileSpeed(at now: Date) -> Double? {
+        guard let roll = flightRollStart(at: now) else { return nil }
+        let descent = flightPhase.descentStartedAt.map { now.timeIntervalSince($0) }
+        return FlightProfile.speedKmh(sinceRoll: now.timeIntervalSince(roll), sinceDescent: descent) / 3.6
+    }
+
+    /// The speed in the air: the takeoff integration while it runs, then FlightProfile.
+    private func airSpeed(at now: Date) -> (speed: Double, tag: String)? {
+        if let launch = launchIntegrator.speed, launch > 0, !launchIntegrator.isHolding {
+            return (launch, "LAUNCH")
+        }
+        return flightProfileSpeed(at: now).map { ($0, "FLIGHT(profile)") }
+    }
+
+    /// Metres FlightProfile counts between two moments of this flight, in 10-second steps.
+    private func flightProfileDistance(from start: Date, to end: Date) -> Double {
+        guard end > start, let roll = flightRollStart(at: end) else { return 0 }
+        let descent = flightPhase.descentStartedAt
+        var t = start, total = 0.0
+        while t < end {
+            let step = min(10, end.timeIntervalSince(t))
+            let mid = t.addingTimeInterval(step / 2)
+            let sinceDescent = descent.map { mid.timeIntervalSince($0) }
+            total += FlightProfile.speedKmh(sinceRoll: mid.timeIntervalSince(roll),
+                                            sinceDescent: sinceDescent) / 3.6 * step
+            t = t.addingTimeInterval(step)
+        }
+        return total
+    }
+
     private func checkEstimatedLocationFallback() {
         guard isActive && !isPaused else { return }
         // The memory footprint once a minute, so a workout ended by iOS shows whether it was rising.
@@ -3952,7 +4033,9 @@ class WorkoutSession: ObservableObject {
 
         let now = Date()
         let previousTick = lastEstimatedFallbackTick ?? now.addingTimeInterval(-ESTIMATED_LOCATION_TICK_INTERVAL)
-        let dt = min(max(now.timeIntervalSince(previousTick), 0.5), 2.0)
+        // The real time since the last tick: longer than dt after iOS paused the app.
+        let rawTickGap = max(now.timeIntervalSince(previousTick), 0)
+        let dt = min(max(rawTickGap, 0.5), 2.0)
         lastEstimatedFallbackTick = now
         // Cleared once per tick, before any branch can set it — a reset inside one branch would
         // latch the flag for every path that does not take that branch, permanently disabling
@@ -3997,6 +4080,11 @@ class WorkoutSession: ObservableObject {
 
             flightPhase.ingest(relativeAltitude: relAlt, at: now)
 
+        }
+        if flightPhase.isAirborne {
+            if airborneSince == nil { airborneSince = now }
+        } else if airborneSince != nil {
+            airborneSince = nil; airDistanceOwed = 0
         }
 
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false
@@ -4367,7 +4455,11 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = 0
             motionVelEast = 0
             sourceTag = "PDR(still)"
-        } else if pedometerIsCounting, let pedometerTotal = fallbackPedometerDistance {
+        } else if pedometerIsCounting, !isAirborneForEstimation,
+                  let pedometerTotal = fallbackPedometerDistance {
+            // (Not in the air, build 112: steps there are a walk down the aisle, and the plane's
+            // speed goes on. This branch came before the air branch, so a walk to the galley used
+            // to replace 800 km/h with a walking pace.)
             // PEDOMETER (walking). CMPedometer delivers updates SPARSELY (seconds to tens of
             // seconds apart), so the cumulative distance jumps when an update lands and holds
             // flat between. The DELTA is still exactly the distance walked since the last tick
@@ -4429,7 +4521,7 @@ class WorkoutSession: ObservableObject {
             sourceTag = "PDR"
         } else if isAirborneForEstimation, vehicleContextIsCurrent,
                   learnedSpeed.estimate(airborne: true) == nil,
-                  let launch = launchIntegrator.speed, launch > 0 {
+                  let air = airSpeed(at: now) {
             // IN THE AIR WITH NOTHING LEARNED FOR THE AIR: THE TAKEOFF, INTEGRATED.
             //
             // A smooth cabin reads as standing still to a vibration model, so without examples from
@@ -4445,17 +4537,26 @@ class WorkoutSession: ObservableObject {
             // trained on NASA's recorded flights (the store answers the same second, for the log and in
             // case the network cannot). Replayed, the flight counts 77 km of 74 instead of 45. See
             // FlightSpeedEngines; nothing on the ground reads it.
-            estimatedFallbackSpeed = launch
-            sourceTag = "LAUNCH"
-            if launchIntegrator.isHolding, let x = flightTilt.features {
-                let net = FlightSpeedEngines.Network.bundled.map { $0.speedKmh(x) / 3.6 }
-                let store = FlightSpeedEngines.Store.bundled.map { $0.speedKmh(x) / 3.6 }
-                if let answer = net ?? store {
-                    estimatedFallbackSpeed = answer
-                    sourceTag = net != nil ? "FLIGHT(net)" : "FLIGHT(store)"
-                }
-            }
+            //
+            // BUILD 112: NO TILT, AND THE WALL CLOCK. On BR215 (graded by ADS-B) the tilt engines
+            // counted 776 of 2,011 km on a phone that turned over in its bag, and swung from 0 to
+            // 1,700 km/h on one held in a hand. The speed after the integration is now FlightProfile:
+            // NASA's median at this many minutes since the roll, and since the cabin started down.
+            // The tilt engines still answer every airborne second, for the log only. And the branch
+            // needs the takeoff roll: without one (the cabin also climbs on a hill road) the ground
+            // engines answer, as before.
+            estimatedFallbackSpeed = air.speed
+            sourceTag = air.tag
             distance = estimatedFallbackSpeed * dt
+            // Pay back what a pause in the air left out, at most doubling this tick's step.
+            if rawTickGap > dt + 1 {
+                airDistanceOwed += flightProfileDistance(from: now.addingTimeInterval(-rawTickGap),
+                                                         to: now.addingTimeInterval(-dt))
+            }
+            if airDistanceOwed > 0 {
+                let paid = min(airDistanceOwed, estimatedFallbackSpeed * dt)
+                distance += paid; airDistanceOwed -= paid
+            }
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
@@ -4960,7 +5061,9 @@ class WorkoutSession: ObservableObject {
             driftFromStops: driftFromStops,
             flightNetwork: lastFlightAnswers.network,
             flightStore: lastFlightAnswers.store,
-            flightMinutes: lastFlightAnswers.features?[0],
+            // Minutes since the takeoff roll on the wall clock, which FlightProfile uses (build 112);
+            // the tilt engines' own clock counted only seconds the app was awake.
+            flightMinutes: isAirborneForEstimation ? flightRollStart(at: now).map { now.timeIntervalSince($0) / 60 } : nil,
             flightTilt60: lastFlightAnswers.features?[1],
             magTurn: lastMagnetometerTurn,
             magScatter: lastMagnetometerScatter,
@@ -4979,7 +5082,8 @@ class WorkoutSession: ObservableObject {
             velocityNorth: motionVelNorth,
             velocityEast: motionVelEast,
             isDeadReckoning: true,
-            source: .engine)
+            source: .engine,
+            takeoffRoll: isAirborneForEstimation ? flightRollStart(at: now) : nil)
 
         // Accumulate below the append threshold instead of DISCARDING. Previously a tick
         // under 0.25 m returned early and the distance was lost for good — the pedometer's
@@ -6187,6 +6291,8 @@ class WorkoutSession: ObservableObject {
 
         print("▶️ Resuming workout...")
         print("   Location manager isTracking: \(locationManager.isTracking)")
+        // A pause you chose is not a gap to make up: the air speed pays back only time iOS took.
+        lastEstimatedFallbackTick = nil
 
         // Calculate and accumulate paused time
         if let pauseStart = pauseStartTime {

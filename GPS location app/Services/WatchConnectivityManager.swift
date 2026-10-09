@@ -451,9 +451,12 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     enum RelaySource: String { case engine, gps, motion }
     private var lastWorkoutRelayTime: Date?
 
+    /// `takeoffRoll`: in the air, when this flight's takeoff roll began (build 112), so a watch that
+    /// loses this relay mid-flight can carry on with the same FlightProfile on its own clock.
     func relayDeadReckoningState(speed: Double?, headingDegrees: Double,
                                  velocityNorth: Double, velocityEast: Double,
-                                 isDeadReckoning: Bool, source: RelaySource) {
+                                 isDeadReckoning: Bool, source: RelaySource,
+                                 takeoffRoll: Date? = nil) {
         if source != .motion { lastWorkoutRelayTime = Date() }
         guard let session = session, session.activationState == .activated else { return }
         var payload: [String: Any] = [
@@ -466,6 +469,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             "timestamp": Date().timeIntervalSince1970
         ]
         if let speed { payload["drSpeed"] = speed }
+        if let takeoffRoll { payload["flightRoll"] = takeoffRoll.timeIntervalSince1970 }
         if session.isReachable {
             session.sendMessage(payload, replyHandler: nil) { _ in }
         } else {

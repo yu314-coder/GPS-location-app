@@ -96,6 +96,9 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     /// iPhone's dead-reckoning answer (speed m/s or nil, heading°, velocity N/E, time).
     /// Arrives independently of GPS, so it keeps flowing when the watch needs it most.
     var onIPhoneDeadReckoningReceived: ((Double?, Double, Double, Double, Date) -> Void)?
+    /// When the iPhone says this flight's takeoff roll began (build 112); see WorkoutSession's
+    /// flight fallback.
+    var onIPhoneTakeoffRollReceived: ((Date) -> Void)?
 
     fileprivate func handleIPhoneDeadReckoningState(_ message: [String: Any]) {
         guard let heading = message["drHeading"] as? Double else { return }
@@ -110,6 +113,9 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         let velE = speed == nil ? 0 : message["drVelEast"] as? Double ?? 0
         let ts = (message["timestamp"] as? TimeInterval).map { Date(timeIntervalSince1970: $0) } ?? Date()
         onIPhoneDeadReckoningReceived?(speed, heading, velN, velE, ts)
+        if let roll = message["flightRoll"] as? TimeInterval {
+            onIPhoneTakeoffRollReceived?(Date(timeIntervalSince1970: roll))
+        }
     }
     private var dualSourceAssistEnabled = false
     var isDualSourceAssistEnabled: Bool { dualSourceAssistEnabled }

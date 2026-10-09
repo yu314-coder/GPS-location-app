@@ -355,6 +355,25 @@ class WorkoutSession: NSObject, ObservableObject {
     /// relayed fix with a course made an old speed look current again.
     private var iPhoneDRSpeedTimestamp: Date?
     /// The iPhone's relayed speed while it is fresh.
+    /// IN THE AIR WITHOUT THE iPHONE (build 112). On BR215 the iPhone's relay stopped 68 minutes
+    /// into the flight and the watch fell back to its ground engines, which read the smooth cabin
+    /// as 0-13 km/h: 89 km counted of 3,392. The watch has a barometer, so it finds the flight, its
+    /// descent and its landing itself (FlightPhaseEstimator, the iPhone's file), and keeps the
+    /// iPhone's FlightProfile going from the takeoff roll the iPhone last relayed.
+    private let flightPhase = FlightPhaseEstimator()
+    private var watchAirborneSince: Date?
+    private var relayedTakeoffRoll: Date?
+
+    /// The flight's speed (m/s) while the cabin says airborne and the iPhone has relayed a takeoff
+    /// roll from shortly before; nil otherwise (a hill road also climbs, and has no roll).
+    private func watchFlightSpeed(at now: Date) -> Double? {
+        guard flightPhase.isAirborne, let roll = relayedTakeoffRoll else { return nil }
+        let detected = watchAirborneSince ?? now
+        guard roll <= detected, detected.timeIntervalSince(roll) < 15 * 60 else { return nil }
+        let descent = flightPhase.descentStartedAt.map { now.timeIntervalSince($0) }
+        return FlightProfile.speedKmh(sinceRoll: now.timeIntervalSince(roll), sinceDescent: descent) / 3.6
+    }
+
     private func freshIPhoneSpeed(at now: Date) -> Double? {
         guard let speed = iPhoneDRSpeed, let ts = iPhoneDRSpeedTimestamp,
               now.timeIntervalSince(ts) <= IPHONE_DR_MAX_AGE else { return nil }
@@ -569,6 +588,10 @@ class WorkoutSession: NSObject, ObservableObject {
             self.latestIPhoneMotionAssist = assist
         }
         // The iPhone's fully-integrated dead-reckoning answer, relayed independently of GPS.
+        connectivityManager.onIPhoneTakeoffRollReceived = { [weak self] roll in
+            guard let self = self, self.isActive else { return }
+            self.relayedTakeoffRoll = roll
+        }
         connectivityManager.onIPhoneDeadReckoningReceived = { [weak self] speed, heading, velN, velE, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
             if let speed {
@@ -583,6 +606,12 @@ class WorkoutSession: NSObject, ObservableObject {
             guard let self = self, self.isActive, !self.isPaused else { return }
             self.watchDiagnostics.latestRelativeAltitude = relativeAltitude
             self.watchDiagnostics.latestPressure = pressure
+            self.flightPhase.ingest(relativeAltitude: relativeAltitude, at: timestamp)
+            if self.flightPhase.isAirborne {
+                if self.watchAirborneSince == nil { self.watchAirborneSince = timestamp }
+            } else {
+                self.watchAirborneSince = nil
+            }
             self.currentMetrics.updateWithBarometricAltitude(
                 relativeAltitude: relativeAltitude,
                 pressure: pressure,
@@ -782,6 +811,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // Attribute everything this workout teaches to this workout, so regimes stay separable
             // (the iPhone's store keys its regime checks on the session).
             learnedSpeed.beginSession()
+            flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             lastGoodFixTimeWatch = nil; latestGPSFixTimeWatch = nil
             watchDiagnostics.reset(workoutStart: flight.startDate)
@@ -2772,6 +2802,11 @@ class WorkoutSession: NSObject, ObservableObject {
             if engineChoice == .auto, let relayed = relayedSpeed {
                 motionFallbackSpeed = relayed
                 accelSource = "iPhone-DR"
+            } else if relayedSpeed == nil, let flying = watchFlightSpeed(at: now) {
+                // In the air with no iPhone: the iPhone's own air speed, carried on (see
+                // watchFlightSpeed). Ahead of the ground engines, which were taught on roads.
+                motionFallbackSpeed = flying
+                accelSource = "FLIGHT(profile)"
             } else if vehicleContextIsCurrent,
                       let learned = ownAnswer ?? (relayedSpeed == nil ? recentLearnedAnswer : nil) {
                 // ITS OWN LEARNED SPEED. Ranked below the iPhone's estimate in Auto — the phone

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # The Apple Watch runs the iPhone's speed engine: the learned store (the algorithm), the bundled
-# network and its weights. The watch target cannot compile the iPhone's folder, so it carries
+# network and its weights, and in the air the flight phase and FlightProfile (build 112). The watch target cannot compile the iPhone's folder, so it carries
 # copies - and a copy that drifts is a different engine. This fails if any copy differs from the
 # iPhone's file. To update the watch after changing the iPhone's engine:
 #
@@ -12,6 +12,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FILES=(
   "Services/LearnedSpeedEstimator.swift"
   "Services/SpeedNetwork.swift"
+  "Services/FlightPhaseEstimator.swift"
+  "Services/FlightProfile.swift"
   "Resources/speed_network.json"
 )
 status=0
