@@ -114,6 +114,8 @@ struct SettingsView: View {
                     .padding(.vertical, 8)
                 }
 
+                WatchLogsSection()
+
                 // About Section
                 Section(header: Text("About"), footer: Group {
                     if let versionTapHint { Text(versionTapHint).foregroundColor(.accentColor) }

@@ -46,6 +46,27 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         session.transferFile(fileURL, metadata: ["type": "diagnosticsLog"])
     }
 
+    /// The diagnostics logs on their way to the iPhone, with how far each has got (0-1).
+    func outstandingDiagnosticsTransfers() -> [(name: String, fraction: Double)] {
+        let session = WCSession.default
+        guard session.activationState == .activated else { return [] }
+        return session.outstandingFileTransfers
+            .filter { ($0.file.metadata?["type"] as? String) == "diagnosticsLog" }
+            .map { ($0.file.fileURL.lastPathComponent, $0.progress.fractionCompleted) }
+    }
+
+    /// Stop every queued diagnostics transfer, so a stuck one can be sent afresh. The files stay
+    /// on the watch: only the iPhone's confirmation ever deletes them.
+    func cancelOutstandingDiagnosticsTransfers() {
+        let session = WCSession.default
+        guard session.activationState == .activated else { return }
+        for t in session.outstandingFileTransfers where (t.file.metadata?["type"] as? String) == "diagnosticsLog" {
+            t.cancel()
+        }
+    }
+
+    var sessionIsActivated: Bool { WCSession.default.activationState == .activated }
+
     /// Names of diagnostics logs already queued for the iPhone, so none is queued twice.
     func outstandingDiagnosticsLogNames() -> [String] {
         let session = WCSession.default
