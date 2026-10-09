@@ -98,14 +98,26 @@ fi
 # The archive goes in Xcode's own Archives folder, so it also shows in Organizer;
 # the export sits beside it and the logs in ~/Library/Logs. Nothing is written to
 # the external disk except the build number above.
-ARCHIVE="$HOME/Library/Developer/Xcode/Archives/$(date +%Y-%m-%d)/$SCHEME $CURRENT.xcarchive"
+ARCHIVES_ROOT="$HOME/Library/Developer/Xcode/Archives"
+ARCHIVE="$ARCHIVES_ROOT/$(date +%Y-%m-%d)/$SCHEME $CURRENT.xcarchive"
 EXPORT_DIR="${ARCHIVE%.xcarchive}_export"
 LOG_DIR="$HOME/Library/Logs/$SCHEME"
+# Never the external disk: not /Volumes/D/xcode, not the repo's old build/ folder.
+case "$ARCHIVE|$EXPORT_DIR|$LOG_DIR" in
+  *"/Volumes/"*|*"$ROOT/build"*) echo "refusing to put a build on the external disk: $ARCHIVE" >&2; exit 1 ;;
+esac
 mkdir -p "$(dirname "$ARCHIVE")" "$LOG_DIR"
+
+# Archives that are replaced go to the Trash, where they can still be recovered until
+# it is emptied; nothing here deletes them outright.
+discard() {
+  [[ -e "$1" ]] || return 0
+  if command -v trash >/dev/null; then trash "$1"; else echo "    no trash command; left $1" >&2; fi
+}
 
 # --- archive ----------------------------------------------------------------
 echo "==> archiving to $ARCHIVE"
-rm -rf "$ARCHIVE"
+discard "$ARCHIVE"
 xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
            -destination "generic/platform=iOS" -archivePath "$ARCHIVE" \
            archive -allowProvisioningUpdates 2>&1 | tee "$LOG_DIR/archive_$CURRENT.log" | tail -3
@@ -145,7 +157,7 @@ fi
 
 # --- export -----------------------------------------------------------------
 echo "==> exporting to $EXPORT_DIR"
-rm -rf "$EXPORT_DIR"
+discard "$EXPORT_DIR"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" \
            -exportOptionsPlist "$ROOT/scripts/ExportOptions.plist" \
            -exportPath "$EXPORT_DIR" -allowProvisioningUpdates 2>&1 | tee "$LOG_DIR/export_$CURRENT.log" | tail -2
@@ -157,6 +169,17 @@ IPA="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.ipa' | head -1)"
 echo "==> uploading build $CURRENT"
 xcrun altool --upload-app --type ios --file "$IPA" \
              --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee "$LOG_DIR/upload_$CURRENT.log"
+
+# --- keep only this archive -------------------------------------------------
+# Once the upload has gone through, every earlier archive of this app (including any
+# made from Xcode's Organizer) and its export go to the Trash; this one stays.
+echo "==> keeping only $(basename "$ARCHIVE")"
+while IFS= read -r old; do
+  [[ "$old" == "$ARCHIVE" ]] && continue
+  discard "$old"; discard "${old%.xcarchive}_export"
+  echo "    trashed $(basename "$old")"
+done < <(find "$ARCHIVES_ROOT" -mindepth 2 -maxdepth 2 -name "$SCHEME *.xcarchive" 2>/dev/null)
+find "$ARCHIVES_ROOT" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
 
 echo
 echo "==> build $CURRENT delivered."
