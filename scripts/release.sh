@@ -20,9 +20,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$ROOT/GPS location app.xcodeproj"
 PBXPROJ="$PROJECT/project.pbxproj"
 SCHEME="GPS location app"
-ARCHIVE="$ROOT/build/velocity.xcarchive"
-EXPORT_DIR="$ROOT/build/export"
 CONFIG="${ASC_CONFIG:-$HOME/.config/appstoreconnect/gps-location-app.env}"
+
+# --- the Xcode on the internal disk -------------------------------------------
+# Build only with the release Xcode in /Applications, never one on the external
+# disk (/Volumes/D held Xcode 26.5 until 2026-09-15). DEVELOPER_DIR pins it for
+# every xcodebuild and xcrun below, whatever xcode-select happens to say.
+XCODE_APP="/Applications/Xcode.app"
+export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+[[ -d "$DEVELOPER_DIR" ]] || { echo "No Xcode at $XCODE_APP" >&2; exit 1; }
+XCODE_BUILD="$(xcodebuild -version | awk '/Build version/ {print $3}')"
+# A beta's build has four digits starting with 5 after the letter (27A5218g); App
+# Store Connect rejects uploads a beta built.
+if [[ "$XCODE_BUILD" =~ ^[0-9]+[A-Z]5[0-9]{3} ]]; then
+  echo "$XCODE_APP is a beta ($XCODE_BUILD); archive with a release Xcode." >&2
+  exit 1
+fi
+echo "==> $(xcodebuild -version | head -1) ($XCODE_BUILD) at $XCODE_APP"
 
 BUMP=0
 ARCHIVE_ONLY=0
@@ -80,12 +94,21 @@ else
   echo "==> build $CURRENT (pass --bump to increment)"
 fi
 
+# --- where everything goes: the internal disk -------------------------------
+# The archive goes in Xcode's own Archives folder, so it also shows in Organizer;
+# the export sits beside it and the logs in ~/Library/Logs. Nothing is written to
+# the external disk except the build number above.
+ARCHIVE="$HOME/Library/Developer/Xcode/Archives/$(date +%Y-%m-%d)/$SCHEME $CURRENT.xcarchive"
+EXPORT_DIR="${ARCHIVE%.xcarchive}_export"
+LOG_DIR="$HOME/Library/Logs/$SCHEME"
+mkdir -p "$(dirname "$ARCHIVE")" "$LOG_DIR"
+
 # --- archive ----------------------------------------------------------------
-echo "==> archiving"
+echo "==> archiving to $ARCHIVE"
 rm -rf "$ARCHIVE"
 xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
            -destination "generic/platform=iOS" -archivePath "$ARCHIVE" \
-           archive -allowProvisioningUpdates | tail -3
+           archive -allowProvisioningUpdates 2>&1 | tee "$LOG_DIR/archive_$CURRENT.log" | tail -3
 
 if [[ "$ARCHIVE_ONLY" == 1 ]]; then
   echo "==> archived at $ARCHIVE (stopping, --archive-only)"
@@ -121,13 +144,11 @@ if [[ "$remaining" != "0" ]]; then
 fi
 
 # --- export -----------------------------------------------------------------
-# Note: exporting anywhere under /Volumes/D root fails -- that directory is
-# root:wheel and this account is not in wheel. Keep it inside build/.
-echo "==> exporting"
+echo "==> exporting to $EXPORT_DIR"
 rm -rf "$EXPORT_DIR"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" \
            -exportOptionsPlist "$ROOT/scripts/ExportOptions.plist" \
-           -exportPath "$EXPORT_DIR" -allowProvisioningUpdates | tail -2
+           -exportPath "$EXPORT_DIR" -allowProvisioningUpdates 2>&1 | tee "$LOG_DIR/export_$CURRENT.log" | tail -2
 
 IPA="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.ipa' | head -1)"
 [[ -n "$IPA" ]] || { echo "no .ipa produced" >&2; exit 1; }
@@ -135,7 +156,7 @@ IPA="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.ipa' | head -1)"
 # --- upload -----------------------------------------------------------------
 echo "==> uploading build $CURRENT"
 xcrun altool --upload-app --type ios --file "$IPA" \
-             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee "$LOG_DIR/upload_$CURRENT.log"
 
 echo
 echo "==> build $CURRENT delivered."
