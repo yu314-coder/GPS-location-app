@@ -61,6 +61,16 @@ final class FlightPhaseEstimator {
     /// on the two devices that recorded it, against 14:24:10 on ADS-B.
     private(set) var landedAt: Date?
     private var notFallingFor: TimeInterval = 0
+    /// When the cabin last left the ground; nil on the ground.
+    private(set) var airborneAt: Date?
+    /// THE CABIN CONFIRMS A FLIGHT (build 113): it climbed CLIMB_CONFIRM above the ground within
+    /// CLIMB_CONFIRM_WITHIN of leaving it. For a phone that never felt the takeoff roll (it was not
+    /// still before it) and a watch with no iPhone. On BR215 2.9 minutes after the cabin left the
+    /// ground on all three devices; on none of the 26 ground recordings with a barometer (the
+    /// highest went 98 m).
+    private(set) var climbConfirmed = false
+    private let CLIMB_CONFIRM = 400.0                       // m
+    private let CLIMB_CONFIRM_WITHIN: TimeInterval = 600
     private let DESCENT_DROP = 300.0              // m below the cabin's highest level
     private let LANDED_FRACTION = 0.1             // of that highest level, above the ground
     private let LANDED_SETTLE: TimeInterval = 60  // the cabin has stopped falling this long
@@ -96,6 +106,7 @@ final class FlightPhaseEstimator {
         phase = .ground; altitude = 0; initialised = false; climbRate = 0
         lastSample = nil; peakAltitude = 0; phaseHeldFor = 0
         groundLevel = 0; descentStartedAt = nil; landedAt = nil; notFallingFor = 0
+        airborneAt = nil; climbConfirmed = false
     }
 
     /// Feed the relative altitude reported by the barometer, in metres.
@@ -137,7 +148,12 @@ final class FlightPhaseEstimator {
                 phaseHeldFor = 0
             }
         }
-        guard phase != .ground else { return }
+        guard phase != .ground else { airborneAt = nil; climbConfirmed = false; return }
+        let since = airborneAt ?? time
+        airborneAt = since
+        if !climbConfirmed, height >= CLIMB_CONFIRM, time.timeIntervalSince(since) <= CLIMB_CONFIRM_WITHIN {
+            climbConfirmed = true
+        }
         if descentStartedAt == nil, phase == .descent, peakAltitude - height >= DESCENT_DROP {
             descentStartedAt = time
         }
@@ -151,6 +167,7 @@ final class FlightPhaseEstimator {
                 phase = .ground; phaseHeldFor = 0
                 groundLevel = altitude; peakAltitude = 0
                 descentStartedAt = nil; notFallingFor = 0; landedAt = time
+                airborneAt = nil; climbConfirmed = false
             }
         }
     }

@@ -363,13 +363,56 @@ class WorkoutSession: NSObject, ObservableObject {
     private let flightPhase = FlightPhaseEstimator()
     private var watchAirborneSince: Date?
     private var relayedTakeoffRoll: Date?
+    /// When a relayed state last said the iPhone is flying (it carries the roll only then).
+    private var lastRelayedFlightAt: Date?
 
-    /// The flight's speed (m/s) while the cabin says airborne and the iPhone has relayed a takeoff
-    /// roll from shortly before; nil otherwise (a hill road also climbs, and has no roll).
-    private func watchFlightSpeed(at now: Date) -> Double? {
-        guard flightPhase.isAirborne, let roll = relayedTakeoffRoll else { return nil }
+    /// WITHOUT THE iPHONE AT ALL (build 113). The watch measures its own takeoff roll with the
+    /// iPhone's LaunchIntegrator (an exact copy) on its 50 Hz motion, by the iPhone's rule: 30 kt,
+    /// then 200 km/h within 30 s. A wrist is not a bag, so this is untested on a real flight; the
+    /// cabin's own confirmation (FlightPhaseEstimator.climbConfirmed) backs it up.
+    private var launchIntegrator = LaunchIntegrator()
+    private var ownTakeoffRollAt: Date?
+    private var rollCandidateAt: Date?
+    private var rollCandidateAnchor = -1
+
+    /// THE FLIGHT BUTTON (build 113). On: the wearer says this is a flight, so the cabin leaving the
+    /// ground is enough and the watch's own flight speed leads even while an iPhone that has not
+    /// found the flight is relaying a ground speed. Off (Auto): the flight must be confirmed by a
+    /// takeoff roll or by the cabin's climb.
+    @Published var flightSpeedForced = false
+    /// What the flight speed is doing, for the button's caption.
+    @Published private(set) var flightStatus = "On the ground"
+
+    private func noteTakeoffRoll() {
+        if launchIntegrator.anchorCount != rollCandidateAnchor {
+            rollCandidateAnchor = launchIntegrator.anchorCount; rollCandidateAt = nil
+        }
+        guard let v = launchIntegrator.speed else { return }
+        let now = Date()
+        if v < 15.43 { rollCandidateAt = nil } else if rollCandidateAt == nil { rollCandidateAt = now }
+        if let start = rollCandidateAt, v >= 55.6, ownTakeoffRollAt != start,
+           now.timeIntervalSince(start) <= 30 {
+            ownTakeoffRollAt = start
+        }
+    }
+
+    /// When this flight's takeoff roll began, as the watch knows it: the iPhone's, then its own,
+    /// each only if it came within 15 minutes before the cabin left the ground; otherwise two
+    /// minutes before the cabin left the ground, once the climb confirms it or the button is on.
+    private func watchFlightRoll(at now: Date) -> Date? {
+        guard flightPhase.isAirborne else { return nil }
         let detected = watchAirborneSince ?? now
-        guard roll <= detected, detected.timeIntervalSince(roll) < 15 * 60 else { return nil }
+        for roll in [relayedTakeoffRoll, ownTakeoffRollAt].compactMap({ $0 })
+        where roll <= detected && detected.timeIntervalSince(roll) < 15 * 60 {
+            return roll
+        }
+        return (flightPhase.climbConfirmed || flightSpeedForced) ? detected.addingTimeInterval(-120) : nil
+    }
+
+    /// The flight's speed (m/s) while the cabin says airborne and the flight is confirmed; nil
+    /// otherwise.
+    private func watchFlightSpeed(at now: Date) -> Double? {
+        guard let roll = watchFlightRoll(at: now) else { return nil }
         let descent = flightPhase.descentStartedAt.map { now.timeIntervalSince($0) }
         return FlightProfile.speedKmh(sinceRoll: now.timeIntervalSince(roll), sinceDescent: descent) / 3.6
     }
@@ -591,6 +634,7 @@ class WorkoutSession: NSObject, ObservableObject {
         connectivityManager.onIPhoneTakeoffRollReceived = { [weak self] roll in
             guard let self = self, self.isActive else { return }
             self.relayedTakeoffRoll = roll
+            self.lastRelayedFlightAt = Date()
         }
         connectivityManager.onIPhoneDeadReckoningReceived = { [weak self] speed, heading, velN, velE, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
@@ -811,7 +855,9 @@ class WorkoutSession: NSObject, ObservableObject {
             // Attribute everything this workout teaches to this workout, so regimes stay separable
             // (the iPhone's store keys its regime checks on the session).
             learnedSpeed.beginSession()
-            flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil
+            flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
+            launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1
+            flightSpeedForced = false; flightStatus = "On the ground"
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             lastGoodFixTimeWatch = nil; latestGPSFixTimeWatch = nil
             watchDiagnostics.reset(workoutStart: flight.startDate)
@@ -1932,6 +1978,13 @@ class WorkoutSession: NSObject, ObservableObject {
             let rotMag = sqrt(rot.x*rot.x + rot.y*rot.y + rot.z*rot.z)
             // Kept for the diagnostics log, which is otherwise blind to what the sensors saw.
             lastMotionRotationMagnitude = rotMag
+            // The takeoff roll, measured on the watch itself (build 113).
+            let rawA = motion.userAcceleration, rawG = motion.gravity
+            self.launchIntegrator.ingest(userAcceleration: [rawA.x, rawA.y, rawA.z],
+                                         gravity: [rawG.x, rawG.y, rawG.z],
+                                         rotation: [rot.x, rot.y, rot.z],
+                                         dt: sampleDt, airborne: self.flightPhase.isAirborne)
+            self.noteTakeoffRoll()
             let ua = motion.userAcceleration
             lastMotionAccelMagnitude = sqrt(ua.x*ua.x + ua.y*ua.y + ua.z*ua.z) * 9.80665
             // Heading-change from the gyro's component about the world-VERTICAL (gravity) axis
@@ -2384,6 +2437,7 @@ class WorkoutSession: NSObject, ObservableObject {
             else if tag.hasPrefix("STORE") { r.driving = "Algorithm" }
             else if tag.hasPrefix("iPhone") { r.driving = "iPhone" }
             else if tag.hasPrefix("PDR") { r.driving = "Steps" }
+            else if tag.hasPrefix("FLIGHT") { r.driving = "Flight" }
             else if tag.hasPrefix("HOLD") || tag.hasPrefix("LEARN") { r.driving = "Held" }
             else { r.driving = "—" }
         }
@@ -2799,10 +2853,14 @@ class WorkoutSession: NSObject, ObservableObject {
                 ? (relayedSpeed != nil ? nil : learnedSpeed.estimate(airborne: false))
                 : pinnedAnswer
             let ownUsedNetwork = engineChoice == .network || (engineChoice == .auto && learnedSpeed.lastEstimateUsedNetwork)
-            if engineChoice == .auto, let relayed = relayedSpeed {
+            let ownFlight = watchFlightSpeed(at: now)
+            let iPhoneFlying = lastRelayedFlightAt.map { now.timeIntervalSince($0) < 10 } ?? false
+            flightStatus = ownFlight != nil ? "In the air" + (iPhoneFlying && relayedSpeed != nil ? " · iPhone's speed" : " · watch's own speed")
+                : flightPhase.isAirborne ? "Cabin climbing · confirming" : (flightSpeedForced ? "Waiting for takeoff" : "On the ground")
+            if engineChoice == .auto, let relayed = relayedSpeed, !(flightSpeedForced && ownFlight != nil && !iPhoneFlying) {
                 motionFallbackSpeed = relayed
                 accelSource = "iPhone-DR"
-            } else if relayedSpeed == nil, let flying = watchFlightSpeed(at: now) {
+            } else if relayedSpeed == nil || flightSpeedForced, let flying = ownFlight {
                 // In the air with no iPhone: the iPhone's own air speed, carried on (see
                 // watchFlightSpeed). Ahead of the ground engines, which were taught on roads.
                 motionFallbackSpeed = flying

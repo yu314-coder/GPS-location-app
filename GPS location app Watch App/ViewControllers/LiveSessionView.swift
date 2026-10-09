@@ -344,6 +344,43 @@ struct LiveSessionView: View {
                         }
                         .buttonStyle(.plain)
 
+                        // FLIGHT SPEED (build 113). Auto: the watch switches to its flight speed by
+                        // itself once a takeoff roll or the cabin's climb confirms a flight. On: you
+                        // say this is a flight, so the cabin leaving the ground is enough, and the
+                        // watch's own flight speed leads even with an iPhone that hasn't found it.
+                        Button(action: {
+                            workoutSession.flightSpeedForced.toggle()
+                            print("⌚ 🔘 Flight speed -> \(workoutSession.flightSpeedForced ? "ON" : "Auto")")
+                        }) {
+                            VStack(spacing: 2) {
+                                HStack {
+                                    Image(systemName: "airplane")
+                                        .font(.caption)
+                                    Text(workoutSession.flightSpeedForced ? "Flight: ON" : "Flight: Auto")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                }
+                                Text(workoutSession.flightStatus)
+                                    .font(.system(size: 10))
+                                    .opacity(0.85)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(
+                                LinearGradient(
+                                    colors: workoutSession.flightSpeedForced
+                                        ? [Color.cyan, Color.cyan.opacity(0.75)]
+                                        : [Color.gray.opacity(0.6), Color.gray.opacity(0.4)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .foregroundColor(.white)
+                            .cornerRadius(20)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(workoutSession.flightSpeedForced ? "Flight speed on" : "Flight speed automatic")
+
                         // Stop button
                         Button(action: {
                             showStopConfirmation = true

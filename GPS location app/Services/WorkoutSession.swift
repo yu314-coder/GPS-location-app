@@ -227,20 +227,6 @@ class WorkoutSession: ObservableObject {
         forceMotionFallback = value
         persistForceMotionFallback = true
     }
-    /// A speed the USER states, in km/h, used when nothing can measure one.
-    ///
-    /// The phone cannot measure vehicle speed without GPS — that is now established by
-    /// measurement, not assumption (see the HOLD branch). Holding the last GPS speed covers a
-    /// tunnel well, but not the case this mode was built for: an aircraft. GPS is typically lost
-    /// on the ground, so the held value is taxi speed, and a whole cruise would be drawn at
-    /// 30 km/h. Cruise speed, however, is something the traveller simply knows — it is on the
-    /// seat-back display, in the booking, or a familiar constant for the route.
-    ///
-    /// One number the user supplies beats any amount of inference from a sensor that does not
-    /// carry the signal. Takes priority over HOLD whenever set.
-    @Published var manualSpeedKmh: Double? {
-        didSet { UserDefaults.standard.set(manualSpeedKmh ?? 0, forKey: "manualSpeedKmh") }
-    }
     /// Live status for the UI, e.g. "DR FORCED 62km/h +410m".
     @Published var motionFallbackStatus = "GPS OK"
     // Signed WORLD-frame velocity vector (north/east). Integrating a VECTOR (not the
@@ -273,11 +259,6 @@ class WorkoutSession: ObservableObject {
     private let activityManager = CMMotionActivityManager()
     /// Speed from the ride's vibration signature — no integration, so no drift. Calibrated
     /// online from GPS while it is available (see VibrationSpeedEstimator).
-    // Restore any previously stated speed at launch.
-    private func restoreManualSpeed() {
-        let v = UserDefaults.standard.double(forKey: "manualSpeedKmh")
-        if v > 0 { manualSpeedKmh = v }
-    }
     /// Infers flight phase from cabin pressure, giving an autonomous airliner speed. See
     /// FlightPhaseEstimator for why this is possible for flight and not for a car.
     private let flightPhase = FlightPhaseEstimator()
@@ -3917,13 +3898,15 @@ class WorkoutSession: ObservableObject {
 
     /// When this flight's takeoff roll began: the roll found by noteTakeoffRoll, if it came within
     /// 15 minutes before the cabin said airborne (on BR215 the roll began at 10:18:12 and the cabin
-    /// said airborne at 10:20:19-22). Nil without one: the cabin alone also climbs on a hill road
-    /// (a car drive on 4 Oct read as airborne for a 98 m climb), and no road gives the roll.
+    /// said airborne at 10:20:19-22). Without a roll, two minutes before the cabin said airborne,
+    /// but only once the cabin's climb confirms a flight (FlightPhaseEstimator.climbConfirmed): the
+    /// cabin alone also rises on a hill road (a car drive on 4 Oct read as airborne at 98 m).
     private func flightRollStart(at now: Date) -> Date? {
         let detected = airborneSince ?? now
-        guard let roll = takeoffRollAt, roll <= detected,
-              detected.timeIntervalSince(roll) < 15 * 60 else { return nil }
-        return roll
+        if let roll = takeoffRollAt, roll <= detected, detected.timeIntervalSince(roll) < 15 * 60 {
+            return roll
+        }
+        return flightPhase.climbConfirmed ? detected.addingTimeInterval(-120) : nil
     }
 
     /// FlightProfile's speed now, in m/s; nil without a takeoff roll.
@@ -4646,15 +4629,6 @@ class WorkoutSession: ObservableObject {
             sourceTag = stoppedOnGround ? "LEARN(stopped)"
                 : (modelAnswered ? (fromNetwork ? "LEARN(net)" : "LEARN")
                    : (deviceIsBeingHandled ? "LEARN(held in hand)" : "LEARN(held)"))
-            let hr = motionHeadingDegrees * .pi / 180
-            motionVelNorth = estimatedFallbackSpeed * cos(hr)
-            motionVelEast = estimatedFallbackSpeed * sin(hr)
-        } else if let stated = manualSpeedKmh, stated > 0 {
-            // USER-STATED SPEED. Highest priority: a number the traveller knows beats anything
-            // inferable from a sensor that does not carry the signal.
-            estimatedFallbackSpeed = stated / 3.6
-            distance = estimatedFallbackSpeed * dt
-            sourceTag = "SET"
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)

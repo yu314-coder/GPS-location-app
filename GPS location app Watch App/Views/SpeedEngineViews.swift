@@ -31,6 +31,7 @@ struct SpeedSourceBadge: View {
         case "Algorithm": return "square.stack.3d.up.fill"
         case "Steps": return "figure.walk"
         case "Held": return "pause.circle.fill"
+        case "Flight": return "airplane"
         default: return "hourglass"
         }
     }
@@ -42,6 +43,7 @@ struct SpeedSourceBadge: View {
         case "Neural": return .purple
         case "Algorithm": return .orange
         case "Steps": return .teal
+        case "Flight": return .cyan
         default: return .gray
         }
     }
