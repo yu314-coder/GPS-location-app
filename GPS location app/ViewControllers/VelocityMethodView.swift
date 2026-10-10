@@ -442,16 +442,21 @@ struct VelocityMethodView: View {
                 two minutes from the still moment before the roll: 265 km/h forty seconds in, where \
                 GPS measured 266. Holding the 317 km/h it reached misses the climb to 680.
 
-                After that the speed is the median of 302 airline flights from NASA's public DASHlink \
-                flight recorder data at the same point: minutes since the takeoff roll on the clock, and, \
+                After that the speed is the median of real airliners at the same point, from two sources \
+                pooled: a day of the OpenSky Network's worldwide ADS-B data (1,194 jet takeoffs followed \
+                to cruise and 1,079 descents) and NASA's 302 DASHlink flight recordings, whose \
+                once-a-second data covers the takeoff roll and how long a plane stays faster or slower \
+                than typical. On the clock are minutes since the takeoff roll, and, \
                 once the cabin pressure has started down, minutes since the descent began. The cabin is \
                 used for that timing only, never as an altitude. No tilt is read, so a phone that turns \
                 over in a bag or moves in a hand reads the same, and a pause by iOS is made up afterwards. \
-                Neither GPS nor an aircraft speed is used. On NASA flights it had never seen, it counted \
-                a median of 103% of the distance, within 10% on 62% of flights. On a four-hour flight \
-                graded by the aircraft's public ADS-B track it counted 87%; the earlier tilt-reading \
-                engines (shown above) counted 39% on a phone in a bag. What it gives is a typical \
-                airliner's speed, so wind or a faster aircraft will move it. \
+                The speed the takeoff measured is carried into the climb, most of it for two minutes and \
+                a little for twenty. Neither GPS nor an aircraft speed is used. On flights it had never \
+                seen it counted a median of 99% of the distance, within 10% on 72%; on a four-hour flight \
+                graded by the aircraft's public ADS-B track, 95%; the earlier tilt-reading engines \
+                (shown above) counted 39% on a phone in a bag. What it gives is a typical airliner's \
+                speed, so wind or a faster or slower aircraft will move it. ADS-B data: OpenSky Network, \
+                "Bringing up OpenSky: A large-scale ADS-B sensor network for research" (IPSN 2014). \
                 The direction in the air no longer uses the compass, which a cabin disturbs: it starts \
                 from the direction of the takeoff roll and follows the gyroscope, with its drift learned \
                 on straight flight, counting only turns the cabin can feel once in cruise. \
@@ -560,7 +565,7 @@ struct VelocityMethodView: View {
                 Limitation("A ride that is never recognised.",
                            "On one short ride Apple's motion classifier never said \u{201C}driving\u{201D} and the step counter took the engine for footsteps: as recorded, the app counted 1.0 of 2.4 km.")
                 Limitation("In an aircraft, the speed after the takeoff is a typical airliner's.",
-                           "Learned from NASA flight data, not measured on this flight: a strong wind or a much faster or slower aircraft reads off. On NASA flights the middle 80% counted 90–121% of the distance; NASA's regional jet cruised at a median 760 km/h, so a long-haul jet near 900 reads about 15% low in cruise.")
+                           "Learned from real airliners (OpenSky Network ADS-B data and NASA flight recordings), not measured on this flight: a strong wind or a much faster or slower aircraft reads off. Typical cruise 831 km/h; twin-aisle jets cruised near 905, so a 777 reads about 8% low in cruise, a slow regional jet high.")
                 Limitation("These numbers are one phone and one person.",
                            "\(N.Journeys) motorcycle and car journeys (\(N.Hours) hours, \(N.KmChecked) km that GPS could check), \(N.WalkStretches) straight stretches and \(N.Walks) walks on foot, and one flight, mostly in one city. Other people, phones and vehicles may behave differently, the built-in network most of all.")
             }

@@ -5034,10 +5034,16 @@ class WorkoutSession: ObservableObject {
             }
         }
         let bothSpeeds = learnedSpeed.bothAnswers(airborne: isAirborneForEstimation)
-        // And both flight engines on every airborne second, used or not.
-        if isAirborneForEstimation, let x = flightTilt.features {
-            lastFlightAnswers = (FlightSpeedEngines.Network.bundled.map { $0.speedKmh(x) / 3.6 },
-                                 FlightSpeedEngines.Store.bundled.map { $0.speedKmh(x) / 3.6 }, x)
+        // And both flight engines on every airborne second, used or not: the joint network on the flight's two
+        // clocks (build 118), the old store on the phone's tilt. Neither drives the speed.
+        if isAirborneForEstimation {
+            let clock = flightRollStart(at: now).map {
+                FlightSpeedEngines.clockFeatures(sinceRoll: now.timeIntervalSince($0),
+                                                 sinceDescent: flightPhase.descentStartedAt.map { now.timeIntervalSince($0) })
+            }
+            let tilt = flightTilt.features
+            lastFlightAnswers = (clock.flatMap { x in FlightSpeedEngines.Network.bundled.map { $0.speedKmh(x) / 3.6 } },
+                                 tilt.flatMap { x in FlightSpeedEngines.Store.bundled.map { $0.speedKmh(x) / 3.6 } }, tilt)
         } else {
             lastFlightAnswers = (nil, nil, nil)
         }

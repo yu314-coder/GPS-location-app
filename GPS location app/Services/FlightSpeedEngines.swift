@@ -1,30 +1,36 @@
 import Foundation
 
-/// Speed in the air once the measured takeoff has run its two minutes, from what a phone in the cabin
-/// can sense: how long ago the takeoff roll began and how the phone is tilted (an aircraft climbs
-/// nose-up and cruises nearly level). Two engines, as on the ground: a small network and a store of
-/// examples answered like the learned store, both trained on NASA's public DASHlink flight data -
-/// the flight recorders of a regional jet in airline service, 302 flights with a takeoff on record.
+/// THE FLIGHT ENGINES THE LOG RECORDS, BESIDE THE SPEED THAT IS USED. Since build 112 the speed in the air is
+/// FlightProfile's medians; these two are only written to the log, every airborne second, so a real flight can grade
+/// them on the same seconds.
 ///
-/// WHY. A smooth cabin reads as standing still to the vibration model, and the takeoff integration
-/// is only trustworthy for about two minutes, after which the app held the speed it reached. On the
-/// one recorded flight that held 317 km/h while the aircraft climbed to 680 and counted 45 km of 74.
-/// With either engine after the two minutes, the same flight counts 74-77 km of 74. On NASA flights
-/// held out from training, 68% (network) and 65% (store) came within 10% of the flown distance,
-/// against 7% for holding the takeoff speed.
+/// NETWORK (build 118): the neural form of FlightProfile. A 5-32-32-1 network on the same two clocks, minutes since
+/// the takeoff roll and minutes since the cabin started down (clockFeatures), trained with an L1 loss (so it fits a
+/// median) on the same pooled data: NASA's 302 DASHlink flights and 1,194 jet takeoffs from a day of the OpenSky
+/// Network's ADS-B data (see FlightProfile). Held out by aircraft it came within 10% of the distance on 76% of
+/// OpenSky flights (the medians as shipped: 72%) and on 48% of NASA's (36%), mostly from the descent; on BR215 it counted 95%
+/// like the medians, and on August, without the takeoff's measured speed, it read minutes 1-3 42 km/h off GPS where
+/// the medians with that speed carried read 17. So it stays in the log until a real flight shows it ahead.
 ///
-/// NO GPS. The inputs are the phone's own; NASA's ground speed was used only to train, offline. What
-/// the engines give is the speed an airliner typically has at that point of a flight, not a
-/// measurement of this one: wind, or a faster jet, will make them read low or high.
+/// STORE: the build-64 store of NASA examples read by the phone's tilt from the still moment before the roll. On
+/// BR215 the 16 Pro turned over in its bag at the takeoff push and its tilt stayed above anything NASA flew; it is
+/// kept only so older logs and new ones read the same column.
 ///
-/// Nothing here touches the ground engines. It is read only in the air, only after the takeoff
-/// integration has reached its horizon, and only when the air examples from the phone's own earlier
-/// flights have no answer.
+/// NO GPS. The inputs are the phone's own; ground speeds were used only to train, offline.
 enum FlightSpeedEngines {
 
-    /// Minutes since the roll began, mean tilt over the last 60 s and 300 s, and tilt accumulated since
-    /// the roll began (degree-minutes).
+    /// The network: clockFeatures. The store: minutes since the roll began, mean tilt over the last 60 s and 300 s,
+    /// and tilt accumulated since the roll began (degree-minutes).
     typealias Features = [Double]
+
+    /// The network's inputs: hours and log-minutes since the roll, whether the cabin has started down, and hours and
+    /// log-minutes since it did (osday_lib.features).
+    static func clockFeatures(sinceRoll t: TimeInterval, sinceDescent d: TimeInterval?) -> Features {
+        let m = max(t, 0) / 60
+        guard let d, d >= 0 else { return [m / 60, log1p(m), 0, 0, 0] }
+        let k = d / 60
+        return [m / 60, log1p(m), 1, k / 60, log1p(k)]
+    }
 
     struct Network {
         private let mean: [Double], scale: [Double], fmin: [Double], fmax: [Double]
@@ -41,15 +47,17 @@ enum FlightSpeedEngines {
             return Network(data: data)
         }()
         init?(data: Data) {
-            guard let f = try? JSONDecoder().decode(File.self, from: data), f.mean.count == 4, f.scale.count == 4,
-                  f.w1.count == f.b1.count, f.w1.allSatisfy({ $0.count == 4 }), f.w2.count == f.b2.count,
+            guard let f = try? JSONDecoder().decode(File.self, from: data), !f.mean.isEmpty, f.scale.count == f.mean.count,
+                  f.fmin.count == f.mean.count, f.fmax.count == f.mean.count,
+                  f.w1.count == f.b1.count, f.w1.allSatisfy({ $0.count == f.mean.count }), f.w2.count == f.b2.count,
                   f.w2.allSatisfy({ $0.count == f.b1.count }), f.w3.count == f.b2.count else { return nil }
             mean = f.mean; scale = f.scale; fmin = f.fmin; fmax = f.fmax
             w1 = f.w1; b1 = f.b1; w2 = f.w2; b2 = f.b2; w3 = f.w3; b3 = f.b3; outKmh = f.out_kmh
         }
         /// Ground speed in km/h. Inputs outside what the flights covered are held at the edge.
         func speedKmh(_ x: Features) -> Double {
-            let z = (0..<4).map { (min(max(x[$0], fmin[$0]), fmax[$0]) - mean[$0]) / scale[$0] }
+            guard x.count == mean.count else { return 0 }
+            let z = mean.indices.map { (min(max(x[$0], fmin[$0]), fmax[$0]) - mean[$0]) / scale[$0] }
             let h1 = zip(w1, b1).map { row, b in max(0, zip(row, z).reduce(b) { $0 + $1.0 * $1.1 }) }
             let h2 = zip(w2, b2).map { row, b in max(0, zip(row, h1).reduce(b) { $0 + $1.0 * $1.1 }) }
             return max(0, zip(w3, h2).reduce(b3) { $0 + $1.0 * $1.1 } * outKmh)
