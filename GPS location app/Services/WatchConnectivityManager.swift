@@ -459,6 +459,9 @@ class WatchConnectivityManager: NSObject, ObservableObject {
                                  takeoffRoll: Date? = nil) {
         if source != .motion { lastWorkoutRelayTime = Date() }
         guard let session = session, session.activationState == .activated else { return }
+        // No watch to tell (build 120): this ran every tick and every fix, building and handing the system a
+        // payload to store, with no watch paired or the watch app not installed.
+        guard session.isPaired, session.isWatchAppInstalled else { return }
         var payload: [String: Any] = [
             "action": "drState",
             "drHeading": headingDegrees,

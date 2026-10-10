@@ -88,6 +88,8 @@ struct FlightMetrics: Codable, Hashable {
     var currentMotionAcceleration: Double? = nil
     var maxMotionAcceleration: Double? = nil
     var averageMotionAcceleration: Double? = nil
+    /// Readings with a vertical speed behind averageVerticalSpeed, so it can be kept as a running mean (build 120).
+    var verticalSpeedSampleCount: Int? = nil
     var currentMotionAccelerationX: Double? = nil
     var currentMotionAccelerationY: Double? = nil
     var currentMotionAccelerationZ: Double? = nil
@@ -394,10 +396,13 @@ struct FlightMetrics: Codable, Hashable {
                     maxDeceleration = min(maxDeceleration ?? acceleration, acceleration)
                 }
 
-                var history = accelerationHistory ?? []
-                history.append(AccelerationSample(timestamp: location.timestamp, acceleration: acceleration))
-                accelerationHistory = history
-                averageAcceleration = history.map { abs($0.acceleration) }.reduce(0, +) / Double(history.count)
+                // In place and a running mean (build 120): the same numbers without copying and
+                // re-summing the whole history on every fix.
+                if accelerationHistory == nil { accelerationHistory = [] }
+                accelerationHistory!.append(AccelerationSample(timestamp: location.timestamp, acceleration: acceleration))
+                let n = Double(accelerationHistory!.count)
+                averageAcceleration = n > 1 ? (averageAcceleration ?? 0) + (abs(acceleration) - (averageAcceleration ?? 0)) / n
+                                            : abs(acceleration)
 
                 if totalPoints % 25 == 0 {
                     print("🚀 Acceleration: \(String(format: "%+.2f", acceleration))m/s² | Peak: +\(String(format: "%.2f", maxAcceleration ?? 0))/\(String(format: "%.2f", maxDeceleration ?? 0))m/s²")
@@ -523,10 +528,12 @@ struct FlightMetrics: Codable, Hashable {
         currentMotionAccelerationY = y
         currentMotionAccelerationZ = z
 
-        var history = motionAccelerationHistory ?? []
-        let previousCount = history.count
-        history.append(MotionAccelerationSample(timestamp: timestamp, acceleration: acceleration, x: x, y: y, z: z))
-        motionAccelerationHistory = history
+        // Appended in place (build 120). `var history = …; history.append; … = history` copied the whole array on
+        // every sample, because the property still held it: at 50 Hz in Velocity Mode that is a copy of up to
+        // 720,000 samples, fifty times a second, by the end of a four-hour flight.
+        let previousCount = motionAccelerationHistory?.count ?? 0
+        if motionAccelerationHistory == nil { motionAccelerationHistory = [] }
+        motionAccelerationHistory!.append(MotionAccelerationSample(timestamp: timestamp, acceleration: acceleration, x: x, y: y, z: z))
         // Incremental running average — O(1) instead of O(n) reduce per sample.
         // (The old reduce made this O(n²) over a workout, a major CPU/heat sink.)
         let prevAvg = averageMotionAcceleration ?? 0
@@ -557,9 +564,8 @@ struct FlightMetrics: Codable, Hashable {
 
     mutating func updateWithCompassHeading(_ heading: Double, timestamp: Date = Date()) {
         currentCompassHeading = heading
-        var history = compassHeadingHistory ?? []
-        history.append(HeadingSample(timestamp: timestamp, heading: heading))
-        compassHeadingHistory = history
+        if compassHeadingHistory == nil { compassHeadingHistory = [] }
+        compassHeadingHistory!.append(HeadingSample(timestamp: timestamp, heading: heading))
     }
 
     /// - Parameter accumulateElevation: false inside a pressurised cabin, where this reading is
@@ -570,9 +576,8 @@ struct FlightMetrics: Codable, Hashable {
         maxBarometricRelativeAltitude = max(maxBarometricRelativeAltitude ?? relativeAltitude, relativeAltitude)
         minBarometricRelativeAltitude = min(minBarometricRelativeAltitude ?? relativeAltitude, relativeAltitude)
 
-        var history = barometricAltitudeHistory ?? []
         var verticalSpeed: Double?
-        if let previous = history.last {
+        if let previous = barometricAltitudeHistory?.last {
             let timeDelta = timestamp.timeIntervalSince(previous.timestamp)
             if timeDelta > 0.2 {
                 let altitudeDelta = relativeAltitude - previous.relativeAltitude
@@ -596,17 +601,21 @@ struct FlightMetrics: Codable, Hashable {
             }
         }
 
-        history.append(BarometricAltitudeSample(
+        if barometricAltitudeHistory == nil { barometricAltitudeHistory = [] }
+        // The running mean of |vertical speed| over the readings that have one (build 120), counted once from the
+        // history if this metrics value was restored without the count.
+        if let verticalSpeed {
+            let prior = verticalSpeedSampleCount
+                ?? barometricAltitudeHistory!.reduce(0) { $0 + ($1.verticalSpeed == nil ? 0 : 1) }
+            let previous = prior > 0 ? (averageVerticalSpeed ?? 0) : 0
+            averageVerticalSpeed = previous + (abs(verticalSpeed) - previous) / Double(prior + 1)
+            verticalSpeedSampleCount = prior + 1
+        }
+        barometricAltitudeHistory!.append(BarometricAltitudeSample(
             timestamp: timestamp,
             relativeAltitude: relativeAltitude,
             verticalSpeed: verticalSpeed
         ))
-        barometricAltitudeHistory = history
-
-        let verticalSpeeds = history.compactMap { $0.verticalSpeed }.map(abs)
-        if !verticalSpeeds.isEmpty {
-            averageVerticalSpeed = verticalSpeeds.reduce(0, +) / Double(verticalSpeeds.count)
-        }
     }
 
     private mutating func updateGPSQuality(with location: FlightLocation) {
@@ -614,21 +623,20 @@ struct FlightMetrics: Codable, Hashable {
         // Including them reports how much of the ride was dead-reckoned, under a name that
         // says how well the receiver was working.
         guard !location.isEstimated else { return }
-        let history = gpsQualityHistory ?? []
-        let previousTimestamp = history.last?.timestamp
+        let previousTimestamp = gpsQualityHistory?.last?.timestamp
         let score = gpsQualityScore(for: location, previousTimestamp: previousTimestamp)
         currentGPSQualityScore = score
         bestGPSQualityScore = max(bestGPSQualityScore ?? score, score)
         worstGPSQualityScore = min(worstGPSQualityScore ?? score, score)
 
-        var updatedHistory = history
-        updatedHistory.append(GPSQualitySample(
+        if gpsQualityHistory == nil { gpsQualityHistory = [] }
+        gpsQualityHistory!.append(GPSQualitySample(
             timestamp: location.timestamp,
             score: score,
             horizontalAccuracy: location.horizontalAccuracy
         ))
-        gpsQualityHistory = updatedHistory
-        averageGPSQualityScore = updatedHistory.map { $0.score }.reduce(0, +) / Double(updatedHistory.count)
+        let n = Double(gpsQualityHistory!.count)
+        averageGPSQualityScore = n > 1 ? (averageGPSQualityScore ?? 0) + (score - (averageGPSQualityScore ?? 0)) / n : score
     }
 
     private func gpsQualityScore(for location: FlightLocation, previousTimestamp: Date?) -> Double {

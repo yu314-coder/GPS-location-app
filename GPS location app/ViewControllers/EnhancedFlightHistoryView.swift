@@ -1888,7 +1888,7 @@ struct EnhancedFlightHistoryView: View {
         }
 
         var metrics = FlightMetrics()
-        if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
+        if let distance = workout.appDistanceMeters {
             metrics.totalDistance = distance
         }
         metrics.duration = workout.duration

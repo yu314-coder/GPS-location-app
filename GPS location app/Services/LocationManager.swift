@@ -16,7 +16,9 @@ class LocationManager: NSObject, ObservableObject {
     @Published var latestRawLocation: CLLocation?
     @Published var authorizationStatus: CLAuthorizationStatus
     @Published var isTracking = false
-    @Published var locations: [FlightLocation] = []
+    /// Valid fixes this session. Was every fix kept in a published array that nothing read - each append copied
+    /// it, hours into a drive several megabytes a fix (build 120: a count is all that was used).
+    private(set) var validFixCount = 0
     @Published var gpsSignalQuality: GPSSignalQuality = .unknown
     @Published var locationSource: LocationSource = .unknown
     @Published var currentPressure: Double? // in kilopascals (kPa)
@@ -474,7 +476,7 @@ class LocationManager: NSObject, ObservableObject {
             // IMPORTANT: Update @Published properties on main thread to avoid warning
             DispatchQueue.main.async { [weak self] in
                 self?.currentLocation = processedLocation
-                self?.locations.append(flightLocation)
+                self?.validFixCount += 1
                 self?.updateSignalQuality(from: processedLocation)
             }
 
@@ -488,7 +490,7 @@ class LocationManager: NSObject, ObservableObject {
             }
         } else {
             // Log invalid locations for debugging
-            if locations.count < 5 {
+            if validFixCount < 5 {
                 print("⚠️ Invalid location filtered out - accuracy: \(processedLocation.horizontalAccuracy)m")
             }
         }
@@ -568,7 +570,7 @@ class LocationManager: NSObject, ObservableObject {
     }
 
     func reset() {
-        locations.removeAll()
+        validFixCount = 0
         currentLocation = nil
         latestRawLocation = nil
         kalmanFilter.reset()
@@ -1464,7 +1466,7 @@ extension LocationManager: CLLocationManagerDelegate {
         let source = determineLocationSource(from: location.horizontalAccuracy)
 
         // Log first location update
-        if self.locations.isEmpty {
+        if self.validFixCount == 0 {
             print("📍 First location received!")
             print("   Source: \(source.description)")
             print("   Lat: \(String(format: "%.6f", location.coordinate.latitude)), Lon: \(String(format: "%.6f", location.coordinate.longitude))")

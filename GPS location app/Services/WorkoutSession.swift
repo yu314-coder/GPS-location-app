@@ -11,13 +11,17 @@ class WorkoutSession: ObservableObject {
 
     private struct ActiveWorkoutSnapshot: Codable {
         let flight: Flight
-        let currentMetrics: FlightMetrics
+        var currentMetrics: FlightMetrics
         let workoutTypeRawValue: UInt
         let isPaused: Bool
         let totalPausedTime: TimeInterval
         let pauseStartTime: Date?
         let locationsToSkipAfterResume: Int
         let savedAt: Date
+        /// Build 120: the motion and compass histories are kept in side files, appended as they grow, and these
+        /// say how many records of each belong to this snapshot. nil: they are inside currentMetrics (older saves).
+        var motionSidecarCount: Int? = nil
+        var compassSidecarCount: Int? = nil
     }
 
     private let healthStore = HKHealthStore()
@@ -26,8 +30,28 @@ class WorkoutSession: ObservableObject {
 
     @Published var isActive = false
     @Published var isPaused = false
-    @Published var flight: Flight
-    @Published var currentMetrics = FlightMetrics()
+    // THE SCREEN IS TOLD ONLY WHEN SOMEONE CAN SEE IT (build 120). These two change on every motion sample (50 a
+    // second in Velocity Mode) and every tick, and each change made SwiftUI re-evaluate the workout screen - with
+    // the screen off as well, for hours on a flight. In the background the change is still made, recorded and
+    // saved exactly as before; only the redraw request waits, and one is sent on the way back to the foreground.
+    // In the foreground nothing changes.
+    //
+    // AND CHANGED IN PLACE. @Published (and any willSet) cannot hand out the stored value for an in-place change:
+    // every `currentMetrics.update…` copied the whole value first, motion history included - by hour four of a
+    // flight in Velocity Mode, tens of megabytes copied fifty times a second. The _modify accessor yields the
+    // stored value itself, so an append is an append.
+    private var storedFlight: Flight
+    private var storedMetrics = FlightMetrics()
+    var flight: Flight {
+        get { storedFlight }
+        set { if !appIsInBackground { objectWillChange.send() }; storedFlight = newValue }
+        _modify { if !appIsInBackground { objectWillChange.send() }; yield &storedFlight }
+    }
+    var currentMetrics: FlightMetrics {
+        get { storedMetrics }
+        set { if !appIsInBackground { objectWillChange.send() }; storedMetrics = newValue }
+        _modify { if !appIsInBackground { objectWillChange.send() }; yield &storedMetrics }
+    }
 
     let locationManager = LocationManager()
     let healthKitManager = HealthKitManager.shared
@@ -63,18 +87,12 @@ class WorkoutSession: ObservableObject {
         default: return 2.0
         }
     }
-    /// How often the whole workout is saved for recovery. The save encodes every route point and recorded sample,
-    /// so its cost grows with the workout: hours into a flight (a point a second) it was tens of megabytes of JSON
-    /// every five seconds. Build 119 spaces it out as the route grows, a second per 60 points, at most two
-    /// minutes; the debug logs are streamed to disk as they go and do not depend on it.
     private var ACTIVE_WORKOUT_AUTOSAVE_INTERVAL: TimeInterval {
-        let base: TimeInterval
         switch thermalState {
-        case .critical: base = 30.0
-        case .serious: base = 15.0
-        default: base = 5.0
+        case .critical: return 30.0
+        case .serious: return 15.0
+        default: return 5.0
         }
-        return min(max(base, Double(flight.locations.count) / 60), max(base, 120))
     }
     private let ACTIVE_WORKOUT_MAX_RESTORE_AGE: TimeInterval = 24 * 60 * 60
     private let activeWorkoutSnapshotQueue = DispatchQueue(
@@ -85,6 +103,61 @@ class WorkoutSession: ObservableObject {
 
     private var liveActivitySpeedMps: Double {
         currentMetrics.tenSecondAverageSpeed > 0 ? currentMetrics.tenSecondAverageSpeed : currentMetrics.smoothedSpeed
+    }
+
+    /// Side files of the recovery save (build 120): the motion and compass histories as raw doubles, appended.
+    private var motionSidecarURL: URL { activeWorkoutSnapshotURL.deletingLastPathComponent().appendingPathComponent("active_workout_motion.bin") }
+    private var compassSidecarURL: URL { activeWorkoutSnapshotURL.deletingLastPathComponent().appendingPathComponent("active_workout_compass.bin") }
+    /// Records of each history already in its side file; Int.max means "rewrite it whole at the next save".
+    private var motionSidecarWritten = Int.max
+    private var compassSidecarWritten = Int.max
+
+    private static func appendSidecar(_ url: URL, fresh: Bool, values: [Double]) {
+        let data = values.withUnsafeBufferPointer { Data(buffer: $0) }
+        if fresh || !FileManager.default.fileExists(atPath: url.path) {
+            try? data.write(to: url, options: .atomic)
+            return
+        }
+        guard !data.isEmpty, let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
+    }
+
+    private static func readDoubles(_ url: URL, stride: Int, count: Int) -> [Double] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let available = data.count / (MemoryLayout<Double>.size * stride)
+        let n = min(available, count) * stride
+        var out = [Double](repeating: 0, count: n)
+        out.withUnsafeMutableBytes { dst in _ = data.copyBytes(to: dst, from: 0..<(n * MemoryLayout<Double>.size)) }
+        return out
+    }
+
+    private static func readMotionSidecar(_ url: URL, count: Int) -> [MotionAccelerationSample] {
+        let v = readDoubles(url, stride: 5, count: count)
+        func value(_ d: Double) -> Double? { d.isNaN ? nil : d }
+        var out: [MotionAccelerationSample] = []
+        out.reserveCapacity(v.count / 5)
+        var i = 0
+        while i + 4 < v.count {
+            let t = Date(timeIntervalSince1970: v[i])
+            out.append(MotionAccelerationSample(timestamp: t, acceleration: v[i + 1],
+                                                x: value(v[i + 2]), y: value(v[i + 3]), z: value(v[i + 4])))
+            i += 5
+        }
+        return out
+    }
+
+    private static func readCompassSidecar(_ url: URL, count: Int) -> [HeadingSample] {
+        let v = readDoubles(url, stride: 2, count: count)
+        var out: [HeadingSample] = []
+        out.reserveCapacity(v.count / 2)
+        var i = 0
+        while i + 1 < v.count {
+            out.append(HeadingSample(timestamp: Date(timeIntervalSince1970: v[i]), heading: v[i + 1]))
+            i += 2
+        }
+        return out
     }
 
     private var activeWorkoutSnapshotURL: URL {
@@ -234,7 +307,10 @@ class WorkoutSession: ObservableObject {
         persistForceMotionFallback = true
     }
     /// Live status for the UI, e.g. "DR FORCED 62km/h +410m".
-    @Published var motionFallbackStatus = "GPS OK"
+    /// Rebuilt every tick; like `flight`, it asks the screen to redraw only while the app can be seen (build 120).
+    var motionFallbackStatus = "GPS OK" {
+        willSet { if !appIsInBackground, newValue != motionFallbackStatus { objectWillChange.send() } }
+    }
     // Signed WORLD-frame velocity vector (north/east). Integrating a VECTOR (not the
     // magnitude of acceleration) is what makes deceleration subtract and transient bumps
     // cancel — integrating |accel| can only ever increase speed and diverges.
@@ -1859,7 +1935,7 @@ class WorkoutSession: ObservableObject {
     }
 
     private init() {
-        self.flight = Flight()
+        self.storedFlight = Flight()
         setupLocationUpdates()
         setupWatchConnectivity()
         setupAppLifecycleObservers()
@@ -2003,6 +2079,7 @@ class WorkoutSession: ObservableObject {
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .sink { [weak self] _ in
                 self?.appIsInBackground = false
+                self?.objectWillChange.send()          // what changed while the screen was off
                 self?.handleWillEnterForeground()
             }
             .store(in: &cancellables)
@@ -2052,6 +2129,14 @@ class WorkoutSession: ObservableObject {
             locationManager.requestAlwaysAuthorization()
         }
         persistActiveWorkoutSnapshot(force: true, reason: "enteredBackground", shouldLog: true)
+        // The Live Activity is skipped while the app is open (build 120): bring it up to date now.
+        if #available(iOS 16.1, *) {
+            WorkoutLiveActivityManager.shared.updateLiveActivity(
+                duration: activeDuration, distance: currentMetrics.totalDistance, speed: liveActivitySpeedMps,
+                calories: currentMetrics.caloriesBurned, altitude: currentMetrics.currentAltitude,
+                heartRate: currentMetrics.currentHeartRate, isPaused: isPaused)
+            lastLiveActivityUpdate = Date()
+        }
     }
 
     private func handleWillEnterForeground() {
@@ -2197,8 +2282,23 @@ class WorkoutSession: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(ActiveWorkoutSnapshot.self, from: data)
+            decoder.dateDecodingStrategy = .secondsSince1970
+            var snapshot: ActiveWorkoutSnapshot
+            if let numeric = try? decoder.decode(ActiveWorkoutSnapshot.self, from: data) {
+                snapshot = numeric
+            } else {
+                decoder.dateDecodingStrategy = .iso8601        // a save from before build 120
+                snapshot = try decoder.decode(ActiveWorkoutSnapshot.self, from: data)
+            }
+            if let n = snapshot.motionSidecarCount {
+                snapshot.currentMetrics.motionAccelerationHistory = Self.readMotionSidecar(motionSidecarURL, count: n)
+            }
+            if let n = snapshot.compassSidecarCount {
+                snapshot.currentMetrics.compassHeadingHistory = Self.readCompassSidecar(compassSidecarURL, count: n)
+            }
+            // The side files may hold records written after this snapshot; the next save rewrites them whole.
+            motionSidecarWritten = Int.max; compassSidecarWritten = Int.max
+            return snapshot
         } catch {
             print("⚠️ Failed to decode active workout snapshot: \(error.localizedDescription)")
             clearActiveWorkoutSnapshot(reason: "decodeFailed", shouldLog: true)
@@ -2219,9 +2319,27 @@ class WorkoutSession: ObservableObject {
             return
         }
 
-        let snapshot = ActiveWorkoutSnapshot(
+        // THE SAVE NO LONGER RE-WRITES WHAT IT ALREADY WROTE (build 120). Every five seconds the whole workout was
+        // encoded again, including the motion history - 50 samples a second in Velocity Mode, about 720,000 by the
+        // end of a four-hour flight, tens of megabytes of JSON each time, with every date formatted as ISO 8601 text.
+        // Now the motion and compass histories are appended to side files (only what is new since the last save),
+        // the rest is saved every five seconds as before, and dates are written as numbers. Nothing is dropped:
+        // the restored workout gets every sample back from the side files.
+        var metrics = currentMetrics
+        let motion = metrics.motionAccelerationHistory ?? []
+        let compass = metrics.compassHeadingHistory ?? []
+        metrics.motionAccelerationHistory = nil
+        metrics.compassHeadingHistory = nil
+        let motionFresh = motion.count < motionSidecarWritten
+        let compassFresh = compass.count < compassSidecarWritten
+        let motionNew = Array(motion[(motionFresh ? 0 : motionSidecarWritten)...])
+        let compassNew = Array(compass[(compassFresh ? 0 : compassSidecarWritten)...])
+        motionSidecarWritten = motion.count
+        compassSidecarWritten = compass.count
+
+        var snapshot = ActiveWorkoutSnapshot(
             flight: flight,
-            currentMetrics: currentMetrics,
+            currentMetrics: metrics,
             workoutTypeRawValue: workoutType.rawValue,
             isPaused: isPaused,
             totalPausedTime: totalPausedTime,
@@ -2229,14 +2347,29 @@ class WorkoutSession: ObservableObject {
             locationsToSkipAfterResume: locationsToSkipAfterResume,
             savedAt: now
         )
+        snapshot.motionSidecarCount = motion.count
+        snapshot.compassSidecarCount = compass.count
 
         lastSnapshotSaveDate = now
         let url = activeWorkoutSnapshotURL
+        let motionURL = motionSidecarURL, compassURL = compassSidecarURL
 
         activeWorkoutSnapshotQueue.async {
             do {
+                // The side files first, so a snapshot never counts records its side file does not have yet.
+                var motionValues: [Double] = []
+                motionValues.reserveCapacity(motionNew.count * 5)
+                for m in motionNew {
+                    motionValues.append(m.timestamp.timeIntervalSince1970); motionValues.append(m.acceleration)
+                    motionValues.append(m.x ?? .nan); motionValues.append(m.y ?? .nan); motionValues.append(m.z ?? .nan)
+                }
+                var compassValues: [Double] = []
+                compassValues.reserveCapacity(compassNew.count * 2)
+                for c in compassNew { compassValues.append(c.timestamp.timeIntervalSince1970); compassValues.append(c.heading) }
+                Self.appendSidecar(motionURL, fresh: motionFresh, values: motionValues)
+                Self.appendSidecar(compassURL, fresh: compassFresh, values: compassValues)
                 let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
+                encoder.dateEncodingStrategy = .secondsSince1970
                 let data = try encoder.encode(snapshot)
                 try data.write(to: url, options: .atomic)
             } catch {
@@ -2251,9 +2384,12 @@ class WorkoutSession: ObservableObject {
 
     private func clearActiveWorkoutSnapshot(reason: String, shouldLog: Bool = false) {
         lastSnapshotSaveDate = nil
+        motionSidecarWritten = Int.max; compassSidecarWritten = Int.max
         let url = activeWorkoutSnapshotURL
+        let sidecars = [motionSidecarURL, compassSidecarURL]
 
         activeWorkoutSnapshotQueue.async {
+            for side in sidecars { try? FileManager.default.removeItem(at: side) }
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             do {
                 try FileManager.default.removeItem(at: url)
@@ -6272,9 +6408,11 @@ class WorkoutSession: ObservableObject {
                 source: .gps)
         }
 
-        // Update Live Activity (throttled to every 2 seconds)
+        // Update Live Activity (throttled to every 2 seconds). Only while the app is in the background (build 120):
+        // with the app open its Live Activity is not on screen; one update is sent on the way to the background.
         let now = Date()
-        if lastLiveActivityUpdate == nil || now.timeIntervalSince(lastLiveActivityUpdate!) >= LIVE_ACTIVITY_UPDATE_INTERVAL {
+        if appIsInBackground,
+           lastLiveActivityUpdate == nil || now.timeIntervalSince(lastLiveActivityUpdate!) >= LIVE_ACTIVITY_UPDATE_INTERVAL {
             if #available(iOS 16.1, *) {
                 WorkoutLiveActivityManager.shared.updateLiveActivity(
                     duration: activeDuration,

@@ -202,14 +202,14 @@ class HealthKitManager: ObservableObject {
             print("⌚ 🧭 HealthKit channels: gpsDistance=\(String(format: "%.2f", metrics.totalDistance))m, nativeSteps=\(nativeStepCountText), nativeStepDistance=\(nativeStepDistanceText)m")
 
             // Add average speed metadata (HealthKit standard key)
-            if metrics.averageSpeed > 0 {
+            if false, metrics.averageSpeed > 0 {        // build 120: a vehicle's speed is not a walking pace
                 let avgSpeedQuantity = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.averageSpeed)
                 metadata[HKMetadataKeyAverageSpeed] = avgSpeedQuantity
                 print("⌚ 📊 Adding average speed: \(String(format: "%.1f", metrics.averageSpeed * 3.6)) km/h")
             }
 
             // Add max speed metadata
-            if metrics.maxSpeed > 0 {
+            if false, metrics.maxSpeed > 0 {
                 let maxSpeedQuantity = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.maxSpeed)
                 metadata[HKMetadataKeyMaximumSpeed] = maxSpeedQuantity
                 print("⌚ 📊 Adding max speed: \(String(format: "%.1f", metrics.maxSpeed * 3.6)) km/h")
@@ -261,13 +261,20 @@ class HealthKitManager: ObservableObject {
                                     return
                                 }
 
-                                self.associateDistanceSamples(
-                                    to: workout,
-                                    metrics: metrics,
-                                    startDate: flight.startDate,
-                                    endDate: endDate,
-                                    activityType: exportType
-                                ) { _, _ in
+                                // Build 120: walking distance only for the stretches on foot (HealthDistance).
+                                let onFootSamples: [HKSample] = exportType == .cycling ? [] : HealthDistance.walkingSamples(HealthDistance.onFootIntervals(locations))
+                                let associate: (@escaping (Bool, Error?) -> Void) -> Void = { done in
+                                    if exportType == .cycling {
+                                        self.associateDistanceSamples(to: workout, metrics: metrics, startDate: flight.startDate,
+                                                                      endDate: endDate, activityType: exportType,
+                                                                      includeNativeStepDistance: false, completion: done)
+                                    } else if onFootSamples.isEmpty {
+                                        done(true, nil)
+                                    } else {
+                                        self.healthStore.add(onFootSamples, to: workout, completion: done)
+                                    }
+                                }
+                                associate { _, _ in
                                     // Now save the route
                                         self.saveRoute(for: workout, locations: locations) { success, routeError in
                                             completion(success, routeError, workout)
@@ -290,8 +297,10 @@ class HealthKitManager: ObservableObject {
         locations: [FlightLocation],
         completion: @escaping () -> Void
     ) {
-        let speedSamples = buildSpeedSamples(metrics: metrics, activityType: activityType)
-        let advancedSamples = buildAdvancedMetricSamples(metrics: metrics, activityType: activityType, locations: locations)
+        // Build 120: no speed or gait samples (step length, power...) made from the journey's speed, which is a
+        // vehicle's as often as not (HealthDistance).
+        let speedSamples: [HKQuantitySample] = []
+        let advancedSamples: [HKQuantitySample] = []
         let allSamples = speedSamples + advancedSamples
 
         guard !allSamples.isEmpty else {
@@ -465,7 +474,7 @@ class HealthKitManager: ObservableObject {
                 print("   👟 Native pedometer steps unavailable - using GPS estimation channel only")
             }
 
-            if metrics.totalDistance > 0 {
+            if false, metrics.totalDistance > 0 {        // build 120: distance is not steps (a car, a flight)
                 let estimatedSteps = metrics.totalDistance / strideLength
                 let duration = max(1.0, endDate.timeIntervalSince(startDate))
                 let cadencePerMinute = (estimatedSteps / duration) * 60.0
@@ -591,8 +600,19 @@ class HealthKitManager: ObservableObject {
         startDate: Date,
         endDate: Date,
         activityType: HKWorkoutActivityType,
+        onFoot: [HealthDistance.Interval]? = nil,
         completion: @escaping (Bool) -> Void
     ) {
+        // Build 120: walking and running distance only for the stretches on foot (HealthDistance).
+        if activityType != .cycling, let onFoot {
+            let samples = HealthDistance.walkingSamples(onFoot)
+            guard !samples.isEmpty else { completion(true); return }
+            builder.add(samples) { success, error in
+                if !success { print("⌚ ❌ Failed to add on-foot distance: \(error?.localizedDescription ?? "Unknown")") }
+                completion(success)
+            }
+            return
+        }
         guard metrics.totalDistance > 0,
               let distanceType = HKQuantityType.quantityType(forIdentifier: primaryDistanceIdentifier(for: activityType)) else {
             completion(false)

@@ -36,7 +36,7 @@ struct WorkoutSummary: Identifiable, Codable, Hashable {
     }
 
     init(workout: HKWorkout) {
-        let distance = workout.totalDistance?.doubleValue(for: .meter()) ?? 0
+        let distance = workout.appDistanceMeters ?? 0
         let calories: Double?
         let steps: Double?
 

@@ -876,10 +876,10 @@ struct LiveSessionView_Previews: PreviewProvider {
     }
 }
 
-/// THE WORKOUT CLOCK ON ITS OWN (build 119). A timer firing 100 times a second used to rebuild the whole
-/// workout list with it, in the background too (the iPhone's CPU reports on BR215 were mostly SwiftUI). A
-/// TimelineView redraws only this text, 20 times a second while it is on screen; with the wrist down
-/// watchOS slows it on its own.
+/// THE WORKOUT CLOCK ON ITS OWN (build 119, every frame since build 120). A timer firing 100 times a second used
+/// to rebuild the whole workout list with it, in the background too (the iPhone's CPU reports on BR215 were
+/// mostly SwiftUI). A TimelineView redraws only this text, once per display frame while it is on screen; with
+/// the wrist down watchOS slows it on its own.
 private struct WatchWorkoutClock: View {
     let start: Date
     let pausedTotal: TimeInterval
@@ -887,7 +887,7 @@ private struct WatchWorkoutClock: View {
     let format: (TimeInterval) -> String
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.05)) { context in
+        TimelineView(.animation(minimumInterval: 0.01, paused: false)) { context in
             let now = pausedSince ?? context.date
             Text(format(max(0, now.timeIntervalSince(start) - pausedTotal)))
         }

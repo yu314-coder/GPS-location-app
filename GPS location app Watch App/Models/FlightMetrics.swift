@@ -350,10 +350,9 @@ struct FlightMetrics: Codable {
                     maxDeceleration = min(maxDeceleration ?? acceleration, acceleration)
                 }
 
-                var history = accelerationHistory ?? []
-                history.append(AccelerationSample(timestamp: location.timestamp, acceleration: acceleration))
-                Self.trimHistory(&history)
-                accelerationHistory = history
+                if accelerationHistory == nil { accelerationHistory = [] }
+                accelerationHistory!.append(AccelerationSample(timestamp: location.timestamp, acceleration: acceleration))
+                Self.trimHistory(&accelerationHistory!)
                 let previousAverage = averageAcceleration ?? abs(acceleration)
                 averageAcceleration = previousAverage + ((abs(acceleration) - previousAverage) / Double(totalPoints))
             }
@@ -481,10 +480,10 @@ struct FlightMetrics: Codable {
 
     mutating func updateWithCompassHeading(_ heading: Double, timestamp: Date = Date()) {
         currentCompassHeading = heading
-        var history = compassHeadingHistory ?? []
-        history.append(HeadingSample(timestamp: timestamp, heading: heading))
-        Self.trimHistory(&history)
-        compassHeadingHistory = history
+        // In place (build 120): the copy-then-assign pattern copied the whole window on every heading.
+        if compassHeadingHistory == nil { compassHeadingHistory = [] }
+        compassHeadingHistory!.append(HeadingSample(timestamp: timestamp, heading: heading))
+        Self.trimHistory(&compassHeadingHistory!)
     }
 
     mutating func updateWithBarometricAltitude(relativeAltitude: Double, pressure: Double?, timestamp: Date = Date()) {
@@ -698,10 +697,9 @@ struct FlightMetrics: Codable {
             minHeartRate = heartRate
         }
 
-        // Calculate average
-        if !heartRateSamples.isEmpty {
-            averageHeartRate = heartRateSamples.reduce(0, +) / Double(heartRateSamples.count)
-        }
+        // A running mean (build 120): the same number without re-adding every sample since the start on each one.
+        let n = Double(heartRateSamples.count)
+        averageHeartRate = n > 1 ? (averageHeartRate ?? heartRate) + (heartRate - (averageHeartRate ?? heartRate)) / n : heartRate
     }
 
     // MARK: - Splits Management

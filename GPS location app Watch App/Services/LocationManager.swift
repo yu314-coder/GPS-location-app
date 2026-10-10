@@ -17,7 +17,8 @@ class LocationManager: NSObject, ObservableObject {
     private(set) var currentCompassHeading: Double?
     @Published var authorizationStatus: CLAuthorizationStatus
     @Published var isTracking = false
-    @Published var locations: [FlightLocation] = []
+    /// Valid fixes this session (build 120): was every fix kept in a published array nothing read, copied on each append.
+    private(set) var validFixCount = 0
     @Published var gpsSignalQuality: GPSSignalQuality = .unknown
     @Published var locationSource: LocationSource = .unknown
     @Published var currentPressure: Double? // in kilopascals (kPa)
@@ -213,7 +214,7 @@ class LocationManager: NSObject, ObservableObject {
             // IMPORTANT: Update @Published properties on main thread to avoid warning
             DispatchQueue.main.async { [weak self] in
                 self?.currentLocation = processedLocation
-                self?.locations.append(flightLocation)
+                self?.validFixCount += 1
                 self?.updateSignalQuality(from: processedLocation)
             }
 
@@ -295,7 +296,7 @@ class LocationManager: NSObject, ObservableObject {
     }
 
     func reset() {
-        locations.removeAll()
+        validFixCount = 0
         currentLocation = nil
         kalmanFilter.reset()
         stopGPSTimeoutMonitoring()
@@ -601,7 +602,7 @@ extension LocationManager: CLLocationManagerDelegate {
         let source = determineLocationSource(from: location.horizontalAccuracy)
 
         // Log first location update
-        if self.locations.isEmpty {
+        if self.validFixCount == 0 {
             print("⌚ 📍 First location received!")
             print("   Source: \(source.description)")
             print("   Lat: \(String(format: "%.6f", location.coordinate.latitude)), Lon: \(String(format: "%.6f", location.coordinate.longitude))")

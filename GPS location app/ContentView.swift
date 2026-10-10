@@ -312,9 +312,12 @@ struct HomeView: View {
                     .frame(width: isIPad ? 110 : 88, height: isIPad ? 110 : 88)
                     .blur(radius: 18)
                     .opacity(0.55)
-                    .scaleEffect(isAnimating ? 1.1 : 0.9)
-                    .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true),
-                               value: isAnimating)
+                    // Paused while the workout sheet covers it (build 120): it redrew a blurred circle every frame
+                    // behind the workout screen for the whole workout.
+                    .scaleEffect(isAnimating && !showLiveSession ? 1.1 : 0.9)
+                    .animation(isAnimating && !showLiveSession
+                               ? .easeInOut(duration: 2.0).repeatForever(autoreverses: true) : .default,
+                               value: isAnimating && !showLiveSession)
 
                 Image(systemName: "figure.run.circle.fill")
                     .font(.system(size: isIPad ? 88 : 72))

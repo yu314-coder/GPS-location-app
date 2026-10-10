@@ -282,7 +282,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         latest = row
         guard loggingEnabled else { return }
         rows.append(row)
-        if rows.count > capacity { rows.removeFirst(rows.count - capacity) }
+        // Trimmed a thousand at a time (build 120): one at a time shifted all 15,000 rows every second once full.
+        if rows.count > capacity + 1000 { rows.removeFirst(rows.count - capacity) }
         rowCount = rows.count
         if debugStream == nil, let stamp {
             debugStream = CSVStream(url: Self.logDirectory.appendingPathComponent("velocity_debug_\(stamp).csv"),

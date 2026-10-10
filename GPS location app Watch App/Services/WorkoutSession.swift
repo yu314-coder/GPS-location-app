@@ -4,6 +4,7 @@ import CoreLocation
 import CoreMotion
 import Combine
 import Network
+import WatchKit
 
 #if os(watchOS)
 class WorkoutSession: NSObject, ObservableObject {
@@ -33,8 +34,23 @@ class WorkoutSession: NSObject, ObservableObject {
 
     @Published var isActive = false
     @Published var isPaused = false
-    @Published var flight: Flight
-    @Published var currentMetrics = FlightMetrics()
+    // CHANGED IN PLACE, AND THE SCREEN TOLD ONLY WHILE IT IS AWAKE (build 120). @Published cannot hand out the
+    // stored value for an in-place change, so every update copied the whole value; and each change re-evaluated
+    // the workout list with the wrist down too. The workout screen copies these once a second anyway.
+    private var storedFlight: Flight
+    private var storedMetrics = FlightMetrics()
+    /// False while the app is not active (wrist down, another app); kept from the lifecycle notifications.
+    private var screenIsAwake = true
+    var flight: Flight {
+        get { storedFlight }
+        set { if screenIsAwake { objectWillChange.send() }; storedFlight = newValue }
+        _modify { if screenIsAwake { objectWillChange.send() }; yield &storedFlight }
+    }
+    var currentMetrics: FlightMetrics {
+        get { storedMetrics }
+        set { if screenIsAwake { objectWillChange.send() }; storedMetrics = newValue }
+        _modify { if screenIsAwake { objectWillChange.send() }; yield &storedMetrics }
+    }
     @Published var lastLocationTime: Date = Date()  // Exposed for UI to monitor GPS health
     @Published var isUsingIPhoneGPSFallback = false
     @Published var fallbackDebugStatus = "GPS OK"   // live on-screen fallback state
@@ -584,8 +600,15 @@ class WorkoutSession: NSObject, ObservableObject {
     }
 
     override init() {
-        self.flight = Flight()
+        self.storedFlight = Flight()
         super.init()
+        NotificationCenter.default.addObserver(forName: WKApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.screenIsAwake = true
+            self?.objectWillChange.send()          // what changed while the screen was off
+        }
+        NotificationCenter.default.addObserver(forName: WKApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.screenIsAwake = false
+        }
         startNetworkPathMonitoring()
         setupLocationUpdates()
         setupConnectivityObservers()
@@ -1210,6 +1233,11 @@ class WorkoutSession: NSObject, ObservableObject {
                 print("⌚ ⚠️ Failed to add workout metadata: \(metadataError?.localizedDescription ?? "Unknown")")
             }
 
+            // The whole track for what was on foot (build 120): the checkpointed points from disk and the newest still
+            // in memory.
+            let persistedTrack = FlightDataStore.shared.loadFlightDetails(id: self.flight.id)?.locations ?? []
+            let lastPersisted = persistedTrack.last?.timestamp ?? .distantPast
+            let onFoot = HealthDistance.onFootIntervals(persistedTrack + self.flight.locations.filter { $0.timestamp > lastPersisted })
             self.healthKitManager.addWorkoutSamples(
                 to: builder,
                 metrics: healthKitMetrics,
@@ -1229,7 +1257,8 @@ class WorkoutSession: NSObject, ObservableObject {
                         metrics: healthKitMetrics,
                         startDate: self.flight.startDate,
                         endDate: endDate,
-                        activityType: exportType
+                        activityType: exportType,
+                        onFoot: onFoot
                     ) { distanceAdded in
                         if !distanceAdded {
                             print("⌚ ⚠️ GPS workout total distance sample was not added before finish")
@@ -1282,8 +1311,8 @@ class WorkoutSession: NSObject, ObservableObject {
                                         startDate: self.flight.startDate,
                                         endDate: endDate,
                                         activityType: exportType,
-                                        includeGPSDistance: !distanceAdded,
-                                        includeNativeStepDistance: true
+                                        includeGPSDistance: false,          // build 120: on-foot only, added above
+                                        includeNativeStepDistance: false    // Health has the watch's own pedometer
                                     ) { _, _ in
                                         // 5. Save route to the existing workout. CRITICAL: use the FULL
                                         // persisted track from disk — NOT self.flight.locations, which is
@@ -3968,6 +3997,9 @@ class WorkoutSession: NSObject, ObservableObject {
     }
 
     private func sendWorkoutUpdateToPhone() {
+        // Out of the iPhone's reach the update only queued in the context slot for nobody (build 120); the next
+        // tick sends the latest once it is back. (The final update at the end still always goes.)
+        guard connectivityManager.isReachable else { return }
         let nativeStepCount = nativePedometerStepCount > 0 ? Double(nativePedometerStepCount) : nil
         let nativeStepDistance = nativePedometerDistanceMeters > 0 ? nativePedometerDistanceMeters : nil
         let syncData = WorkoutSyncData(

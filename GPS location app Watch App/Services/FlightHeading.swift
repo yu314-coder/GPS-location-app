@@ -20,10 +20,9 @@ import Foundation
 ///      the cabin feels heavier than its own recent level and the rotation is one a plane can make (under
 ///      4°/s; a phone picked up turns at 20-200°/s).
 ///
-/// Through the climb every second counts (the departure turns are large and the phone usually sits still),
-/// scaled by the load felt (a banked turn is felt about a tilted floor, build 119); after it only felt turns
-/// do. Replayed on BR215 and the August flight: typical error 10° (16 Pro, 99% of the flight within 30°), 16°
-/// (17; a 35° turn made while iOS had paused it is not seen), 6° (August). No compass, no GPS.
+/// Through the climb every second counts (the departure turns are large and the phone usually sits still);
+/// after it only felt turns do. Replayed on BR215 and the August flight: typical error 8° (17, 91% of the
+/// flight within 30°), 29° (16 Pro, the climb before the bias was learned), 5° (August). No compass, no GPS.
 ///
 /// The watch carries an identical copy (scripts/check_watch_engine.sh).
 struct FlightHeading {
@@ -33,7 +32,6 @@ struct FlightHeading {
     private static let TURN_RATE = 0.25            // deg/s (10-s mean, bias off) for a turn in cruise
     private static let TURN_LOAD = 0.012           // and the cabin this much heavier than its level
     private static let PLANE_RATE_CEILING = 4.0    // deg/s: faster is the phone moving, not the plane
-    private static let LOAD_CEILING = 1.5          // a 48° bank; more is a hand, not the aircraft
 
     /// Degrees from north, clockwise; nil until a takeoff roll has been measured.
     private(set) var heading: Double?
@@ -102,15 +100,7 @@ struct FlightHeading {
         guard let h = heading else { return }
         let rate = w1 - bias
         if !cruising {
-            // A BANKED TURN IS FELT ABOUT A TILTED FLOOR (build 119). In a coordinated turn the cabin's "down" is the
-            // floor's, tilted by the bank, and Core Motion's gravity follows it; the rotation about it is the turn
-            // times cos(bank), so the departure turns were counted short - on BR215 both phones were 25-30° off by
-            // ten minutes after the roll, the same on both. The same bank makes the cabin feel 1/cos(bank) heavier,
-            // so the turn is this second's rotation times the load felt. Replayed: the climb 27° -> 14° (17) and
-            // 26° -> 12° (16 Pro); the 16 Pro's flight within 30° of the course 66% -> 99%; August unchanged (6°).
-            // Only in the climb: on cruise turns it did not help.
-            let n = base > 0 ? min(max(f1 / base, 1), Self.LOAD_CEILING) : 1
-            heading = Self.wrap(h + rate * n * t1)
+            heading = Self.wrap(h + rate * t1)
         } else if abs(ws - bias) > Self.TURN_RATE, load > Self.TURN_LOAD,
                   abs(rate) <= Self.PLANE_RATE_CEILING, abs(ws - bias) <= Self.PLANE_RATE_CEILING {
             heading = Self.wrap(h + rate * t1)

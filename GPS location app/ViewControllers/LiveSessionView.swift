@@ -1070,17 +1070,18 @@ struct LiveSessionView_Previews: PreviewProvider {
     }
 }
 
-/// THE WORKOUT CLOCK ON ITS OWN (build 119). It used to be a timer firing 100 times a second on the whole
-/// workout screen, so every tick rebuilt every chart, card and list on it - in the background as well, with
-/// the screen off. On BR215 iOS sent CPU reports through the flight (48-90 s of CPU in every 1-3 minutes),
-/// and SwiftUI was in 83 of their 106 samples. A TimelineView redraws only this text, 20 times a second,
-/// and only while it is on screen. activeDuration already stands still while the workout is paused.
+/// THE WORKOUT CLOCK ON ITS OWN (build 119, every frame since build 120). It used to be a timer firing 100 times
+/// a second on the whole workout screen, so every tick rebuilt every chart, card and list on it - in the
+/// background as well, with the screen off. On BR215 iOS sent CPU reports through the flight (48-90 s of CPU in
+/// every 1-3 minutes), and SwiftUI was in 83 of their 106 samples. A TimelineView redraws only this text, once
+/// per display frame (as smooth as before), and only while it is on screen. activeDuration already stands still
+/// while the workout is paused.
 private struct WorkoutClockText: View {
     let workoutSession: WorkoutSession
     let format: (TimeInterval) -> String
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.05)) { _ in
+        TimelineView(.animation(minimumInterval: 0.01, paused: false)) { _ in
             Text(format(workoutSession.activeDuration))
                 .monospacedDigit()
         }
