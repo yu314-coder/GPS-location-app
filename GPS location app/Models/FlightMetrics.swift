@@ -302,7 +302,9 @@ struct FlightMetrics: Codable, Hashable {
         return metadata
     }
 
-    mutating func updateWithLocation(_ location: FlightLocation, previousLocation: FlightLocation?, elapsedTime: TimeInterval = 0) {
+    /// `countElevation`: false for a point whose height is a flight's typical height (build 115), which must
+    /// not reach the elevation totals (and Apple Health's elevation ascended).
+    mutating func updateWithLocation(_ location: FlightLocation, previousLocation: FlightLocation?, elapsedTime: TimeInterval = 0, countElevation: Bool = true) {
         totalPoints += 1
         if location.isValid {
             validPoints += 1
@@ -323,7 +325,7 @@ struct FlightMetrics: Codable, Hashable {
                 print("📏 Distance: +\(String(format: "%.2f", distance))m → Total: \(String(format: "%.2f", totalDistance))m (\(String(format: "%.3f", totalDistance/1000))km)")
             }
 
-            let altitudeDelta = location.altitude - previous.altitude
+            let altitudeDelta = countElevation ? location.altitude - previous.altitude : 0
             if altitudeDelta > 0 {
                 totalAltitudeGain += altitudeDelta
             } else {

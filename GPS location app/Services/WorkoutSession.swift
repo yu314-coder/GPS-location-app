@@ -291,6 +291,10 @@ class WorkoutSession: ObservableObject {
     /// FlightHeading; it replaces the compass in the air, which a cabin ruins.
     private var flightHeading = FlightHeading()
     private var cabinReachedCruise = false
+    /// THE PLANE'S HEIGHT (build 115): FlightProfile.altitudeMeters above the ground the plane took off from,
+    /// on the route's points while flying; never the cabin pressure, which is not the plane's height.
+    private var flightBaseAltitude = 0.0
+    private var lastPointHadFlightAltitude = false
     /// Learns speed from the accelerometer's spectral signature, on-device, from GPS labels.
     /// Replaces the hand-crafted vibration model — see LearnedSpeedEstimator for the measurements
     /// showing why a learned lookup finds what five hand-built features could not.
@@ -2409,6 +2413,7 @@ class WorkoutSession: ObservableObject {
         takeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1
         airborneSince = nil; airDistanceOwed = 0
         flightHeading = FlightHeading(); cabinReachedCruise = false
+        flightBaseAltitude = 0; lastPointHadFlightAltitude = false
         locationManager.freezeDeclination = false   // this trip's own, until its first point
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
         driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
@@ -3942,6 +3947,13 @@ class WorkoutSession: ObservableObject {
         return flightProfileSpeed(at: now).map { ($0, "FLIGHT(profile)") }
     }
 
+    /// The plane's typical height (m) at `time`, in a flight with a takeoff roll; nil otherwise.
+    private func flightAltitude(at time: Date) -> Double? {
+        guard isAirborneForEstimation, let roll = flightRollStart(at: time) else { return nil }
+        let descent = flightPhase.descentStartedAt.map { time.timeIntervalSince($0) }
+        return flightBaseAltitude + FlightProfile.altitudeMeters(sinceRoll: time.timeIntervalSince(roll), sinceDescent: descent)
+    }
+
     /// Metres FlightProfile counts between two moments of this flight, in 10-second steps.
     private func flightProfileDistance(from start: Date, to end: Date) -> Double {
         guard end > start, let roll = flightRollStart(at: end) else { return 0 }
@@ -4083,7 +4095,10 @@ class WorkoutSession: ObservableObject {
 
         }
         if flightPhase.isAirborne {
-            if airborneSince == nil { airborneSince = now }
+            if airborneSince == nil {
+                airborneSince = now
+                flightBaseAltitude = flight.locations.last(where: { !$0.isEstimated })?.altitude ?? 0
+            }
             if flightPhase.phase == .cruise { cabinReachedCruise = true }
         } else if airborneSince != nil {
             airborneSince = nil; airDistanceOwed = 0
@@ -5789,9 +5804,14 @@ class WorkoutSession: ObservableObject {
         let drift = min(anchorAccuracyForDR + 0.10 * distanceSinceLastRealFix,
                         ESTIMATED_LOCATION_HORIZONTAL_ACCURACY)
         distanceSinceLastRealFix += distanceMeters
+        // In the air, the plane's typical height; after landing, back to the ground it took off from.
+        let planeAltitude = flightAltitude(at: timestamp)
+        let pointAltitude = planeAltitude ?? (lastPointHadFlightAltitude ? flightBaseAltitude : previousLocation.altitude)
+        let elevationCounts = planeAltitude == nil && !lastPointHadFlightAltitude
+        lastPointHadFlightAltitude = planeAltitude != nil
         let location = CLLocation(
             coordinate: coordinate,
-            altitude: previousLocation.altitude,
+            altitude: pointAltitude,
             horizontalAccuracy: drift,
             verticalAccuracy: max(drift, ESTIMATED_LOCATION_VERTICAL_ACCURACY / 10),
             course: headingDegrees,
@@ -5823,7 +5843,8 @@ class WorkoutSession: ObservableObject {
             userInfo: ["location": estimatedLocation.toCLLocation()]
         )
         let maxSpeedBeforeUpdate = currentMetrics.maxSpeed
-        currentMetrics.updateWithLocation(estimatedLocation, previousLocation: previousLocation, elapsedTime: activeDuration)
+        currentMetrics.updateWithLocation(estimatedLocation, previousLocation: previousLocation, elapsedTime: activeDuration,
+                                          countElevation: elevationCounts)
         // The DEAD-RECKONING speed is authoritative for estimated points. FlightMetrics
         // otherwise RE-DERIVES speed from point geometry (distance ÷ timeDelta), which is a
         // different calculation from the DR estimate — so the Speed card and the Velocity

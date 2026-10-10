@@ -53,6 +53,40 @@ enum FlightProfile {
         return v
     }
 
+    // THE HEIGHT, THE SAME WAY (build 115). Cabin pressure is not the plane's height (the cabin sat at
+    // 1.4-1.6 km while BR215 flew at 9.8-10.4), and acceleration cannot give it (integrated twice it put
+    // the plane at 40-97 km after the climb), so the height is NASA's too: the median cruise height of the
+    // 83 flights that cruised 20 minutes, reached by the median share of it in each minute since the roll,
+    // and left by the median share in each minute since the top of descent. On BR215 it read 1.4 km low
+    // in the climb, 0.8 km in cruise and 1.2 km in the descent (ADS-B).
+
+    /// m above the departure runway in cruise.
+    static let cruiseAltitude: Double = 8899
+    /// Share of the cruise height in each minute since the roll.
+    static let climbShare: [Double] = [
+        0.004, 0.061, 0.107, 0.172, 0.252, 0.319, 0.371, 0.420, 0.472, 0.524, 0.567, 0.608, 0.648,
+        0.688, 0.720, 0.751, 0.776, 0.803, 0.830, 0.859, 0.891, 0.917, 0.939, 0.961, 0.981, 0.993,
+        0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999,
+        0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999,
+        0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999
+    ]
+    /// Share of the cruise height in each minute since the top of descent.
+    static let descentShare: [Double] = [
+        0.940, 0.890, 0.850, 0.810, 0.783, 0.739, 0.686, 0.640, 0.590, 0.543, 0.473, 0.426, 0.399,
+        0.381, 0.355, 0.342, 0.312, 0.279, 0.248, 0.234, 0.191, 0.198, 0.156, 0.170, 0.160, 0.145,
+        0.159, 0.135, 0.107, 0.111, 0.104, 0.096, 0.095, 0.110
+    ]
+
+    /// Height above the departure runway in metres, timed like `speedKmh`.
+    static func altitudeMeters(sinceRoll: TimeInterval, sinceDescent: TimeInterval?) -> Double {
+        let m = max(sinceRoll, 0) / 60
+        var h = cruiseAltitude * (m < Double(climbShare.count) ? interpolate(climbShare, at: m) : 1)
+        if let d = sinceDescent, d >= 0 {
+            h = min(h, cruiseAltitude * interpolate(descentShare, at: d / 60))
+        }
+        return max(h, 0)
+    }
+
     /// Linear between minute midpoints, held at both ends.
     private static func interpolate(_ a: [Double], at minutes: Double) -> Double {
         guard let first = a.first, let last = a.last else { return 0 }
