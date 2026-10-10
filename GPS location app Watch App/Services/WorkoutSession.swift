@@ -380,6 +380,7 @@ class WorkoutSession: NSObject, ObservableObject {
     private var rollCandidateAt: Date?
     private var rollCandidateAnchor = -1
     private var confirmedRollAnchor = -1
+    private var takeoffHandover: (sinceRoll: TimeInterval, kmh: Double)?
 
     /// A takeoff roll (the watch's own or the iPhone's) in the last 4 minutes, before the cabin has said
     /// airborne (build 116): the flight already counts, from the roll itself.
@@ -409,7 +410,7 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         if let start = rollCandidateAt, v >= 55.6, ownTakeoffRollAt != start,
            now.timeIntervalSince(start) <= 30 {
-            ownTakeoffRollAt = start; confirmedRollAnchor = launchIntegrator.anchorCount
+            ownTakeoffRollAt = start; confirmedRollAnchor = launchIntegrator.anchorCount; takeoffHandover = nil
             flightHeading.confirmRoll(startedAt: start)
         }
     }
@@ -436,8 +437,14 @@ class WorkoutSession: NSObject, ObservableObject {
            launchIntegrator.anchorCount == confirmedRollAnchor {
             return launch
         }
+        if takeoffHandover == nil, roll == ownTakeoffRollAt, launchIntegrator.isHolding,
+           launchIntegrator.anchorCount == confirmedRollAnchor, let held = launchIntegrator.speed, held > 0 {
+            takeoffHandover = (now.timeIntervalSince(roll), held * 3.6)
+        }
         let descent = flightPhase.descentStartedAt.map { now.timeIntervalSince($0) }
-        return FlightProfile.speedKmh(sinceRoll: now.timeIntervalSince(roll), sinceDescent: descent) / 3.6
+        return FlightProfile.speedKmh(sinceRoll: now.timeIntervalSince(roll), sinceDescent: descent,
+                                      handoverSinceRoll: roll == ownTakeoffRollAt ? takeoffHandover?.sinceRoll : nil,
+                                      handoverKmh: roll == ownTakeoffRollAt ? takeoffHandover?.kmh : nil) / 3.6
     }
 
     private func freshIPhoneSpeed(at now: Date) -> Double? {
@@ -883,7 +890,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // (the iPhone's store keys its regime checks on the session).
             learnedSpeed.beginSession()
             flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
-            launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1; confirmedRollAnchor = -1
+            launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1; confirmedRollAnchor = -1; takeoffHandover = nil
             flightHeading = FlightHeading(); cabinReachedCruise = false
             flightSpeedForced = false; flightStatus = "On the ground"
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0

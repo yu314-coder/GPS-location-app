@@ -87,6 +87,40 @@ enum FlightProfile {
         return max(h, 0)
     }
 
+    // THE TAKEOFF'S HANDOVER (build 117). When the takeoff measurement ends after liftoff, the plane may be
+    // faster or slower than NASA's median then. Across NASA's flights, such a difference at 1-2 minutes after
+    // the roll was still 80% there half a minute later, 56% after a minute, about a quarter after two to four,
+    // and only noise after that; so it is carried that way and gone by six minutes. In August the measurement
+    // handed over at 1.8 minutes at 322 km/h where the median said 376: minutes 1-3 went from 63 to 24 km/h
+    // off GPS, minutes 3-5 from 27 to 9. A handover during the roll (BR215: 0.47 minutes) says nothing about
+    // the climb (NASA: 16% left after a minute) and is not carried.
+    static let carryMinutes: [Double] = [0, 0.5, 1, 2, 3, 4, 6]
+    static let carryShare: [Double] = [1.0, 0.80, 0.56, 0.23, 0.21, 0.28, 0.0]
+    static let CARRY_FROM: TimeInterval = 45
+
+    /// `speedKmh`, carrying what the takeoff measured when it handed over (`handoverSinceRoll` seconds after the
+    /// roll, at `handoverKmh`).
+    static func speedKmh(sinceRoll t: TimeInterval, sinceDescent d: TimeInterval?,
+                         handoverSinceRoll h: TimeInterval?, handoverKmh vh: Double?) -> Double {
+        let base = speedKmh(sinceRoll: t, sinceDescent: d)
+        guard let h, let vh, h >= CARRY_FROM, t >= h, let last = carryMinutes.last else { return base }
+        let k = (t - h) / 60
+        guard k < last else { return base }
+        let atHandover = speedKmh(sinceRoll: h, sinceDescent: nil)
+        guard atHandover > 0 else { return base }
+        let ratio = min(max(vh / atHandover, 0.6), 1.4)
+        return base * (1 + (ratio - 1) * linear(carryMinutes, carryShare, at: k))
+    }
+
+    private static func linear(_ x: [Double], _ y: [Double], at v: Double) -> Double {
+        guard let first = x.first, let last = x.last else { return 0 }
+        if v <= first { return y[0] }
+        if v >= last { return y[y.count - 1] }
+        var i = 0
+        while i + 1 < x.count, x[i + 1] < v { i += 1 }
+        return y[i] + (y[i + 1] - y[i]) * (v - x[i]) / (x[i + 1] - x[i])
+    }
+
     /// Linear between minute midpoints, held at both ends.
     private static func interpolate(_ a: [Double], at minutes: Double) -> Double {
         guard let first = a.first, let last = a.last else { return 0 }

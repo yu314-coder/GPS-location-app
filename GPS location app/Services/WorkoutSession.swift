@@ -301,6 +301,8 @@ class WorkoutSession: ObservableObject {
     /// what the ground engines missed since the roll began is paid back. Without the cabin confirming a climb
     /// within TAKEOFF_CONFIRM_WITHIN of the roll, the ground engines answer again.
     private var rollTrack: (start: Date, integrated: Double, counted: Double)?
+    /// Where the takeoff measurement handed over to FlightProfile, and at what speed (build 117).
+    private var takeoffHandover: (sinceRoll: TimeInterval, kmh: Double)?
     private var confirmedRollAnchor = -1
     private static let TAKEOFF_CONFIRM_WITHIN: TimeInterval = 240
     /// Learns speed from the accelerometer's spectral signature, on-device, from GPS labels.
@@ -2423,7 +2425,7 @@ class WorkoutSession: ObservableObject {
         airborneSince = nil; airDistanceOwed = 0
         flightHeading = FlightHeading(); cabinReachedCruise = false
         flightBaseAltitude = 0; lastPointHadFlightAltitude = false
-        rollTrack = nil; confirmedRollAnchor = -1
+        rollTrack = nil; confirmedRollAnchor = -1; takeoffHandover = nil
         locationManager.freezeDeclination = false   // this trip's own, until its first point
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
         driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
@@ -3928,6 +3930,7 @@ class WorkoutSession: ObservableObject {
            now.timeIntervalSince(start) <= Self.ROLL_CONFIRM_WITHIN {
             takeoffRollAt = start
             confirmedRollAnchor = launchIntegrator.anchorCount
+            takeoffHandover = nil
             flightHeading.confirmRoll(startedAt: start)
         }
     }
@@ -3948,8 +3951,15 @@ class WorkoutSession: ObservableObject {
     /// FlightProfile's speed now, in m/s; nil without a takeoff roll.
     private func flightProfileSpeed(at now: Date) -> Double? {
         guard let roll = flightRollStart(at: now) else { return nil }
+        // The handover: the first moment the measured takeoff of this roll stopped integrating.
+        if takeoffHandover == nil, roll == takeoffRollAt, launchIntegrator.isHolding,
+           launchIntegrator.anchorCount == confirmedRollAnchor, let held = launchIntegrator.speed, held > 0 {
+            takeoffHandover = (now.timeIntervalSince(roll), held * 3.6)
+        }
         let descent = flightPhase.descentStartedAt.map { now.timeIntervalSince($0) }
-        return FlightProfile.speedKmh(sinceRoll: now.timeIntervalSince(roll), sinceDescent: descent) / 3.6
+        return FlightProfile.speedKmh(sinceRoll: now.timeIntervalSince(roll), sinceDescent: descent,
+                                      handoverSinceRoll: takeoffHandover?.sinceRoll,
+                                      handoverKmh: takeoffHandover?.kmh) / 3.6
     }
 
     /// The speed in the air: the takeoff integration while it runs, then FlightProfile.
@@ -3984,8 +3994,9 @@ class WorkoutSession: ObservableObject {
             let step = min(10, end.timeIntervalSince(t))
             let mid = t.addingTimeInterval(step / 2)
             let sinceDescent = descent.map { mid.timeIntervalSince($0) }
-            total += FlightProfile.speedKmh(sinceRoll: mid.timeIntervalSince(roll),
-                                            sinceDescent: sinceDescent) / 3.6 * step
+            total += FlightProfile.speedKmh(sinceRoll: mid.timeIntervalSince(roll), sinceDescent: sinceDescent,
+                                            handoverSinceRoll: takeoffHandover?.sinceRoll,
+                                            handoverKmh: takeoffHandover?.kmh) / 3.6 * step
             t = t.addingTimeInterval(step)
         }
         return total
