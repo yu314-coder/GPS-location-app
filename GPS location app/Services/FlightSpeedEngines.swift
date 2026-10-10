@@ -4,13 +4,16 @@ import Foundation
 /// FlightProfile's medians; these two are only written to the log, every airborne second, so a real flight can grade
 /// them on the same seconds.
 ///
-/// NETWORK (build 118): the neural form of FlightProfile. A 5-32-32-1 network on the same two clocks, minutes since
-/// the takeoff roll and minutes since the cabin started down (clockFeatures), trained with an L1 loss (so it fits a
-/// median) on the same pooled data: NASA's 302 DASHlink flights and 1,194 jet takeoffs from a day of the OpenSky
-/// Network's ADS-B data (see FlightProfile). Held out by aircraft it came within 10% of the distance on 76% of
-/// OpenSky flights (the medians as shipped: 72%) and on 48% of NASA's (36%), mostly from the descent; on BR215 it counted 95%
-/// like the medians, and on August, without the takeoff's measured speed, it read minutes 1-3 42 km/h off GPS where
-/// the medians with that speed carried read 17. So it stays in the log until a real flight shows it ahead.
+/// NETWORK (build 119): the neural form, as a correction on top of FlightProfile. A 8-32-32-1 network reads the
+/// same two clocks (minutes since the takeoff roll and since the cabin started down, clockFeatures) and the
+/// difference the takeoff measured at its handover, and gives log(real / FlightProfile's carried speed); the speed is
+/// the profile times its exponential. Trained with an L1 loss on the pooled data (NASA's 302 DASHlink flights and
+/// 1,194 jet takeoffs from a day of the OpenSky Network's ADS-B, see FlightProfile). Held out by aircraft it came
+/// within 10% of the distance on 76% of OpenSky flights and 49% of NASA's, against the profile's 72% and 36%, mostly
+/// from the descent (it learns that a short flight comes down slower). On BR215 it counted 95% like the profile; on
+/// August it read 20, 15 and 25 km/h off GPS in minutes 1-3, 3-5 and 5-10 where the profile read 17, 8 and 15. Build
+/// 118 logged a plain network on the clocks alone, which read August's first minutes 42 km/h off. Still logged only,
+/// beside the profile, until a real flight shows it ahead.
 ///
 /// STORE: the build-64 store of NASA examples read by the phone's tilt from the still moment before the roll. On
 /// BR215 the 16 Pro turned over in its bag at the takeoff push and its tilt stayed above anything NASA flew; it is
@@ -30,6 +33,13 @@ enum FlightSpeedEngines {
         guard let d, d >= 0 else { return [m / 60, log1p(m), 0, 0, 0] }
         let k = d / 60
         return [m / 60, log1p(m), 1, k / 60, log1p(k)]
+    }
+
+    /// The correction network's inputs: clockFeatures and g = log(takeoff's handover speed / FlightProfile's speed
+    /// then), 0 when nothing was carried, as itself and fading over 5 and 20 minutes (osday_resid.py).
+    static func correctionFeatures(sinceRoll t: TimeInterval, sinceDescent d: TimeInterval?, handoverLogRatio g: Double) -> Features {
+        let m = max(t, 0) / 60
+        return clockFeatures(sinceRoll: t, sinceDescent: d) + [g, g * exp(-m / 5), g * exp(-m / 20)]
     }
 
     struct Network {
@@ -55,12 +65,14 @@ enum FlightSpeedEngines {
             w1 = f.w1; b1 = f.b1; w2 = f.w2; b2 = f.b2; w3 = f.w3; b3 = f.b3; outKmh = f.out_kmh
         }
         /// Ground speed in km/h. Inputs outside what the flights covered are held at the edge.
-        func speedKmh(_ x: Features) -> Double {
+        func speedKmh(_ x: Features) -> Double { max(0, value(x)) }
+        /// The output as it is, unfloored: for the correction network, the log-ratio to FlightProfile.
+        func value(_ x: Features) -> Double {
             guard x.count == mean.count else { return 0 }
             let z = mean.indices.map { (min(max(x[$0], fmin[$0]), fmax[$0]) - mean[$0]) / scale[$0] }
             let h1 = zip(w1, b1).map { row, b in max(0, zip(row, z).reduce(b) { $0 + $1.0 * $1.1 }) }
             let h2 = zip(w2, b2).map { row, b in max(0, zip(row, h1).reduce(b) { $0 + $1.0 * $1.1 }) }
-            return max(0, zip(w3, h2).reduce(b3) { $0 + $1.0 * $1.1 } * outKmh)
+            return zip(w3, h2).reduce(b3) { $0 + $1.0 * $1.1 } * outKmh
         }
     }
 

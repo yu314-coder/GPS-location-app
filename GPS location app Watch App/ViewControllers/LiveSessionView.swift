@@ -17,14 +17,12 @@ struct LiveSessionView: View {
 
     // Performance optimization: Throttled UI updates
     @State private var displayMetrics = FlightMetrics()
-    @State private var elapsedTime: TimeInterval = 0
     @State private var timeSinceLastGPS: TimeInterval = 0
 
     // Timer for smooth UI updates (updates every 1 second instead of every GPS point)
     let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     // High-precision timer for workout time display (0.01s updates)
-    let precisionTimer = Timer.publish(every: 0.01, on: .main, in: .common).autoconnect()
 
     // Available workout types
     let workoutTypes: [(HKWorkoutActivityType, String, String)] = [
@@ -123,20 +121,16 @@ struct LiveSessionView: View {
                 }
             }
         }
-        .onReceive(precisionTimer) { _ in
-            // Update elapsed time every 0.01s for high-precision timer display
-            // IMPORTANT: Only update when active AND not paused
-            // The clock stops while paused and carries on from there, rather than jumping by the
-            // length of the pause when the workout resumes.
-            guard workoutSession.isActive else { return }
+        // The clock stops while paused and carries on from there, rather than jumping by the length of the
+        // pause when the workout resumes (the clock itself is WatchWorkoutClock).
+        .onAppear { if workoutSession.isPaused, pausedSince == nil { pausedSince = Date() } }
+        .onChange(of: workoutSession.isPaused) { _, paused in
             let now = Date()
-            if workoutSession.isPaused {
+            if paused {
                 if pausedSince == nil { pausedSince = now }
-            } else {
-                if let since = pausedSince { pausedTotal += now.timeIntervalSince(since); pausedSince = nil }
-                elapsedTime = max(0, now.timeIntervalSince(workoutSession.flight.startDate) - pausedTotal)
+            } else if let since = pausedSince {
+                pausedTotal += now.timeIntervalSince(since); pausedSince = nil
             }
-            // When paused, elapsedTime stays frozen at the value it had when pause was pressed
         }
     }
 
@@ -175,7 +169,8 @@ struct LiveSessionView: View {
                 // Metrics (using throttled display metrics for smooth UI)
                 if workoutSession.isActive {
                     // High-precision timer display (0.01s precision)
-                    Text(formatPreciseTime(elapsedTime))
+                    WatchWorkoutClock(start: workoutSession.flight.startDate, pausedTotal: pausedTotal,
+                                      pausedSince: pausedSince, format: formatPreciseTime)
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .foregroundColor(.green)
@@ -878,5 +873,23 @@ struct GPSTrackingStatusView: View {
 struct LiveSessionView_Previews: PreviewProvider {
     static var previews: some View {
         LiveSessionView()
+    }
+}
+
+/// THE WORKOUT CLOCK ON ITS OWN (build 119). A timer firing 100 times a second used to rebuild the whole
+/// workout list with it, in the background too (the iPhone's CPU reports on BR215 were mostly SwiftUI). A
+/// TimelineView redraws only this text, 20 times a second while it is on screen; with the wrist down
+/// watchOS slows it on its own.
+private struct WatchWorkoutClock: View {
+    let start: Date
+    let pausedTotal: TimeInterval
+    let pausedSince: Date?
+    let format: (TimeInterval) -> String
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.05)) { context in
+            let now = pausedSince ?? context.date
+            Text(format(max(0, now.timeIntervalSince(start) - pausedTotal)))
+        }
     }
 }

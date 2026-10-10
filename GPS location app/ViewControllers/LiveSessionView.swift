@@ -16,9 +16,6 @@ struct LiveSessionView: View {
     @State private var completedFlight: Flight?
     @State private var isStopping = false
 
-    // High-precision timer for smooth workout time display (0.01s updates)
-    @State private var displayTime: TimeInterval = 0
-    let precisionTimer = Timer.publish(every: 0.01, on: .main, in: .common).autoconnect()
 
     // Available workout types
     let workoutTypes: [(HKWorkoutActivityType, String, String)] = [
@@ -65,7 +62,7 @@ struct LiveSessionView: View {
                                 Text(getWorkoutName(selectedWorkoutType))
                                     .font(.headline)
                                 Spacer()
-                                Text(formatDuration(displayTime))
+                                WorkoutClockText(workoutSession: workoutSession, format: formatDuration)
                                     .font(.headline)
                                     .foregroundColor(.blue)
                             }
@@ -814,14 +811,6 @@ struct LiveSessionView: View {
                 }
             }
         }
-        .onReceive(precisionTimer) { _ in
-            // Update timer every 0.01s for smooth, precise display
-            // IMPORTANT: Only update when active AND not paused
-            if workoutSession.isActive && !workoutSession.isPaused {
-                displayTime = workoutSession.activeDuration
-            }
-            // When paused, displayTime stays frozen at the value it had when pause was pressed
-        }
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {
@@ -1078,5 +1067,22 @@ private struct LiveMetricCard: View {
 struct LiveSessionView_Previews: PreviewProvider {
     static var previews: some View {
         LiveSessionView()
+    }
+}
+
+/// THE WORKOUT CLOCK ON ITS OWN (build 119). It used to be a timer firing 100 times a second on the whole
+/// workout screen, so every tick rebuilt every chart, card and list on it - in the background as well, with
+/// the screen off. On BR215 iOS sent CPU reports through the flight (48-90 s of CPU in every 1-3 minutes),
+/// and SwiftUI was in 83 of their 106 samples. A TimelineView redraws only this text, 20 times a second,
+/// and only while it is on screen. activeDuration already stands still while the workout is paused.
+private struct WorkoutClockText: View {
+    let workoutSession: WorkoutSession
+    let format: (TimeInterval) -> String
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.05)) { _ in
+            Text(format(workoutSession.activeDuration))
+                .monospacedDigit()
+        }
     }
 }

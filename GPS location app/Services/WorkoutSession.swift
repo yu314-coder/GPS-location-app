@@ -63,12 +63,18 @@ class WorkoutSession: ObservableObject {
         default: return 2.0
         }
     }
+    /// How often the whole workout is saved for recovery. The save encodes every route point and recorded sample,
+    /// so its cost grows with the workout: hours into a flight (a point a second) it was tens of megabytes of JSON
+    /// every five seconds. Build 119 spaces it out as the route grows, a second per 60 points, at most two
+    /// minutes; the debug logs are streamed to disk as they go and do not depend on it.
     private var ACTIVE_WORKOUT_AUTOSAVE_INTERVAL: TimeInterval {
+        let base: TimeInterval
         switch thermalState {
-        case .critical: return 30.0
-        case .serious: return 15.0
-        default: return 5.0
+        case .critical: base = 30.0
+        case .serious: base = 15.0
+        default: base = 5.0
         }
+        return min(max(base, Double(flight.locations.count) / 60), max(base, 120))
     }
     private let ACTIVE_WORKOUT_MAX_RESTORE_AGE: TimeInterval = 24 * 60 * 60
     private let activeWorkoutSnapshotQueue = DispatchQueue(
@@ -5034,15 +5040,26 @@ class WorkoutSession: ObservableObject {
             }
         }
         let bothSpeeds = learnedSpeed.bothAnswers(airborne: isAirborneForEstimation)
-        // And both flight engines on every airborne second, used or not: the joint network on the flight's two
-        // clocks (build 118), the old store on the phone's tilt. Neither drives the speed.
+        // And both flight engines on every airborne second, used or not: the correction network on top of
+        // FlightProfile (build 119), the old store on the phone's tilt. Neither drives the speed.
         if isAirborneForEstimation {
-            let clock = flightRollStart(at: now).map {
-                FlightSpeedEngines.clockFeatures(sinceRoll: now.timeIntervalSince($0),
-                                                 sinceDescent: flightPhase.descentStartedAt.map { now.timeIntervalSince($0) })
+            let network: Double? = flightRollStart(at: now).flatMap { roll in
+                FlightSpeedEngines.Network.bundled.map { net in
+                    let t = now.timeIntervalSince(roll), d = flightPhase.descentStartedAt.map { now.timeIntervalSince($0) }
+                    let h = takeoffHandover
+                    var g = 0.0
+                    if let h, h.sinceRoll >= FlightProfile.CARRY_FROM, h.kmh > 0 {
+                        let then = FlightProfile.speedKmh(sinceRoll: h.sinceRoll, sinceDescent: nil)
+                        if then > 0 { g = log(h.kmh / then) }
+                    }
+                    let base = FlightProfile.speedKmh(sinceRoll: t, sinceDescent: d,
+                                                      handoverSinceRoll: h?.sinceRoll, handoverKmh: h?.kmh)
+                    let x = FlightSpeedEngines.correctionFeatures(sinceRoll: t, sinceDescent: d, handoverLogRatio: g)
+                    return base * exp(min(max(net.value(x), -1), 1)) / 3.6
+                }
             }
             let tilt = flightTilt.features
-            lastFlightAnswers = (clock.flatMap { x in FlightSpeedEngines.Network.bundled.map { $0.speedKmh(x) / 3.6 } },
+            lastFlightAnswers = (network,
                                  tilt.flatMap { x in FlightSpeedEngines.Store.bundled.map { $0.speedKmh(x) / 3.6 } }, tilt)
         } else {
             lastFlightAnswers = (nil, nil, nil)
