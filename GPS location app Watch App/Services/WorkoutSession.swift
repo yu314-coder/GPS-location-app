@@ -221,6 +221,8 @@ class WorkoutSession: NSObject, ObservableObject {
     }
     private var vehicleContextIsCurrent: Bool {
         if isVehicleByActivity { return true }
+        // A confirmed flight is a vehicle, and Core Motion has no aircraft activity (build 114).
+        if watchFlightRoll(at: Date()) != nil { return true }
         guard let seen = lastVehicleEvidenceTime else { return false }
         return Date().timeIntervalSince(seen) < VEHICLE_EVIDENCE_TTL
     }
@@ -371,6 +373,9 @@ class WorkoutSession: NSObject, ObservableObject {
     /// then 200 km/h within 30 s. A wrist is not a bag, so this is untested on a real flight; the
     /// cabin's own confirmation (FlightPhaseEstimator.climbConfirmed) backs it up.
     private var launchIntegrator = LaunchIntegrator()
+    /// Which way the plane is going, from its own sensors (build 114): see FlightHeading (the iPhone's file).
+    private var flightHeading = FlightHeading()
+    private var cabinReachedCruise = false
     private var ownTakeoffRollAt: Date?
     private var rollCandidateAt: Date?
     private var rollCandidateAnchor = -1
@@ -389,10 +394,12 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         guard let v = launchIntegrator.speed else { return }
         let now = Date()
-        if v < 15.43 { rollCandidateAt = nil } else if rollCandidateAt == nil { rollCandidateAt = now }
+        if v < 15.43 { rollCandidateAt = nil } else if rollCandidateAt == nil {
+            rollCandidateAt = now; flightHeading.beginRoll(at: now)
+        }
         if let start = rollCandidateAt, v >= 55.6, ownTakeoffRollAt != start,
            now.timeIntervalSince(start) <= 30 {
-            ownTakeoffRollAt = start
+            ownTakeoffRollAt = start; flightHeading.confirmRoll(startedAt: start)
         }
     }
 
@@ -653,9 +660,13 @@ class WorkoutSession: NSObject, ObservableObject {
             self.flightPhase.ingest(relativeAltitude: relativeAltitude, at: timestamp)
             if self.flightPhase.isAirborne {
                 if self.watchAirborneSince == nil { self.watchAirborneSince = timestamp }
+                if self.flightPhase.phase == .cruise { self.cabinReachedCruise = true }
             } else {
+                if self.watchAirborneSince != nil { self.flightHeading.endFlight(); self.cabinReachedCruise = false }
                 self.watchAirborneSince = nil
             }
+            self.flightHeading.cruising = self.cabinReachedCruise
+                || (self.ownTakeoffRollAt.map { timestamp.timeIntervalSince($0) > 15 * 60 } ?? false)
             self.currentMetrics.updateWithBarometricAltitude(
                 relativeAltitude: relativeAltitude,
                 pressure: pressure,
@@ -857,6 +868,7 @@ class WorkoutSession: NSObject, ObservableObject {
             learnedSpeed.beginSession()
             flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
             launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1
+            flightHeading = FlightHeading(); cabinReachedCruise = false
             flightSpeedForced = false; flightStatus = "On the ground"
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             lastGoodFixTimeWatch = nil; latestGPSFixTimeWatch = nil
@@ -1985,6 +1997,16 @@ class WorkoutSession: NSObject, ObservableObject {
                                          rotation: [rot.x, rot.y, rot.z],
                                          dt: sampleDt, airborne: self.flightPhase.isAirborne)
             self.noteTakeoffRoll()
+            // The plane's heading (build 114): the roll's push in the world frame (axW north, ayW west),
+            // the rotation about down and the felt load.
+            let nowSample = Date()
+            self.flightHeading.addRollAcceleration(north: axW, east: -ayW, at: nowSample)
+            let gmag = (rawG.x * rawG.x + rawG.y * rawG.y + rawG.z * rawG.z).squareRoot()
+            if gmag > 0.5 {
+                let fx = rawA.x + rawG.x, fy = rawA.y + rawG.y, fz = rawA.z + rawG.z
+                self.flightHeading.ingest(rotationAboutDown: (rot.x * rawG.x + rot.y * rawG.y + rot.z * rawG.z) / gmag * 180 / .pi,
+                                          force: (fx * fx + fy * fy + fz * fz).squareRoot(), dt: sampleDt, at: nowSample)
+            }
             let ua = motion.userAcceleration
             lastMotionAccelMagnitude = sqrt(ua.x*ua.x + ua.y*ua.y + ua.z*ua.z) * 9.80665
             // Heading-change from the gyro's component about the world-VERTICAL (gravity) axis
@@ -2765,7 +2787,7 @@ class WorkoutSession: NSObject, ObservableObject {
             motionVelX = 0
             motionVelY = 0
             accelSource = "PDR(still)"
-        } else if pedometerIsCounting, let pedometerTotal = pedometerSinceGapStart {
+        } else if pedometerIsCounting, watchFlightRoll(at: now) == nil, let pedometerTotal = pedometerSinceGapStart {
             // Smooth speed from cumulative-distance updates, and lay distance down PER TICK
             // along the CURRENT heading — not the raw cumulative delta, whose sparse jumps
             // drew one long straight segment ignoring the turns walked during the gap.
@@ -2865,6 +2887,8 @@ class WorkoutSession: NSObject, ObservableObject {
                 // watchFlightSpeed). Ahead of the ground engines, which were taught on roads.
                 motionFallbackSpeed = flying
                 accelSource = "FLIGHT(profile)"
+                // Its own measured direction when it felt the takeoff; the compass is useless in a cabin.
+                if let planeHeading = flightHeading.heading { motionHeadingDegrees = planeHeading }
             } else if vehicleContextIsCurrent,
                       let learned = ownAnswer ?? (relayedSpeed == nil ? recentLearnedAnswer : nil) {
                 // ITS OWN LEARNED SPEED. Ranked below the iPhone's estimate in Auto — the phone

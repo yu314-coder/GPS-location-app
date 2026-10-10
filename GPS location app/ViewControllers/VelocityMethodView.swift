@@ -452,6 +452,9 @@ struct VelocityMethodView: View {
                 graded by the aircraft's public ADS-B track it counted 87%; the earlier tilt-reading \
                 engines (shown above) counted 39% on a phone in a bag. What it gives is a typical \
                 airliner's speed, so wind or a faster aircraft will move it. \
+                The direction in the air no longer uses the compass, which a cabin disturbs: it starts \
+                from the direction of the takeoff roll and follows the gyroscope, with its drift learned \
+                on straight flight, counting only turns the cabin can feel once in cruise. \
                 Direction in the air: \(N.FlAir)° median error.
                 """)
                 .font(.caption2).foregroundStyle(.secondary)

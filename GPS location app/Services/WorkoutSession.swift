@@ -286,6 +286,11 @@ class WorkoutSession: ObservableObject {
     /// function of time, so what it would have counted is known; it is paid back at no more than the
     /// current speed again per tick, so no single step of the route jumps.
     private var airDistanceOwed: Double = 0
+    /// Which way the plane is going (build 114): the takeoff roll's direction, then the gyro with its bias
+    /// learned and taken off, through the climb every second and in cruise only in felt turns. See
+    /// FlightHeading; it replaces the compass in the air, which a cabin ruins.
+    private var flightHeading = FlightHeading()
+    private var cabinReachedCruise = false
     /// Learns speed from the accelerometer's spectral signature, on-device, from GPS labels.
     /// Replaces the hand-crafted vibration model — see LearnedSpeedEstimator for the measurements
     /// showing why a learned lookup finds what five hand-built features could not.
@@ -2345,6 +2350,8 @@ class WorkoutSession: ObservableObject {
             guard let self else { return }
             self.vibrationSpeed.ingest(ax: north, ay: east, az: up, dt: dt)
             self.learnedSpeed.ingest(vertical: up)
+            self.flightHeading.addRollAcceleration(north: north - self.accelBiasNorth,
+                                                   east: east - self.accelBiasEast, at: Date())
             // Keep the raw vertical trace alongside the model's own view of it. Everything the
             // estimator computes is a lossy summary; a spectrum can only be taken from this.
             // Stamp the unprocessed sensor values onto the next raw row.
@@ -2362,6 +2369,14 @@ class WorkoutSession: ObservableObject {
                 rotation: [motion.rotationRate.x, motion.rotationRate.y, motion.rotationRate.z],
                 dt: dt, airborne: self.isAirborneForEstimation)
             self.noteTakeoffRoll()
+            let g = motion.gravity, w = motion.rotationRate, ua = motion.userAcceleration
+            let gm = (g.x * g.x + g.y * g.y + g.z * g.z).squareRoot()
+            if gm > 0.5 {
+                let down = (w.x * g.x + w.y * g.y + w.z * g.z) / gm * 180 / .pi
+                let fx = ua.x + g.x, fy = ua.y + g.y, fz = ua.z + g.z
+                self.flightHeading.ingest(rotationAboutDown: down, force: (fx * fx + fy * fy + fz * fz).squareRoot(),
+                                          dt: dt, at: Date())
+            }
             self.flightTilt.ingest(gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
                                    dt: dt, launch: self.launchIntegrator)
             self.sessionDiagnostics.noteDeviceMotion(
@@ -2393,6 +2408,7 @@ class WorkoutSession: ObservableObject {
         lastFlightAnswers = (nil, nil, nil)
         takeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1
         airborneSince = nil; airDistanceOwed = 0
+        flightHeading = FlightHeading(); cabinReachedCruise = false
         locationManager.freezeDeclination = false   // this trip's own, until its first point
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
         driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
@@ -3889,10 +3905,12 @@ class WorkoutSession: ObservableObject {
             rollCandidateAt = nil
         } else if rollCandidateAt == nil {
             rollCandidateAt = now
+            flightHeading.beginRoll(at: now)
         }
         if let start = rollCandidateAt, v >= Self.ROLL_CONFIRM_SPEED, takeoffRollAt != start,
            now.timeIntervalSince(start) <= Self.ROLL_CONFIRM_WITHIN {
             takeoffRollAt = start
+            flightHeading.confirmRoll(startedAt: start)
         }
     }
 
@@ -4066,9 +4084,15 @@ class WorkoutSession: ObservableObject {
         }
         if flightPhase.isAirborne {
             if airborneSince == nil { airborneSince = now }
+            if flightPhase.phase == .cruise { cabinReachedCruise = true }
         } else if airborneSince != nil {
             airborneSince = nil; airDistanceOwed = 0
+            cabinReachedCruise = false; flightHeading.endFlight()
         }
+        // After the climb only felt turns count: from the cabin's first cruise, or 15 minutes after
+        // the roll with no barometer (NASA's median climb took 14).
+        flightHeading.cruising = cabinReachedCruise
+            || (takeoffRollAt.map { now.timeIntervalSince($0) > 15 * 60 } ?? false)
 
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false
         let velHeading = nextSpeed > 0.1
@@ -4310,6 +4334,13 @@ class WorkoutSession: ObservableObject {
         // integrated velocity, so when that diverges it dragged the heading away from the
         // compass every tick and the correction could never win.
 
+        // IN THE AIR THE COMPASS IS NOT USED (build 114): the plane's heading is FlightHeading's, from the
+        // takeoff roll this flight measured.
+        if isAirborneForEstimation, let roll = flightRollStart(at: now), roll == takeoffRollAt,
+           let planeHeading = flightHeading.heading {
+            motionHeadingDegrees = planeHeading
+            resolvedHeading = planeHeading
+        }
         let headingDegrees = resolvedHeading
             ?? normalizedHeading(
                 // Prefer GPS COURSE (true direction of travel) over the compass: inside a
