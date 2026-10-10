@@ -295,6 +295,14 @@ class WorkoutSession: ObservableObject {
     /// on the route's points while flying; never the cabin pressure, which is not the plane's height.
     private var flightBaseAltitude = 0.0
     private var lastPointHadFlightAltitude = false
+    /// THE ROLL ITSELF (build 116). The measured takeoff used to be shown only once the cabin said airborne,
+    /// about two minutes after liftoff, so the roll read 2-41 km/h while the plane went from 0 to 293 (August,
+    /// GPS). Now the flight takes over as soon as the roll is confirmed (200 km/h within 30 s of 30 kt), and
+    /// what the ground engines missed since the roll began is paid back. Without the cabin confirming a climb
+    /// within TAKEOFF_CONFIRM_WITHIN of the roll, the ground engines answer again.
+    private var rollTrack: (start: Date, integrated: Double, counted: Double)?
+    private var confirmedRollAnchor = -1
+    private static let TAKEOFF_CONFIRM_WITHIN: TimeInterval = 240
     /// Learns speed from the accelerometer's spectral signature, on-device, from GPS labels.
     /// Replaces the hand-crafted vibration model — see LearnedSpeedEstimator for the measurements
     /// showing why a learned lookup finds what five hand-built features could not.
@@ -1327,6 +1335,7 @@ class WorkoutSession: ObservableObject {
         // held. This uses the pressure profile only to say WHETHER we are flying — never how
         // fast, which cabin pressure cannot tell.
         if flightPhase.isAirborne { return true }
+        if takeoffUnderway(at: Date()) { return true }
         if activityIsAutomotive { return true }
         guard let seen = lastVehicleEvidenceTime else { return false }
         return Date().timeIntervalSince(seen) < VEHICLE_EVIDENCE_TTL
@@ -2371,7 +2380,7 @@ class WorkoutSession: ObservableObject {
                 userAcceleration: [motion.userAcceleration.x, motion.userAcceleration.y, motion.userAcceleration.z],
                 gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
                 rotation: [motion.rotationRate.x, motion.rotationRate.y, motion.rotationRate.z],
-                dt: dt, airborne: self.isAirborneForEstimation)
+                dt: dt, airborne: self.isAirborneForEstimation || self.takeoffUnderway(at: Date()))
             self.noteTakeoffRoll()
             let g = motion.gravity, w = motion.rotationRate, ua = motion.userAcceleration
             let gm = (g.x * g.x + g.y * g.y + g.z * g.z).squareRoot()
@@ -2414,6 +2423,7 @@ class WorkoutSession: ObservableObject {
         airborneSince = nil; airDistanceOwed = 0
         flightHeading = FlightHeading(); cabinReachedCruise = false
         flightBaseAltitude = 0; lastPointHadFlightAltitude = false
+        rollTrack = nil; confirmedRollAnchor = -1
         locationManager.freezeDeclination = false   // this trip's own, until its first point
         headingDriftDegrees = 0; headingDriftSeconds = 0; headingDriftRate = 0
         driftFromStops = 0; recentFieldStrength = []; recentFieldDip = []; magnetometerAnchors = []
@@ -3908,13 +3918,16 @@ class WorkoutSession: ObservableObject {
         let now = Date()
         if v < Self.ROLL_START_SPEED {
             rollCandidateAt = nil
+            if let rt = rollTrack, rt.start != takeoffRollAt { rollTrack = nil }
         } else if rollCandidateAt == nil {
             rollCandidateAt = now
             flightHeading.beginRoll(at: now)
+            rollTrack = (now, 0, 0)
         }
         if let start = rollCandidateAt, v >= Self.ROLL_CONFIRM_SPEED, takeoffRollAt != start,
            now.timeIntervalSince(start) <= Self.ROLL_CONFIRM_WITHIN {
             takeoffRollAt = start
+            confirmedRollAnchor = launchIntegrator.anchorCount
             flightHeading.confirmRoll(startedAt: start)
         }
     }
@@ -3940,8 +3953,16 @@ class WorkoutSession: ObservableObject {
     }
 
     /// The speed in the air: the takeoff integration while it runs, then FlightProfile.
+    /// The takeoff roll has been confirmed but the cabin has not yet said airborne (build 116).
+    private func takeoffUnderway(at now: Date) -> Bool {
+        guard let roll = takeoffRollAt, !flightPhase.isAirborne else { return false }
+        return now.timeIntervalSince(roll) < Self.TAKEOFF_CONFIRM_WITHIN
+    }
+
     private func airSpeed(at now: Date) -> (speed: Double, tag: String)? {
-        if let launch = launchIntegrator.speed, launch > 0, !launchIntegrator.isHolding {
+        // The measured takeoff while its integration runs, but only the integration that measured the roll.
+        if let launch = launchIntegrator.speed, launch > 0, !launchIntegrator.isHolding,
+           takeoffRollAt == nil || launchIntegrator.anchorCount == confirmedRollAnchor {
             return (launch, "LAUNCH")
         }
         return flightProfileSpeed(at: now).map { ($0, "FLIGHT(profile)") }
@@ -3949,7 +3970,7 @@ class WorkoutSession: ObservableObject {
 
     /// The plane's typical height (m) at `time`, in a flight with a takeoff roll; nil otherwise.
     private func flightAltitude(at time: Date) -> Double? {
-        guard isAirborneForEstimation, let roll = flightRollStart(at: time) else { return nil }
+        guard isAirborneForEstimation || takeoffUnderway(at: time), let roll = flightRollStart(at: time) else { return nil }
         let descent = flightPhase.descentStartedAt.map { time.timeIntervalSince($0) }
         return flightBaseAltitude + FlightProfile.altitudeMeters(sinceRoll: time.timeIntervalSince(roll), sinceDescent: descent)
     }
@@ -4104,6 +4125,8 @@ class WorkoutSession: ObservableObject {
             airborneSince = nil; airDistanceOwed = 0
             cabinReachedCruise = false; flightHeading.endFlight()
         }
+        // A roll that never became a flight leaves nothing owed.
+        if !flightPhase.isAirborne, !takeoffUnderway(at: now) { airDistanceOwed = 0 }
         // After the climb only felt turns count: from the cabin's first cruise, or 15 minutes after
         // the roll with no barometer (NASA's median climb took 14).
         flightHeading.cruising = cabinReachedCruise
@@ -4351,7 +4374,7 @@ class WorkoutSession: ObservableObject {
 
         // IN THE AIR THE COMPASS IS NOT USED (build 114): the plane's heading is FlightHeading's, from the
         // takeoff roll this flight measured.
-        if isAirborneForEstimation, let roll = flightRollStart(at: now), roll == takeoffRollAt,
+        if isAirborneForEstimation || takeoffUnderway(at: now), let roll = flightRollStart(at: now), roll == takeoffRollAt,
            let planeHeading = flightHeading.heading {
             motionHeadingDegrees = planeHeading
             resolvedHeading = planeHeading
@@ -4548,7 +4571,7 @@ class WorkoutSession: ObservableObject {
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
             sourceTag = "PDR"
-        } else if isAirborneForEstimation, vehicleContextIsCurrent,
+        } else if isAirborneForEstimation || takeoffUnderway(at: now), vehicleContextIsCurrent,
                   learnedSpeed.estimate(airborne: true) == nil,
                   let air = airSpeed(at: now) {
             // IN THE AIR WITH NOTHING LEARNED FOR THE AIR: THE TAKEOFF, INTEGRATED.
@@ -4988,6 +5011,17 @@ class WorkoutSession: ObservableObject {
         updateHeadingDrift(dt: dt, source: sourceTag)
         learnOffsetFromTurns(dt: dt, source: sourceTag)
         // Both engines, whichever is driving, so a log can compare them on the same seconds.
+        // THE ROLL'S FIRST SECONDS (build 116): until the roll is confirmed the ground engines answer; once it
+        // is, what the integration measured since the roll began, less what was counted, is owed.
+        if let rt = rollTrack {
+            if takeoffRollAt == rt.start {
+                airDistanceOwed += max(0, rt.integrated - rt.counted)
+                flightBaseAltitude = flight.locations.last(where: { !$0.isEstimated })?.altitude ?? flightBaseAltitude
+                rollTrack = nil
+            } else {
+                rollTrack = (rt.start, rt.integrated + (launchIntegrator.speed ?? 0) * dt, rt.counted + distance)
+            }
+        }
         let bothSpeeds = learnedSpeed.bothAnswers(airborne: isAirborneForEstimation)
         // And both flight engines on every airborne second, used or not.
         if isAirborneForEstimation, let x = flightTilt.features {

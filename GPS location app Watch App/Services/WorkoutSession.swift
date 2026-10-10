@@ -379,6 +379,16 @@ class WorkoutSession: NSObject, ObservableObject {
     private var ownTakeoffRollAt: Date?
     private var rollCandidateAt: Date?
     private var rollCandidateAnchor = -1
+    private var confirmedRollAnchor = -1
+
+    /// A takeoff roll (the watch's own or the iPhone's) in the last 4 minutes, before the cabin has said
+    /// airborne (build 116): the flight already counts, from the roll itself.
+    private func watchTakeoffUnderway(at now: Date) -> Bool {
+        guard !flightPhase.isAirborne else { return false }
+        return [relayedTakeoffRoll, ownTakeoffRollAt].compactMap({ $0 }).contains { roll in
+            roll <= now && now.timeIntervalSince(roll) < 240
+        }
+    }
 
     /// THE FLIGHT BUTTON (build 113). On: the wearer says this is a flight, so the cabin leaving the
     /// ground is enough and the watch's own flight speed leads even while an iPhone that has not
@@ -399,7 +409,8 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         if let start = rollCandidateAt, v >= 55.6, ownTakeoffRollAt != start,
            now.timeIntervalSince(start) <= 30 {
-            ownTakeoffRollAt = start; flightHeading.confirmRoll(startedAt: start)
+            ownTakeoffRollAt = start; confirmedRollAnchor = launchIntegrator.anchorCount
+            flightHeading.confirmRoll(startedAt: start)
         }
     }
 
@@ -407,7 +418,7 @@ class WorkoutSession: NSObject, ObservableObject {
     /// each only if it came within 15 minutes before the cabin left the ground; otherwise two
     /// minutes before the cabin left the ground, once the climb confirms it or the button is on.
     private func watchFlightRoll(at now: Date) -> Date? {
-        guard flightPhase.isAirborne else { return nil }
+        guard flightPhase.isAirborne || watchTakeoffUnderway(at: now) else { return nil }
         let detected = watchAirborneSince ?? now
         for roll in [relayedTakeoffRoll, ownTakeoffRollAt].compactMap({ $0 })
         where roll <= detected && detected.timeIntervalSince(roll) < 15 * 60 {
@@ -420,6 +431,11 @@ class WorkoutSession: NSObject, ObservableObject {
     /// otherwise.
     private func watchFlightSpeed(at now: Date) -> Double? {
         guard let roll = watchFlightRoll(at: now) else { return nil }
+        // Its own measured takeoff while that integration runs (build 116).
+        if let launch = launchIntegrator.speed, launch > 0, !launchIntegrator.isHolding,
+           launchIntegrator.anchorCount == confirmedRollAnchor {
+            return launch
+        }
         let descent = flightPhase.descentStartedAt.map { now.timeIntervalSince($0) }
         return FlightProfile.speedKmh(sinceRoll: now.timeIntervalSince(roll), sinceDescent: descent) / 3.6
     }
@@ -867,7 +883,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // (the iPhone's store keys its regime checks on the session).
             learnedSpeed.beginSession()
             flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
-            launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1
+            launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1; confirmedRollAnchor = -1
             flightHeading = FlightHeading(); cabinReachedCruise = false
             flightSpeedForced = false; flightStatus = "On the ground"
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
@@ -1995,7 +2011,7 @@ class WorkoutSession: NSObject, ObservableObject {
             self.launchIntegrator.ingest(userAcceleration: [rawA.x, rawA.y, rawA.z],
                                          gravity: [rawG.x, rawG.y, rawG.z],
                                          rotation: [rot.x, rot.y, rot.z],
-                                         dt: sampleDt, airborne: self.flightPhase.isAirborne)
+                                         dt: sampleDt, airborne: self.flightPhase.isAirborne || self.watchTakeoffUnderway(at: Date()))
             self.noteTakeoffRoll()
             // The plane's heading (build 114): the roll's push in the world frame (axW north, ayW west),
             // the rotation about down and the felt load.
