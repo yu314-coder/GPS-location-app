@@ -32,27 +32,27 @@
 \node[box=red!7, text width=52mm] (gate) at (9.9, -5.45) {Farther from all $32$ training clusters\\than $99.5\%$ of the training data:\\no answer rather than a guess};
 \draw[arr, dashed] (i11.south) -- (3.75, -5.45) -- (gate.west);
 \draw[arr, dashed] (gate.east) -| (v.south);
-% ---------------- (b) the flight network
+% ---------------- (b) the flight network (build 119: a correction on top of the flight profile; logged)
 \begin{scope}[yshift=-7.45cm]
-\node[anchor=west, font=\small\bfseries] at (-0.35, 0.75) {(b) Flight network, in the air after the measured takeoff};
-\node[box=blue!8, text width=35mm] (gr) at (-1.25, -1.05) {Gravity once a second,\\against the still moment\\before the takeoff roll};
-\foreach \i/\lab in {1/{minutes since the roll}, 2/{tilt, last $60$~s}, 3/{tilt, last $300$~s}, 4/{tilt added up}} {
-  \node[neuron=orange!18] (f\i) at (3.75, -0.42*\i) {};
-  \node[anchor=east, font=\tiny] at (3.53, -0.42*\i) {\lab};
+\node[anchor=west, font=\small\bfseries] at (-0.35, 0.75) {(b) Flight network, a correction on the flight profile (logged)};
+\node[box=blue!8, text width=33mm] (gr) at (-2.05, -1.35) {Time since the takeoff\\roll and since the cabin\\started down; the speed\\the takeoff measured};
+\foreach \i/\lab in {1/{hours since the roll}, 2/{log minutes since the roll}, 3/{descending}, 4/{hours since the descent}, 5/{log minutes since it}, 6/{takeoff's difference $g$}, 7/{$g$ fading over $5$~min}, 8/{$g$ fading over $20$~min}} {
+  \node[neuron=orange!18] (f\i) at (3.75, -0.3*\i) {};
+  \node[anchor=east, font=\tiny] at (3.53, -0.3*\i) {\lab};
 }
-\draw[arr] (gr.east) -- (1.25, -1.05);
-\foreach \j in {1,...,4} { \node[neuron=gray!12] (p\j) at (5.4, 0.05 - 0.42*\j) {}; \node[neuron=gray!12] (q\j) at (6.9, 0.05 - 0.42*\j) {}; }
-\node at (5.4, -1.95) {$\vdots$}; \node at (6.9, -1.95) {$\vdots$};
-\foreach \i in {1,...,4} \foreach \j in {1,...,4} \draw[link] (f\i) -- (p\j);
+\draw[arr] (gr.east) -- (1.25, -1.35);
+\foreach \j in {1,...,4} { \node[neuron=gray!12] (p\j) at (5.4, -0.15 - 0.5*\j) {}; \node[neuron=gray!12] (q\j) at (6.9, -0.15 - 0.5*\j) {}; }
+\node at (5.4, -2.55) {$\vdots$}; \node at (6.9, -2.55) {$\vdots$};
+\foreach \i in {1,...,8} \foreach \j in {1,...,4} \draw[link] (f\i) -- (p\j);
 \foreach \i in {1,...,4} \foreach \j in {1,...,4} \draw[link] (p\i) -- (q\j);
-\node[neuron=green!15] (fo) at (8.4, -1.0) {};
+\node[neuron=green!15] (fo) at (8.4, -1.35) {};
 \foreach \j in {1,...,4} \draw[link] (q\j) -- (fo);
-\node[align=center] at (3.75, 0.1) {$4$ inputs, held in range};
-\node[align=center] at (5.4, -2.45) {$32$, ReLU};
-\node[align=center] at (6.9, -2.45) {$32$, ReLU};
-\node[align=center] at (8.4, -0.45) {$1$};
-\node[box=green!10, text width=25mm] (sc) at (10.5, -1.0) {$\times 100$~km/h};
-\node[box=yellow!15, text width=11mm] (fv) at (12.55, -1.0) {Ground\\speed};
+\node[align=center] at (3.75, 0.1) {$8$ inputs, held in range};
+\node[align=center] at (5.4, -3.0) {$32$, ReLU};
+\node[align=center] at (6.9, -3.0) {$32$, ReLU};
+\node[align=center] at (8.4, -0.8) {$1$};
+\node[box=green!10, text width=25mm] (sc) at (10.5, -1.35) {$\exp(\cdot)\times$ the\\median speed};
+\node[box=yellow!15, text width=11mm] (fv) at (12.55, -1.35) {Ground\\speed};
 \draw[arr] (fo) -- (sc); \draw[arr] (sc) -- (fv);
 \end{scope}
 \end{tikzpicture}

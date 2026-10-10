@@ -9,9 +9,11 @@ Neighbours averaged & $12$\\
 Built-in network & $11 \to 32 \to 32 \to 1$; used until the store holds $3{,}000$, and after that whenever the store declines\\
 Network refuses a fingerprint & farther from all training clusters than $99.5\%$ of training data\\
 Takeoff integration in the air & from the last still moment, up to $120$~s\\
-Flight engines, after the takeoff & time since the roll; tilt over $60$~s, $300$~s and since the roll\\
-Flight network & $4 \to 32 \to 32 \to 1$, trained on $302$ NASA flights\\
-Flight store & $4{,}000$ NASA examples, $12$ neighbours, weights $1/d^2$\\
+Takeoff test & $30$~kt, then $200$~km/h within $30$~s\\
+Typical flight & median of $1{,}496$ flights each minute since the roll, then $831$~km/h; by minute since the descent\\
+Takeoff carried & $86$, $58$, $29$, $32$, $15$, $6$, $2\%$ at $\frac12$, $1$, $2$, $3$--$4$, $6$, $10$, $20$~min\\
+Cabin as a clock & climb $400$~m in $10$~min; descent $300$~m below the peak; landed within $10\%$ for $60$~s\\
+Direction in the air & roll push over $35$~s; gyro less its drift; cruise turns over $0.25\dg$/s, load over $1.2\%$, under $4\dg$/s\\
 Walking: a step's echo refused & while the last $4$~s show a clear rhythm (autocorrelation $\geq 0.3$ at $0.3$--$0.8$~s), a peak inside $0.65$ of its step period\\
 \midrule
 \multicolumn{2}{l}{\emph{Direction}}\\

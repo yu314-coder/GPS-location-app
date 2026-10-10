@@ -1,12 +1,14 @@
-\begin{tabular}{lrrrrrrr}
+\begin{tabular}{lrcrrrrr}
 \toprule
- & \multicolumn{4}{c}{302 NASA flights, held out} & \multicolumn{3}{c}{The phone's flight}\\
-\cmidrule(lr){2-5}\cmidrule(lr){6-8}
- & Median & 10th--90th & Within & Speed & Distance & Share of & Speed\\
-In the air & distance & pct. & 10\% & error & km & $74.1$~km & error\\
+ & \multicolumn{2}{c}{Four-hour flight (ADS-B)} & \multicolumn{3}{c}{Short flight (GPS)} & \multicolumn{2}{c}{Held out, within 10\%}\\
+\cmidrule(lr){2-3}\cmidrule(lr){4-6}\cmidrule(lr){7-8}
+ & Distance & Error & km of & \multicolumn{2}{c}{Error, minutes} & OpenSky & NASA\\
+In the air & & climb/cruise/desc. & 77.4 & 1--3 & 5--10 & jets & flights\\
 \midrule
-Hold the takeoff speed & 68\% & 55--88\% & 7\% & 225 & 45.2 & 61\% & 196 \\
-Flight network & 102\% & 91--118\% & 68\% & 82 & 76.2 & 103\% & 38 \\
-Flight store & 104\% & 92--122\% & 65\% & 88 & 73.7 & 99\% & 37 \\
+Hold the takeoff speed & --- & --- & 48.6 & 17 & 301 & --- & --- \\
+Tilt network, before & 80\%$^a$ & --- & 82.0 & 77 & 20 & --- & --- \\
+NASA medians & 87\% & 81/132/58 & 77.3 & 24 & 9 & 55\% & fitted \\
+Pooled (the app) & 95\% & 40/61/29 & 78.4 & 17 & 15 & 72\% & 36\% \\
+Network (logged) & 95\% & 38/58/28 & 81.6 & 42 & 32 & 76\% & 48\% \\
 \bottomrule
 \end{tabular}

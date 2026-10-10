@@ -61,7 +61,7 @@ struct PaperView: View {
         case .updated:
             label("Updated to the latest revision", icon: "checkmark.circle.fill", tint: .green)
         case .failed(let why):
-            label("Showing the bundled copy — \(why)", icon: "wifi.exclamationmark", tint: .orange)
+            label("Could not check for a newer revision — \(why)", icon: "wifi.exclamationmark", tint: .orange)
         case .bundled, .cached, .checking:
             EmptyView()
         }
