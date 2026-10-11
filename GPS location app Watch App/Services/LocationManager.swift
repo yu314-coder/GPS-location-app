@@ -31,6 +31,17 @@ class LocationManager: NSObject, ObservableObject {
     // Pressure tracking
     private var latestPressure: Double?
     private var lastRelativeAltitudeSample: (altitude: Double, timestamp: Date)?
+    /// ALTITUDE THAT SURVIVES A RESTART (build 125). CMAltimeter starts again from 0 whenever it is restarted,
+    /// and this restarted it with every pause and every GPS restart - in a cabin with no fix the watchdog did
+    /// that every 10 seconds - so the cabin's height jumped back to the ground and the flight phase read
+    /// false descents. A restarted altimeter now continues from where the last one stopped, carried across
+    /// the gap by the change in absolute pressure. Cleared at the start of each workout.
+    private var altitudeOffset = 0.0
+    private var lastAltitudeReading: (altitude: Double, kPa: Double)?
+    private var altimeterRestarted = false
+    func beginAltitudeEpoch() { altitudeOffset = 0; lastAltitudeReading = nil }
+    /// Seconds between keep-alive restarts of network location while in fallback; doubles to 2 min (build 125).
+    private var forceNetworkInterval: TimeInterval = 15
 
     // GPS reconnection logic
     private var gpsTimeoutTimer: Timer?
@@ -348,9 +359,13 @@ class LocationManager: NSObject, ObservableObject {
     private func startGPSTimeoutMonitoring() {
         stopGPSTimeoutMonitoring() // Clean up existing timer
 
-        gpsTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        // On the main run loop (build 125): this can be called from a background queue, whose thread has no
+        // run loop, and a timer scheduled there never fires.
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.checkGPSTimeout()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        gpsTimeoutTimer = timer
     }
 
     private func stopGPSTimeoutMonitoring() {
@@ -454,7 +469,15 @@ class LocationManager: NSObject, ObservableObject {
 
     private func startForceNetworkUpdates() {
         stopForceNetworkUpdates()
-        forceNetworkTimer = Timer.scheduledTimer(withTimeInterval: FORCE_NETWORK_RESTART_INTERVAL, repeats: true) { [weak self] _ in
+        forceNetworkInterval = FORCE_NETWORK_RESTART_INTERVAL
+        scheduleForceNetworkRestart()
+    }
+
+    /// Keeps network location alive in fallback by restarting it - every 15 s at first, then, while still no
+    /// fix arrives (a cabin, a long tunnel), twice as long each time up to 2 minutes (build 125: it restarted
+    /// every 15 s for a whole flight). A fix arriving starts it again from 15 s (see noteFixForKeepAlive).
+    private func scheduleForceNetworkRestart() {
+        let timer = Timer(timeInterval: forceNetworkInterval, repeats: false) { [weak self] _ in
             guard let self = self, self.isTracking, self.isFallbackModeActive else { return }
             print("⌚ 🔄 Keeping network location active (fallback mode)")
             self.locationManager.stopUpdatingLocation()
@@ -462,6 +485,23 @@ class LocationManager: NSObject, ObservableObject {
                 guard self.isTracking, self.isFallbackModeActive else { return }
                 self.locationManager.startUpdatingLocation()
             }
+            let gotFix = self.lastLocationUpdateTime.map { Date().timeIntervalSince($0) < self.forceNetworkInterval } ?? false
+            self.forceNetworkInterval = gotFix ? self.FORCE_NETWORK_RESTART_INTERVAL : min(self.forceNetworkInterval * 2, 120)
+            self.scheduleForceNetworkRestart()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        forceNetworkTimer = timer
+    }
+
+    /// Stops and restarts location updates only - not the altimeter, not the monitoring (build 125). The
+    /// workout's GPS restarts used stopTracking()/startTracking(), which also restarted the barometer.
+    func restartLocationUpdates(after delay: TimeInterval) {
+        guard isTracking else { return }
+        locationManager.stopUpdatingLocation()
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, self.isTracking else { return }
+            self.locationManager.startUpdatingLocation()
+            self.lastLocationUpdateTime = Date()
         }
     }
 
@@ -481,6 +521,7 @@ class LocationManager: NSObject, ObservableObject {
 
         print("⌚ 🌡️ Starting barometric pressure tracking")
 
+        altimeterRestarted = true
         altimeter.startRelativeAltitudeUpdates(to: .main) { [weak self] (altitudeData, error) in
             guard let self = self else { return }
 
@@ -494,7 +535,16 @@ class LocationManager: NSObject, ObservableObject {
             // Convert pressure from kPa to hPa (hectopascals/millibars) for display
             // CMAltitudeData.pressure is in kilopascals (kPa)
             let pressureKPa = data.pressure.doubleValue
-            let relativeAltitude = data.relativeAltitude.doubleValue
+            let rawAltitude = data.relativeAltitude.doubleValue
+            if self.altimeterRestarted {
+                self.altimeterRestarted = false
+                if let last = self.lastAltitudeReading, last.kPa > 20, pressureKPa > 20 {
+                    self.altitudeOffset = last.altitude + FlightProfile.pressureAltitude(kPa: pressureKPa)
+                        - FlightProfile.pressureAltitude(kPa: last.kPa) - rawAltitude
+                }
+            }
+            let relativeAltitude = rawAltitude + self.altitudeOffset
+            self.lastAltitudeReading = (relativeAltitude, pressureKPa)
             let timestamp = Date()
 
             self.latestPressure = pressureKPa
@@ -552,9 +602,11 @@ class LocationManager: NSObject, ObservableObject {
 
         cancelReconnectionTimer()
 
-        reconnectionTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             self?.performReconnection()
         }
+        RunLoop.main.add(timer, forMode: .common)   // build 125: see startGPSTimeoutMonitoring
+        reconnectionTimer = timer
     }
 
     private func performReconnection() {

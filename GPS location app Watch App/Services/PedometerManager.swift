@@ -193,10 +193,12 @@ class PedometerManager: NSObject, ObservableObject {
 
     private func startQueryRefreshTimer() {
         stopQueryRefreshTimer()
-        let timer = Timer.scheduledTimer(withTimeInterval: queryRefreshInterval, repeats: true) { [weak self] _ in
+        // On the main run loop only (build 125): started from background callbacks too.
+        let timer = Timer(timeInterval: queryRefreshInterval, repeats: true) { [weak self] _ in
             self?.refreshFromPedometerQuery()
         }
         timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
         queryRefreshTimer = timer
         refreshFromPedometerQuery()
     }
@@ -208,7 +210,7 @@ class PedometerManager: NSObject, ObservableObject {
 
     private func startDiagnosticsTimer() {
         stopDiagnosticsTimer()
-        diagnosticsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        diagnosticsTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.updateDiagnostics()
         }
         if let diagnosticsTimer {

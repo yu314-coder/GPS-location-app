@@ -51,6 +51,7 @@ final class LearnedSpeedEstimator {
     var featureCount: Int { bandEdges.count - 1 + 2 }
 
     func ingest(vertical: Double) {
+        ringVersion &+= 1
         ring[ringIndex] = vertical
         ringIndex = (ringIndex + 1) % windowSize
         if ringFilled < windowSize { ringFilled += 1 }
@@ -59,9 +60,22 @@ final class LearnedSpeedEstimator {
     /// Vibration amplitude of the most recent window, m/s^2. The caller compares it against this
     /// vehicle's own moving level to recognise a standstill; see WorkoutSession.vibrationSaysParked.
     private(set) var lastWindowAmplitude: Double?
+    /// The window's samples since the last one changed, and the features they gave (build 125). A tick asked for
+    /// the same features up to four times - learn, estimate, the log's two answers - each one a fresh FFT.
+    private var ringVersion = 0
+    private var cachedFeatures: (version: Int, features: [Double])?
+
     /// Log band energies plus two time-domain terms, or nil until the window is full.
     func currentFeatures() -> [Double]? {
         guard ringFilled >= windowSize else { return nil }
+        if let c = cachedFeatures, c.version == ringVersion { return c.features }
+        defer { if let f = lastComputedFeatures { cachedFeatures = (ringVersion, f) } }
+        lastComputedFeatures = computeFeatures()
+        return lastComputedFeatures
+    }
+    private var lastComputedFeatures: [Double]?
+
+    private func computeFeatures() -> [Double]? {
         var x = [Double](repeating: 0, count: windowSize)
         for i in 0..<windowSize { x[i] = ring[(ringIndex + i) % windowSize] }
 
@@ -621,6 +635,20 @@ final class LearnedSpeedEstimator {
             return network.speed(features: f)
         }
         if let store = storeEstimate(f, airborne: airborne) { return store }
+        // A NEIGHBOURHOOD THAT CANNOT PREDICT: THE LARGER OF ITS ANSWER AND THE NETWORK'S (build 125).
+        // On the drive home from Taoyuan airport the store answered 89 km/h at a GPS 96 on the expressway
+        // but declined 44% of those seconds as locally unreliable, and the network that covered them read
+        // 54 at 97: the speed shown topped out near 75 km/h and the drive counted 79% of GPS. Both engines
+        // read fast driving low (they are averages of what they were taught, and fast is rare), and a
+        // neighbourhood whose members disagree is the one where they disagree most. Replayed on every
+        // recording, taking the larger here: car 96.8% -> 99.7% of GPS (error 7.05 -> 7.21 km/h),
+        // motorcycle 88.9% -> 91.4%, journeys within 20% 75% -> 78%; the drive home 76% -> 81%. No close
+        // match, or an unlearned regime, is still the network's alone. Ground only.
+        if !airborne, lastEstimateDeclinedUnreliableLocally, let unreliable = lastLocallyUnreliableAnswer {
+            let net = SpeedNetwork.bundled?.speed(features: f)
+            lastEstimateUsedNetwork = (net ?? -1) > unreliable
+            return max(unreliable, net ?? 0)
+        }
         // THE SPEED NEVER STALLS (build 103). When the store declines - no close match, a
         // neighbourhood that cannot predict, a regime it has not learned - the network answers.
         // It needs no GPS and always answers. Before, a declined tick held the last answer for
@@ -642,6 +670,7 @@ final class LearnedSpeedEstimator {
     /// record it every tick, even while the bundled network is the one being used.
     private func storeEstimate(_ f: [Double], airborne: Bool) -> Double? {
         lastStoreStatus = .tooFewExamples
+        lastLocallyUnreliableAnswer = nil
         guard featureMean.count == f.count else { return nil }
 
         // REFUSE TO ANSWER ABOUT A REGIME THIS WORKOUT HAS NEVER BEEN TAUGHT.
@@ -748,13 +777,22 @@ final class LearnedSpeedEstimator {
         // error and passes. Consistency is not correctness. That case needs evidence from
         // outside the model, which is why the caller also refuses to hold a vehicle speed while
         // the pedometer is counting steps.
+        lastLocallyUnreliableAnswer = nil
         if let mae = localError(around: f, pool: pool), mae > MAX_LOCAL_ERROR {
             lastLocalError = mae
             lastEstimateDeclinedUnreliableLocally = true
             lastStoreStatus = .locallyUnreliable
+            // Kept, not used on its own: estimate() weighs it against the network (build 125).
+            lastLocallyUnreliableAnswer = weightedAnswer(best, airborne: airborne)
             return nil
         }
+        guard let answer = weightedAnswer(best, airborne: airborne) else { return nil }
+        lastStoreStatus = .answered
+        return answer
+    }
 
+    /// The neighbours' distance-weighted speed, calibrated. Sets lastNeighbourWeight.
+    private func weightedAnswer(_ best: [(d: Double, s: Double)], airborne: Bool) -> Double? {
         refreshStoreDistributionIfNeeded()
         var num = 0.0, den = 0.0, weightSum = 0.0
         for b in best {
@@ -773,9 +811,10 @@ final class LearnedSpeedEstimator {
         // regime it has never seen, so the air answers raw until it has enough of its own.
         // The air curve is empty until the air partition has its own evidence, and calibrated()
         // returns the raw value unchanged in that case - so a first flight behaves as before.
-        lastStoreStatus = .answered
         return max(0, calibrated(num / den, airborne: airborne))
     }
+    /// The store's answer on the last tick it declined as locally unreliable (build 125).
+    private var lastLocallyUnreliableAnswer: Double?
 
     /// BOTH ENGINES, FOR THE LOG.
     ///
@@ -1118,5 +1157,6 @@ final class LearnedSpeedEstimator {
     /// Per-workout signal state only. The learned observations deliberately survive.
     func resetWindow() {
         ring = [Double](repeating: 0, count: windowSize); ringFilled = 0; ringIndex = 0
+        ringVersion &+= 1; cachedFeatures = nil
     }
 }

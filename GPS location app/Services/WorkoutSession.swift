@@ -1420,6 +1420,9 @@ class WorkoutSession: ObservableObject {
         // held. This uses the pressure profile only to say WHETHER we are flying — never how
         // fast, which cabin pressure cannot tell.
         if flightPhase.isAirborne { return true }
+        // The flight forced on by hand (build 125). On BR226 the iPad's cabin wrongly read "landed" at 17:45;
+        // five minutes later the vehicle evidence ran out and, with the button on, the speed fell to zero.
+        if flightForced { return true }
         if takeoffUnderway(at: Date()) { return true }
         if activityIsAutomotive { return true }
         guard let seen = lastVehicleEvidenceTime else { return false }
@@ -1759,16 +1762,32 @@ class WorkoutSession: ObservableObject {
     /// airborne; if that reading falls back to the ground mid-flight, the ground engines take over and read a
     /// smooth cabin as nearly standing still. Switched on, this keeps the flight model running whatever the cabin
     /// says, timed from this workout's measured takeoff roll, else the last flight's, else - switched on with
-    /// nothing known, as after iOS ended the app mid-flight - half an hour before it was switched on, which reads
-    /// as cruise. A takeoff measured after it is switched on takes over. Off at the start of every workout.
+    /// nothing known, as after iOS ended the app mid-flight - from the cabin: while it is still climbing, its
+    /// height above the departure airport says how long ago the takeoff was (FlightProfile.forcedRoll, build 125;
+    /// before, always half an hour, which jumped a climbing plane to cruise); at cruise level, half an hour.
+    /// A takeoff measured after it is switched on takes over. Off at the start of every workout.
     @Published var flightForced = false {
         didSet {
             guard flightForced != oldValue else { return }
-            if isActive { sessionDiagnostics.recordEvent("flight_forced", detail: flightForced ? "on" : "off") }
-            forcedFlightFallbackRoll = flightForced ? Date().addingTimeInterval(-30 * 60) : nil
+            let now = Date()
+            forcedFlightFallbackRoll = flightForced
+                ? FlightProfile.forcedRoll(at: now, cabinKPa: locationManager.currentPressure,
+                                           fieldPressureKPa: fieldPressure.flatMap { now.timeIntervalSince($0.at) < 6 * 3600 ? $0.kPa : nil },
+                                           fieldElevation: departureFieldElevation(at: now),
+                                           descending: flightPhase.phase == .descent || flightPhase.descentStartedAt != nil)
+                : nil
+            if isActive {
+                let clock = forcedFlightFallbackRoll.map { String(format: ", clock %.1f min if no takeoff is known", now.timeIntervalSince($0) / 60) } ?? ""
+                sessionDiagnostics.recordEvent("flight_forced", detail: (flightForced ? "on" : "off") + clock)
+            }
         }
     }
     private var forcedFlightFallbackRoll: Date?
+    /// The cabin measured on the ground before this flight (GPS fresh, not flying): the departure field, for
+    /// the button's clock (build 125).
+    private var fieldPressure: (kPa: Double, at: Date)?
+    /// The barometer's first sample of this workout has been checked for a start in the air (build 125).
+    private var cabinAnchorChecked = false
     /// The takeoff roll of the last flight this workout flew, kept after the cabin says it landed.
     private var lastFlightRoll: Date?
     /// THE MODEL DECLINING MUST NOT MEAN THE CAR STOPPED.
@@ -2579,6 +2598,7 @@ class WorkoutSession: ObservableObject {
         movingAmplitudeSamples = 0
         workoutStartTime = Date()
         flightPhase.reset()
+        locationManager.beginAltitudeEpoch()
         launchIntegrator.reset()
         flightTilt.reset()
         lastFlightAnswers = (nil, nil, nil)
@@ -2586,6 +2606,7 @@ class WorkoutSession: ObservableObject {
         airborneSince = nil; airDistanceOwed = 0
         flightHeading = FlightHeading(); loggedRollDirection = nil
         flightForced = false; lastFlightRoll = nil; forcedFlightFallbackRoll = nil
+        fieldPressure = nil; cabinAnchorChecked = false
         flightBaseAltitude = 0; lastPointHadFlightAltitude = false
         rollTrack = nil; confirmedRollAnchor = -1; takeoffHandover = nil
         locationManager.freezeDeclination = false   // this trip's own, until its first point
@@ -4109,6 +4130,28 @@ class WorkoutSession: ObservableObject {
         return DepartureRunways.axes(nearLatitude: fix.coordinate.latitude, longitude: fix.coordinate.longitude)
     }
 
+    /// The elevation (m) of the airport of the phone's last fix (build 125), as departureRunwayAxes finds it.
+    private func departureFieldElevation(at now: Date) -> Double? {
+        guard let fix = locationManager.latestRawLocation ?? locationManager.currentLocation,
+              fix.horizontalAccuracy >= 0, fix.horizontalAccuracy <= 3000,
+              now.timeIntervalSince(fix.timestamp) < 6 * 3600 else { return nil }
+        return DepartureRunways.fieldElevation(nearLatitude: fix.coordinate.latitude, longitude: fix.coordinate.longitude)
+    }
+
+    /// A workout started in the air (build 125): on its first barometer sample, a cabin more than 300 m above
+    /// the airport the phone was last fixed at - with no fresh GPS fix saying it is on the ground - is a cabin
+    /// in flight, and the phase detector's ground is moved down to the airport (FlightPhaseEstimator.anchorToField).
+    private func anchorCabinIfStartedAirborne(at now: Date) {
+        guard let p = locationManager.currentPressure, p > 20, p < 120 else { return }
+        if let fix = locationManager.latestRawLocation, now.timeIntervalSince(fix.timestamp) < 60,
+           fix.horizontalAccuracy >= 0, fix.horizontalAccuracy <= 50 { return }
+        guard let field = departureFieldElevation(at: now) else { return }
+        let h = FlightProfile.pressureAltitude(kPa: p) - field
+        guard h > 300, h < 3000 else { return }
+        flightPhase.anchorToField(heightAboveField: h)
+        sessionDiagnostics.recordEvent("cabin_anchor", detail: String(format: "started in the air, cabin %.0f m above the airport", h))
+    }
+
     /// When this flight's takeoff roll began: the roll found by noteTakeoffRoll, if it came within
     /// 15 minutes before the cabin said airborne (on BR215 the roll began at 10:18:12 and the cabin
     /// said airborne at 10:20:19-22). Without a roll, two minutes before the cabin said airborne,
@@ -4177,8 +4220,29 @@ class WorkoutSession: ObservableObject {
         return total
     }
 
+    /// The Live Activity, every LIVE_ACTIVITY_UPDATE_INTERVAL while the app is in the background. Build 125: this
+    /// lived only in the GPS fix handler, so in Force Velocity and dead reckoning - no fixes - the lock screen
+    /// and Dynamic Island never moved; it now also runs from the once-a-second tick.
+    private func refreshLiveActivityIfDue(now: Date) {
+        guard appIsInBackground,
+              lastLiveActivityUpdate.map({ now.timeIntervalSince($0) >= LIVE_ACTIVITY_UPDATE_INTERVAL }) ?? true else { return }
+        if #available(iOS 16.1, *) {
+            WorkoutLiveActivityManager.shared.updateLiveActivity(
+                duration: activeDuration,
+                distance: currentMetrics.totalDistance,
+                speed: liveActivitySpeedMps,
+                calories: currentMetrics.caloriesBurned,
+                altitude: currentMetrics.currentAltitude,
+                heartRate: currentMetrics.currentHeartRate,
+                isPaused: isPaused
+            )
+        }
+        lastLiveActivityUpdate = now
+    }
+
     private func checkEstimatedLocationFallback() {
         guard isActive && !isPaused else { return }
+        refreshLiveActivityIfDue(now: Date())
         // The memory footprint once a minute, so a workout ended by iOS shows whether it was rising.
         if lastFootprintLog.map({ Date().timeIntervalSince($0) >= 60 }) ?? true {
             lastFootprintLog = Date()
@@ -4299,6 +4363,16 @@ class WorkoutSession: ObservableObject {
         if let relAlt = locationManager.currentRelativeAltitude {
 
             flightPhase.ingest(relativeAltitude: relAlt, at: now)
+            if !cabinAnchorChecked, locationManager.currentPressure != nil {
+                cabinAnchorChecked = true
+                anchorCabinIfStartedAirborne(at: now)
+            }
+            // On the ground with a fresh fix: this is the field the next takeoff leaves from.
+            if !flightPhase.isAirborne, !flightForced, !takeoffUnderway(at: now), let p = locationManager.currentPressure,
+               let fix = locationManager.latestRawLocation, now.timeIntervalSince(fix.timestamp) < 120,
+               fix.horizontalAccuracy >= 0, fix.horizontalAccuracy <= 50 {
+                fieldPressure = (p, now)
+            }
 
         }
         if flightPhase.isAirborne || flightForced {
@@ -6446,25 +6520,7 @@ class WorkoutSession: ObservableObject {
         // Update Live Activity (throttled to every 2 seconds). Only while the app is in the background (build 120):
         // with the app open its Live Activity is not on screen; one update is sent on the way to the background.
         let now = Date()
-        if appIsInBackground,
-           lastLiveActivityUpdate == nil || now.timeIntervalSince(lastLiveActivityUpdate!) >= LIVE_ACTIVITY_UPDATE_INTERVAL {
-            if #available(iOS 16.1, *) {
-                WorkoutLiveActivityManager.shared.updateLiveActivity(
-                    duration: activeDuration,
-                    distance: currentMetrics.totalDistance,
-                    speed: liveActivitySpeedMps,
-                    calories: currentMetrics.caloriesBurned,
-                    altitude: currentMetrics.currentAltitude,
-                    heartRate: currentMetrics.currentHeartRate,
-                    isPaused: isPaused
-                )
-            }
-
-            // DISABLED: Watch no longer mirrors iPhone workouts
-            // No need to send updates to Watch
-
-            lastLiveActivityUpdate = now
-        }
+        refreshLiveActivityIfDue(now: now)
 
         // Note: HKWorkoutBuilder automatically calculates distance from GPS route
         // No need to manually add distance samples during workout - causes inflated distance bug

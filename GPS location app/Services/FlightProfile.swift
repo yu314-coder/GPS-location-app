@@ -133,6 +133,44 @@ enum FlightProfile {
         return base * (1 + (ratio - 1) * linear(carryMinutes, carryShare, at: k))
     }
 
+    // MARK: - The cabin as a clock, for the emergency button only (build 125)
+
+    /// THE FLIGHT BUTTON WITH NO TAKEOFF MEASURED. Switched on with nothing known, the button used to
+    /// time the flight from half an hour before it was pressed - cruise. On BR226 the iPad, restarted
+    /// four minutes after takeoff, jumped to 819 km/h and cruise height while the plane was climbing
+    /// through 8,800 ft at 546 km/h. The cabin knows better: during the climb its pressure altitude above
+    /// the departure field rises steadily and almost identically on the four phones of BR215 and BR226
+    /// (within 20-90 m to minute 12). Measured from those (median, metres above the field, at minutes 1-15
+    /// after the roll); above the table the cabin has reached its cruise level and the old half hour stands.
+    /// Two 777 flights from sea-level airports: a timing for the emergency, never a height or a speed.
+    static let cabinClimbMinutes: [Double] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    static let cabinClimbHeight: [Double] = [0, 56, 168, 288, 399, 507, 616, 728, 829, 936, 1042, 1145, 1246, 1351, 1446]
+    static let FORCED_CRUISE_MINUTES = 30.0
+
+    /// Standard-atmosphere pressure altitude (m) of a pressure in kPa.
+    static func pressureAltitude(kPa: Double) -> Double {
+        44330 * (1 - pow(kPa / 101.325, 1 / 5.255))
+    }
+
+    /// Minutes since the takeoff roll for a climbing cabin this high above its departure field; nil when
+    /// the cabin is at or above its cruise level.
+    static func minutesSinceRoll(cabinHeightAboveField h: Double) -> Double? {
+        guard h.isFinite, h <= cabinClimbHeight[cabinClimbHeight.count - 1] else { return nil }
+        return linear(cabinClimbHeight, cabinClimbMinutes, at: h)
+    }
+
+    /// When to time a forced flight from when no takeoff roll is known: from the cabin's climb while it is
+    /// climbing, else half an hour back (cruise). `fieldPressureKPa`: the cabin measured on the ground before
+    /// this flight; else `fieldElevation`, the departure airport's; with neither, sea level.
+    static func forcedRoll(at now: Date, cabinKPa: Double?, fieldPressureKPa: Double?, fieldElevation: Double?,
+                           descending: Bool) -> Date {
+        let cruise = now.addingTimeInterval(-FORCED_CRUISE_MINUTES * 60)
+        guard !descending, let p = cabinKPa, p > 20, p < 120 else { return cruise }
+        let field = fieldPressureKPa.map { pressureAltitude(kPa: $0) } ?? fieldElevation ?? 0
+        guard let m = minutesSinceRoll(cabinHeightAboveField: pressureAltitude(kPa: p) - field) else { return cruise }
+        return now.addingTimeInterval(-m * 60)
+    }
+
     private static func linear(_ x: [Double], _ y: [Double], at v: Double) -> Double {
         guard let first = x.first, let last = x.last else { return 0 }
         if v <= first { return y[0] }

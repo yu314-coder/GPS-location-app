@@ -416,10 +416,30 @@ class WorkoutSession: NSObject, ObservableObject {
     /// model runs whatever the cabin says, timed from this flight's takeoff roll (the watch's own, else the
     /// iPhone's, else the last flight's this workout), or - with nothing known - from half an hour before it was
     /// switched on, which reads as cruise. Unlike Flight ON it does not wait for a takeoff. Off at every start.
+    /// Build 125: with nothing known, a cabin still climbing says how long ago the takeoff was
+    /// (FlightProfile.forcedRoll, as on the iPhone); only at cruise level is it half an hour.
     @Published var flightEmergency = false {
-        didSet { watchForcedFallbackRoll = flightEmergency ? Date().addingTimeInterval(-30 * 60) : nil }
+        didSet {
+            let now = Date()
+            watchForcedFallbackRoll = flightEmergency
+                ? FlightProfile.forcedRoll(at: now, cabinKPa: watchDiagnostics.latestPressure,
+                                           fieldPressureKPa: watchFieldPressure.flatMap { now.timeIntervalSince($0.at) < 6 * 3600 ? $0.kPa : nil },
+                                           fieldElevation: watchFieldElevation(at: now),
+                                           descending: flightPhase.phase == .descent || flightPhase.descentStartedAt != nil)
+                : nil
+        }
     }
     private var watchForcedFallbackRoll: Date?
+    /// The cabin on the ground before this flight, with a fresh fix (build 125), for the emergency clock.
+    private var watchFieldPressure: (kPa: Double, at: Date)?
+    private var watchCabinAnchorChecked = false
+
+    /// The elevation (m) of the airport of the watch's last fix (build 125).
+    private func watchFieldElevation(at now: Date) -> Double? {
+        guard let fix = locationManager.currentLocation, fix.horizontalAccuracy >= 0, fix.horizontalAccuracy <= 3000,
+              now.timeIntervalSince(fix.timestamp) < 6 * 3600 else { return nil }
+        return DepartureRunways.fieldElevation(nearLatitude: fix.coordinate.latitude, longitude: fix.coordinate.longitude)
+    }
     /// The takeoff roll of the last flight this workout flew, kept after the cabin says it landed.
     private var lastWatchFlightRoll: Date?
     /// What the flight speed is doing, for the button's caption.
@@ -720,12 +740,31 @@ class WorkoutSession: NSObject, ObservableObject {
             }
             self.iPhoneDRHeading = heading
             self.iPhoneDRTimestamp = timestamp
+            // In a flight the iPhone relays its plane heading: kept by the watch's own FlightHeading when the watch
+            // did not measure the takeoff itself, so it carries on if the relay stops (build 125).
+            if let flying = self.lastRelayedFlightAt, Date().timeIntervalSince(flying) < 10 {
+                self.flightHeading.adopt(heading: heading)
+            }
         }
         locationManager.onBarometricAltitudeUpdate = { [weak self] relativeAltitude, pressure, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
             self.watchDiagnostics.latestRelativeAltitude = relativeAltitude
             self.watchDiagnostics.latestPressure = pressure
             self.flightPhase.ingest(relativeAltitude: relativeAltitude, at: timestamp)
+            // A workout started in the air (build 125, as on the iPhone): the ground is the airport, not here.
+            let fixIsFresh = self.locationManager.currentLocation.map {
+                timestamp.timeIntervalSince($0.timestamp) < 60 && $0.horizontalAccuracy >= 0 && $0.horizontalAccuracy <= 50 } ?? false
+            if !self.watchCabinAnchorChecked {
+                self.watchCabinAnchorChecked = true
+                if !fixIsFresh, let field = self.watchFieldElevation(at: timestamp), let p = pressure, p > 20, p < 120 {
+                    let h = FlightProfile.pressureAltitude(kPa: p) - field
+                    if h > 300, h < 3000 { self.flightPhase.anchorToField(heightAboveField: h) }
+                }
+            }
+            if !self.flightPhase.isAirborne, !self.flightEmergency, !self.watchTakeoffUnderway(at: timestamp), let p = pressure,
+               self.locationManager.currentLocation.map({ timestamp.timeIntervalSince($0.timestamp) < 120 && $0.horizontalAccuracy >= 0 && $0.horizontalAccuracy <= 50 }) ?? false {
+                self.watchFieldPressure = (p, timestamp)
+            }
             if self.flightPhase.isAirborne || self.flightEmergency {
                 if self.watchAirborneSince == nil { self.watchAirborneSince = timestamp }
             } else {
@@ -931,10 +970,12 @@ class WorkoutSession: NSObject, ObservableObject {
             // Attribute everything this workout teaches to this workout, so regimes stay separable
             // (the iPhone's store keys its regime checks on the session).
             learnedSpeed.beginSession()
-            flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
+            flightPhase.reset(); locationManager.beginAltitudeEpoch(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
             launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1; confirmedRollAnchor = -1; takeoffHandover = nil
             flightHeading = FlightHeading()
             flightSpeedForced = false; flightEmergency = false; lastWatchFlightRoll = nil; flightStatus = "On the ground"
+            watchFieldPressure = nil; watchCabinAnchorChecked = false
+            lastPeriodicCheckpointAt = .distantPast; forcedRestartBackoff = 15; nextForcedRestartAt = .distantPast
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             lastGoodFixTimeWatch = nil; latestGPSFixTimeWatch = nil
             watchDiagnostics.reset(workoutStart: flight.startDate)
@@ -1499,9 +1540,13 @@ class WorkoutSession: NSObject, ObservableObject {
 
     // MARK: - Session Health Monitoring
 
+    // TIMERS ON THE MAIN RUN LOOP ONLY (build 125). These were made with Timer.scheduledTimer - which attaches a
+    // timer to the CALLING thread's run loop - from HealthKit's background callback, then added to the main run
+    // loop as well; a timer belongs on one run loop, and on that thread it never fires. Now each is created
+    // unscheduled and added to the main run loop alone.
     private func startSessionHealthMonitoring() {
         // AGGRESSIVE: Monitor session health every 15 seconds (was 30)
-        sessionHealthTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+        sessionHealthTimer = Timer(timeInterval: 15.0, repeats: true) { [weak self] _ in
             self?.checkSessionHealth()
         }
         // CRITICAL: Add to RunLoop to ensure it runs in background
@@ -1522,9 +1567,12 @@ class WorkoutSession: NSObject, ObservableObject {
         let timeSinceLastLocation = Date().timeIntervalSince(lastLocationTime)
 
         // AGGRESSIVE: Attempt recovery earlier (30s instead of 60s)
-        if timeSinceLastLocation > 30 {
+        if timeSinceLastLocation > 30, Date() >= nextForcedRestartAt {
+            // Under the watchdog's backoff (build 125): with no sky this would restart GPS every 15 s.
             print("⌚ ⚠️ WARNING: No location updates for \(Int(timeSinceLastLocation))s - attempting recovery")
             attemptLocationRecovery()
+            forcedRestartBackoff = min(forcedRestartBackoff * 2, 300)
+            nextForcedRestartAt = Date().addingTimeInterval(forcedRestartBackoff)
         }
 
         // Check if workout session is still valid
@@ -1544,12 +1592,15 @@ class WorkoutSession: NSObject, ObservableObject {
     private func startKeepAliveTimer() {
         // CRITICAL: Fire every 1 second to keep app alive
         // Updates @Published properties to force UI refresh, preventing suspension
-        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        keepAliveTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self, self.isActive else { return }
 
             // Touch @Published property to keep SwiftUI active
-            // This is a legitimate watchOS technique to prevent app suspension during workouts
-            self.objectWillChange.send()
+            // This is a legitimate watchOS technique to prevent app suspension during workouts.
+            // Only while the screen is on (build 125): this timer had never fired (see the note at
+            // startSessionHealthMonitoring), and firing it would have redrawn the whole screen every second with
+            // the wrist down - the cost build 120 removed.
+            if self.screenIsAwake { self.objectWillChange.send() }
 
             // GPS-gap fallbacks (tunnels, underground, train, plane).
             // Motion fallback runs FIRST — it's the primary fallback for all
@@ -1585,12 +1636,16 @@ class WorkoutSession: NSObject, ObservableObject {
         // This catches the case where GPS looks good but locations aren't coming through
         lastLocationCount = flight.locations.count
 
-        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+        watchdogTimer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
             self?.checkLocationArrival()
         }
         RunLoop.main.add(watchdogTimer!, forMode: .common)
         print("⌚ 🔍 Watchdog timer started - will detect if locations stop arriving")
     }
+
+    /// Seconds to the next forced GPS restart after a failed one; doubles to 5 min, reset by a fix (build 125).
+    private var forcedRestartBackoff: TimeInterval = 15
+    private var nextForcedRestartAt = Date.distantPast
 
     private func stopWatchdogTimer() {
         watchdogTimer?.invalidate()
@@ -1626,11 +1681,17 @@ class WorkoutSession: NSObject, ObservableObject {
                 setNetworkDebugMessage("Auto iPhone fallback requested after \(Int(timeSinceLastGPS))s without fix")
             }
 
-            print("⌚ 🚨 FORCING AGGRESSIVE RECOVERY NOW...")
-            // Still attempt watch GPS recovery in parallel
-            forceGPSRestart()
+            // BACKING OFF (build 125). With no sky - a cabin, a long tunnel - this restarted GPS every 10 s for as
+            // long as it lasted. Each failed restart now doubles the wait, up to 5 minutes.
+            if Date() >= nextForcedRestartAt {
+                print("⌚ 🚨 FORCING AGGRESSIVE RECOVERY NOW...")
+                forceGPSRestart()
+                forcedRestartBackoff = min(forcedRestartBackoff * 2, 300)
+                nextForcedRestartAt = Date().addingTimeInterval(forcedRestartBackoff)
+            }
         } else {
             // Good - locations are arriving from watch GPS
+            forcedRestartBackoff = 15; nextForcedRestartAt = .distantPast
             let rate = Double(newLocations) / 10.0  // locations per second
             print("⌚ 🔍 Watchdog check: \(newLocations) new locations in 10s (rate: \(String(format: "%.1f", rate))/s) ✅")
 
@@ -1654,7 +1715,7 @@ class WorkoutSession: NSObject, ObservableObject {
     private func startForceRestartTimer() {
         // PREVENTIVE: Force restart GPS every 2 minutes to prevent drift/hanging
         // Even if everything looks fine, restart periodically as insurance
-        forceRestartTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: true) { [weak self] _ in
+        forceRestartTimer = Timer(timeInterval: 120.0, repeats: true) { [weak self] _ in
             self?.preventiveGPSRestart()
         }
         RunLoop.main.add(forceRestartTimer!, forMode: .common)
@@ -1673,7 +1734,7 @@ class WorkoutSession: NSObject, ObservableObject {
         lastPhoneCheckpointLocationCount = 0
         retainedLocationOffset = 0
         phoneCheckpointTimer?.invalidate()
-        phoneCheckpointTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+        phoneCheckpointTimer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
             self?.transferWorkoutCheckpointToPhone()
         }
         RunLoop.main.add(phoneCheckpointTimer!, forMode: .common)
@@ -3222,25 +3283,19 @@ class WorkoutSession: NSObject, ObservableObject {
         print("⌚ 🔄 Workout time: \(Int(elapsed))s, Locations: \(locationCount)")
         print("⌚ 🔄 This is NORMAL - preventive restart to ensure continued recording")
 
-        // Quick restart
-        locationManager.stopTracking()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.locationManager.startTracking()
-            print("⌚ 🔄 Preventive restart complete - GPS re-enabled")
-        }
+        // Quick restart of location only (build 125: stopTracking() also restarted the barometer)
+        locationManager.restartLocationUpdates(after: 0.5)
     }
 
     private func forceGPSRestart() {
         print("⌚ 🚨 FORCE GPS RESTART - locations stopped arriving!")
 
-        // AGGRESSIVE: Stop and restart with longer delay
-        locationManager.stopTracking()
+        // AGGRESSIVE: Stop and restart location with a longer delay (build 125: location only; stopTracking()
+        // also restarted the barometer, and this ran every 10 s in a cabin)
+        locationManager.restartLocationUpdates(after: 2.0)
 
-        // Wait 2 seconds for full reset
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self = self else { return }
-
-            self.locationManager.startTracking()
             print("⌚ 🚨 Force restart complete - monitoring location arrival...")
 
             // Check again in 15 seconds if restart worked
@@ -3250,8 +3305,11 @@ class WorkoutSession: NSObject, ObservableObject {
                 let newCount = self.flight.locations.count
                 if newCount == self.lastLocationCount {
                     print("⌚ ⚠️⚠️⚠️ CRITICAL: Force restart FAILED - still no locations!")
-                    print("⌚ ⚠️⚠️⚠️ Attempting EMERGENCY recovery...")
-                    self.emergencyRecovery()
+                    // Once per run of failures, not after every restart (build 125).
+                    if self.forcedRestartBackoff <= 30 {
+                        print("⌚ ⚠️⚠️⚠️ Attempting EMERGENCY recovery...")
+                        self.emergencyRecovery()
+                    }
                 } else {
                     print("⌚ ✅ Force restart SUCCESSFUL - \(newCount - self.lastLocationCount) new locations")
                 }
@@ -3275,12 +3333,8 @@ class WorkoutSession: NSObject, ObservableObject {
     private func attemptLocationRecovery() {
         print("⌚ 🔄 Attempting location recovery...")
 
-        // Restart location manager
-        locationManager.stopTracking()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.locationManager.startTracking()
-            print("⌚ 🔄 Location manager restarted")
-        }
+        // Restart location updates (build 125: location only, not the barometer)
+        locationManager.restartLocationUpdates(after: 1.0)
     }
 
     private func attemptSessionRecovery() {
@@ -3930,9 +3984,19 @@ class WorkoutSession: NSObject, ObservableObject {
         }
     }
 
+    /// The timer's checkpoint (build 125): every 10 s for the first 5 minutes, then every minute, and every 2 minutes
+    /// after the first hour. Each one rewrites the whole stored workout on the watch (and merges it on the phone),
+    /// so on a 5-hour flight a 10-second checkpoint meant 1,800 full rewrites; this timer had never fired before
+    /// build 125 (see startSessionHealthMonitoring), so it would have been a new cost. A checkpoint asked for by the
+    /// memory guard, and the final one, still go at once.
     private func transferWorkoutCheckpointToPhone() {
+        let now = Date(), elapsed = now.timeIntervalSince(flight.startDate)
+        let interval: TimeInterval = elapsed < 300 ? 10 : (elapsed < 3600 ? 60 : 120)
+        guard now.timeIntervalSince(lastPeriodicCheckpointAt) >= interval - 0.5 else { return }
+        lastPeriodicCheckpointAt = now
         transferWorkoutCheckpointToPhone(isFinal: false)
     }
+    private var lastPeriodicCheckpointAt = Date.distantPast
 
     private func transferWorkoutCheckpointToPhone(isFinal: Bool) {
         guard isActive else { return }

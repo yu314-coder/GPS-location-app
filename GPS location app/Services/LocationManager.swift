@@ -69,6 +69,14 @@ class LocationManager: NSObject, ObservableObject {
     // Pressure tracking
     private var latestPressure: Double?
     private var lastRelativeAltitudeSample: (altitude: Double, timestamp: Date)?
+    /// ALTITUDE THAT SURVIVES A RESTART (build 125). CMAltimeter starts again from 0 whenever it is restarted,
+    /// and resuming a paused workout restarts it: the cabin's height (and the elevation counted on foot) jumped
+    /// back to where the pause began. A restarted altimeter now continues from where the last one stopped,
+    /// carried across the gap by the change in absolute pressure. Cleared at the start of each workout.
+    private var altitudeOffset = 0.0
+    private var lastAltitudeReading: (altitude: Double, kPa: Double)?
+    private var altimeterRestarted = false
+    func beginAltitudeEpoch() { altitudeOffset = 0; lastAltitudeReading = nil }
     /// Monotonic timestamp of the previous device-motion sample, used to derive the true
     /// integration interval for inertial dead reckoning.
     private var lastMotionSampleTimestamp: TimeInterval?
@@ -620,9 +628,14 @@ class LocationManager: NSObject, ObservableObject {
     private func startGPSTimeoutMonitoring() {
         stopGPSTimeoutMonitoring() // Clean up existing timer
 
-        gpsTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        // ON THE MAIN RUN LOOP (build 125). resumeWorkout() starts tracking on a global queue, and a timer
+        // scheduled there lands on a thread with no run loop and never fires: after any pause the app
+        // stopped noticing that GPS had gone. Every timer here is added to the main run loop.
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.checkGPSTimeout()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        gpsTimeoutTimer = timer
     }
 
     private func stopGPSTimeoutMonitoring() {
@@ -752,6 +765,7 @@ class LocationManager: NSObject, ObservableObject {
 
         print("🌡️ Starting barometric pressure tracking")
 
+        altimeterRestarted = true
         altimeter.startRelativeAltitudeUpdates(to: .main) { [weak self] (altitudeData, error) in
             guard let self = self else { return }
 
@@ -765,7 +779,16 @@ class LocationManager: NSObject, ObservableObject {
             // Convert pressure from kPa to hPa (hectopascals/millibars) for display
             // CMAltitudeData.pressure is in kilopascals (kPa)
             let pressureKPa = data.pressure.doubleValue
-            let relativeAltitude = data.relativeAltitude.doubleValue
+            let rawAltitude = data.relativeAltitude.doubleValue
+            if self.altimeterRestarted {
+                self.altimeterRestarted = false
+                if let last = self.lastAltitudeReading, last.kPa > 20, pressureKPa > 20 {
+                    self.altitudeOffset = last.altitude + FlightProfile.pressureAltitude(kPa: pressureKPa)
+                        - FlightProfile.pressureAltitude(kPa: last.kPa) - rawAltitude
+                }
+            }
+            let relativeAltitude = rawAltitude + self.altitudeOffset
+            self.lastAltitudeReading = (relativeAltitude, pressureKPa)
             let timestamp = Date()
 
             self.latestPressure = pressureKPa
@@ -1425,9 +1448,11 @@ class LocationManager: NSObject, ObservableObject {
 
         cancelReconnectionTimer()
 
-        reconnectionTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             self?.performReconnection()
         }
+        RunLoop.main.add(timer, forMode: .common)   // build 125: see startGPSTimeoutMonitoring
+        reconnectionTimer = timer
     }
 
     private func performReconnection() {

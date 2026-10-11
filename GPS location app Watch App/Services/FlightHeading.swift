@@ -100,6 +100,16 @@ struct FlightHeading {
         episodeOn = false
     }
 
+    /// The plane's heading as another device measured it - the iPhone's, relayed while it flies (build 125). Taken
+    /// only by a device that has not measured a takeoff roll of its own, every time it arrives, so if the relay
+    /// stops this device's own gyroscope carries on from the latest one. Before, a watch whose takeoff came from
+    /// the iPhone had no heading of its own and fell back to its compass, which a cabin ruins.
+    mutating func adopt(heading h: Double) {
+        guard h.isFinite, measuredRollDirection == nil else { return }
+        heading = Self.wrap(h)
+        episodeOn = false
+    }
+
     /// World-frame acceleration (m/s², north and east) during a possible roll.
     mutating func addRollAcceleration(north: Double, east: Double, at time: Date) {
         guard let start = rollStart, heading == nil, time.timeIntervalSince(start) <= Self.ROLL_WINDOW,

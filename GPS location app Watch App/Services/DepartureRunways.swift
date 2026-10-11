@@ -25,14 +25,26 @@ enum DepartureRunways {
 
     /// Axis headings (true, 0-180°) of the runways near a position; empty away from any airport.
     static func axes(nearLatitude lat: Double, longitude lon: Double) -> [Double] {
+        nearby(lat, lon).map { $0[2] }
+    }
+
+    /// The elevation (m) of the airport at a position, nil away from any airport (build 125: the fifth
+    /// column, OurAirports' airport elevation). What the cabin's height is measured from when the
+    /// workout did not see the ground before the flight.
+    static func fieldElevation(nearLatitude lat: Double, longitude lon: Double) -> Double? {
+        let e = nearby(lat, lon).compactMap { $0.count >= 5 ? $0[4] : nil }.sorted()
+        return e.isEmpty ? nil : e[e.count / 2]
+    }
+
+    private static func nearby(_ lat: Double, _ lon: Double) -> [[Double]] {
         guard lat.isFinite, lon.isFinite, abs(lat) <= 90 else { return [] }
         let k = cos(lat * .pi / 180)
-        return table.compactMap { row in
+        return table.filter { row in
             let dLat = (row[0] - lat) * .pi / 180
             var dLon = (row[1] - lon).truncatingRemainder(dividingBy: 360)
             if dLon > 180 { dLon -= 360 } else if dLon < -180 { dLon += 360 }
             let km = 6371 * (dLat * dLat + (dLon * .pi / 180 * k) * (dLon * .pi / 180 * k)).squareRoot()
-            return km <= RADIUS_KM ? row[2] : nil
+            return km <= RADIUS_KM
         }
     }
 }

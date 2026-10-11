@@ -72,8 +72,10 @@ final class FlightPhaseEstimator {
     private let CLIMB_CONFIRM = 400.0                       // m
     private let CLIMB_CONFIRM_WITHIN: TimeInterval = 600
     private let DESCENT_DROP = 300.0              // m below the cabin's highest level
-    private let LANDED_FRACTION = 0.1             // of that highest level, above the ground
-    private let LANDED_SETTLE: TimeInterval = 60  // the cabin has stopped falling this long
+    private let LANDED_FRACTION = 0.03            // of that highest level, above the ground (build 125: was 0.1)
+    private let LANDED_NEAR_FIELD = 60.0          // m: or this close to the ground, whichever is more
+    private let LANDED_RATE = -0.1                // m/s: falling slower than this is not falling (was -0.35)
+    private let LANDED_SETTLE: TimeInterval = 30  // the cabin has stopped falling this long (was 60)
 
     // A pressurised cabin sits far above any building or road gradient, and gets there over
     // minutes rather than seconds.
@@ -107,6 +109,18 @@ final class FlightPhaseEstimator {
         lastSample = nil; peakAltitude = 0; phaseHeldFor = 0
         groundLevel = 0; descentStartedAt = nil; landedAt = nil; notFallingFor = 0
         airborneAt = nil; climbConfirmed = false
+    }
+
+    /// A WORKOUT STARTED IN THE AIR (build 125). Everything here is measured from where the barometer
+    /// started, which is the ground - unless the workout started mid-flight. On BR226 the iPad was restarted
+    /// four minutes after takeoff with its cabin already 330 m above Changi; that became "the ground", so in
+    /// the descent, with the cabin back near that level and levelling off, it read as landed at 17:45 while
+    /// the plane was still at 13,500 ft - and the speed fell to zero. Called once, after the first sample,
+    /// with the cabin's height above the departure airport: the ground is put back where it is.
+    func anchorToField(heightAboveField h: Double) {
+        guard initialised, h.isFinite, h > 0 else { return }
+        groundLevel = altitude - h
+        peakAltitude = max(peakAltitude, h)
     }
 
     /// Feed the relative altitude reported by the barometer, in metres.
@@ -157,13 +171,20 @@ final class FlightPhaseEstimator {
         if descentStartedAt == nil, phase == .descent, peakAltitude - height >= DESCENT_DROP {
             descentStartedAt = time
         }
-        // LANDED. Once the plane has started down, the cabin coming back to within a tenth of its
-        // highest level and no longer falling is the landing. Without this the phase never left the
-        // air again - the ground test above needs a peak under 120 m - so a recording that went on
-        // after landing kept flying.
+        // LANDED. Once the plane has started down, the cabin coming back to the ground and no longer
+        // falling is the landing. Without this the phase never left the air again - the ground test
+        // above needs a peak under 120 m - so a recording that went on after landing kept flying.
+        // BUILD 125: on BR226 "a tenth of the highest level" (175 m) and "falling under 0.35 m/s" both
+        // came true at 17:54 while the cabin was still sinking slowly 77 m above Taoyuan and the plane
+        // was 7 minutes from touchdown; its speed fell to the ground engines and about 35 km went
+        // missing. The cabin really stops at the touchdown: on BR226 it sank to 50 m below the field and
+        // rose back at 18:02 as the valve opened (touchdown 18:01:50), on BR215 the same at 14:24. Now
+        // within 60 m of the ground (or 3% of the highest level) and not falling at all for 30 s:
+        // replayed, both flights land 45-50 s after the real touchdown on every phone (was 7 min early). A field
+        // much higher than the departure's is still not recognised; the workout ending ends the flight.
         if descentStartedAt != nil {
-            notFallingFor = climbRate < -CLIMB_RATE_THRESHOLD ? 0 : notFallingFor + dt
-            if height <= peakAltitude * LANDED_FRACTION, notFallingFor >= LANDED_SETTLE {
+            notFallingFor = climbRate < LANDED_RATE ? 0 : notFallingFor + dt
+            if height <= max(peakAltitude * LANDED_FRACTION, LANDED_NEAR_FIELD), notFallingFor >= LANDED_SETTLE {
                 phase = .ground; phaseHeldFor = 0
                 groundLevel = altitude; peakAltitude = 0
                 descentStartedAt = nil; notFallingFor = 0; landedAt = time
