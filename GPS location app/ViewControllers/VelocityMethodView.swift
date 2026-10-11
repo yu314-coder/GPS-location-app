@@ -461,8 +461,10 @@ struct VelocityMethodView: View {
                 from the takeoff roll's push, matched to a runway of the airport the phone was last \
                 fixed at (OurAirports, public domain), and follows the gyroscope through felt turns \
                 and gentle steady ones, leaving out its drift and any moment the phone is in a hand. \
-                Direction in the air: \(N.FlAir)° median error on three flights graded by ADS-B and \
-                GPS (\(N.FlAirOld)° before build 124).
+                iOS quietly shortens a smooth turn on a phone lying still, so each turn is also measured \
+                by how far the magnetic field turned around the phone, and the field's angle is used when \
+                it was steady and the gyroscope fell short. Direction in the air: \(N.FlAir)° median \
+                error on three flights graded by ADS-B and GPS (\(N.FlAirOld)° in build 123).
                 """)
                 .font(.caption2).foregroundStyle(.secondary)
                 Divider()
@@ -2079,7 +2081,7 @@ enum VelocityMethodData {
         static let FifthMagTurn = "169"
         static let FirstMagF = "85"
         static let FirstMagG = "95"
-        static let FlAir = "16"
+        static let FlAir = "13"
         static let FlAirOld = "39"
         static let FlEnd = "16"
         static let FlEndNet = "18.7"

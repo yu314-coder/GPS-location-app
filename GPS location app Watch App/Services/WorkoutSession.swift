@@ -2139,6 +2139,8 @@ class WorkoutSession: NSObject, ObservableObject {
                 self.flightHeading.ingest(rotationAboutDown: (rot.x * rawG.x + rot.y * rawG.y + rot.z * rawG.z) / gmag * 180 / .pi,
                                           force: (fx * fx + fy * fy + fz * fz).squareRoot(),
                                           rotationMagnitude: rotMag * 180 / .pi, down: (rawG.x, rawG.y, rawG.z),
+                                          field: motion.magneticField.accuracy == .uncalibrated ? nil
+                                              : (motion.magneticField.field.x, motion.magneticField.field.y, motion.magneticField.field.z),
                                           dt: sampleDt, at: nowSample)
             }
             let ua = motion.userAcceleration

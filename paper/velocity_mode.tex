@@ -20,7 +20,7 @@
 \usepackage{float}
 \usepackage[colorlinks=true,linkcolor={blue!45!black},citecolor={blue!45!black},urlcolor={blue!45!black}]{hyperref}
 % The app shows the newest copy it has by this number (no dates): the app build the paper was made for.
-\hypersetup{pdfkeywords={velocity-mode-paper revision 120}}
+\hypersetup{pdfkeywords={velocity-mode-paper revision 126}}
 \captionsetup{font=small,labelfont=bf,labelsep=period}
 \setlist{itemsep=2pt,topsep=4pt}
 \setlength{\parskip}{3pt}
@@ -54,16 +54,18 @@ shakes and \emph{direction} from the phone's gyroscope, accelerometer and magnet
 nothing but the first point, and measures it against GPS on a motorcycle, in a car, on foot and on a
 plane. Every recording was replayed through the newest version from its raw sensor data, with GPS
 used only as the answer key: $\nJourneys$ motorcycle and car journeys ($\nHours$~hours, $\nKmChecked$~km that GPS could
-check), $\nWalkStretches$ straight stretches and $\nWalks$ longer walks on foot, and one flight. Direction was within
+check), $\nWalkStretches$ straight stretches and $\nWalks$ longer walks on foot, and three flights. Direction was within
 $30\dg$ of GPS $\nMotoWthirty\%$ of the time on a motorcycle, $\nCarWthirty\%$ in a car and $\nWalkWthirty\%$ on foot,
 and the median route was turned $\nMotoRtMed\dg$ on a motorcycle and $\nCarRtMed\dg$ in a car. Against GPS, distance came out
 $\nMotoDist\%$ on a motorcycle, $\nCarDist\%$ in a car and $\nWalkDist\%$ on foot. In the air, where a smooth cabin says nothing about speed, the phone measures
 the takeoff roll and then takes the median speed of $1{,}496$ real flights --- NASA's public flight recorder
 data pooled with a day of OpenSky's worldwide ADS-B --- at that many minutes since the roll and since the
-cabin started down, the cabin's pressure used only as a clock. On a four-hour flight graded by the
-aircraft's own ADS-B track it counted $\nAirLongShare\%$ of the distance, and on a short flight with GPS
-$\nAirShortPooledKm$ of $\nAirShortKm$~km; its direction, from the takeoff roll's push and the gyroscope, stayed
-within $30\dg$ of the track $\nAirDirHandW\%$ of the time with the phone in a hand. A phone with no examples of its own starts with a small
+cabin started down, the cabin's pressure used only as a clock. On two four-hour flights graded by the
+aircraft's own ADS-B track it counted $\nAirLongShare\%$ and $\nAirRetShare\%$ of the distance, and on a short flight with GPS
+$\nAirShortPooledKm$ of $\nAirShortKm$~km. Its direction starts from the takeoff roll's push matched to the departure
+runway and follows the gyroscope's turns, each checked against how far the magnetic field turned around the phone,
+because iOS quietly shortens a smooth turn on a phone lying still; over six recordings it was typically
+$\nAirDirAll\dg$ off the track. A phone with no examples of its own starts with a small
 built-in network, which on recordings it had never seen was \nNetVsStore{} a full store; both built-in
 networks are drawn layer by layer. We also report what each part of the direction method adds, where the
 system fails, and the approaches that did not work.
@@ -220,19 +222,40 @@ settles within $1\%$ of the cruise ($\nAirCruise$~km/h, about $38$ minutes in); 
 $300$~m below its highest level, in each minute since then. The difference the takeoff measured when it
 handed over is carried: most of it for two minutes and a little for twenty, as the flights themselves
 kept it (Section~\ref{sec:flight}). The cabin's pressure is only a clock --- airborne, the climb confirmed
-($400$~m within ten minutes of leaving the ground), the descent, and the landing (back within a tenth of
-its highest level and no longer falling for a minute) --- and never a height: the cabin sits near
+($400$~m within ten minutes of leaving the ground), the descent, and the landing (back within $60$~m of the
+ground, or $3\%$ of its highest level, and no longer falling for $30$~s; on both long flights $45$ to $50$~s after
+the touchdown) --- and never a height: the cabin sits near
 $1.5$~km while the aircraft cruises near $10$. The height shown is the flights' typical height in the same
-way. Time is the real clock, so seconds in which iOS has paused the app are made up when it wakes. No
+way. Time is the real clock, so seconds in which iOS has paused the app are made up when it wakes. A
+flight whose takeoff the phone did not measure can be switched on by hand; the clock then starts from the
+cabin's height above the departure airport, read against the cabin's typical climb on the recorded flights
+(it rose almost identically on four phones, within $20$ to $90$~m for twelve minutes). No
 GPS, no tilt and no aircraft speed are used, and none of this runs on the ground.
 
 \paragraph{Direction in the air.} The compass is useless in a cabin: with the phone lying still, the
 field it measured turned by tens of degrees, and near a magnet it read many times Earth's. The direction
 starts instead from the takeoff roll, the strongest push a phone ever feels, straight along the runway:
-the average world-frame push over the roll's first $35$~s. The gyroscope then follows the turns, its
-slow drift learned on straight seconds and taken off. After the climb a second counts as a turn only when
-the cabin feels heavier than its own recent level --- an airliner banks to turn --- at a rate a plane can
-make (under $4\dg$ a second; a hand turning a phone is far faster).
+the average world-frame push over the roll's first $35$~s. iOS measures that push from magnetic north, and
+on the return flight the same push read $194$ to $215\dg$ on three devices on one runway, so it is matched to
+the runways of the airport at the phone's last GPS fix~\cite{ourairports}: within $40\dg$ of one, the runway's
+direction is used. The gyroscope then follows the turns in episodes. A rotation counts when the cabin feels
+it --- heavier than its own recent level, since an airliner banks to turn --- or when it is slow and steady
+($0.12\dg$ a second for $15$~s after a quiet minute): a $10\dg$ course change at cruise speed banks only $5\dg$.
+An unfelt rotation lasting over two minutes is the gyroscope drifting; it is taken back and learned as the
+gyroscope's bias. A second in which the phone turns faster than $3.5\dg$ a second, or tilts by more than
+$5\dg$ that the gyroscope can account for, is a hand, and none of it is the plane's.
+
+Core Motion's rotation rate is corrected for a bias that iOS learns whenever the device seems still, and
+a phone lying on an airliner's seat is still apart from a smooth turn of $1$ to $2\dg$ a second. On the return
+flight the phone lying by a power socket read a median $64\%$ of each turn the aircraft made, and then read
+the rest back the other way once the plane was straight; the phone in use read $98\%$. The magnetometer is not
+fooled: the horizontal field, in the phone's own frame, turned with the plane by $1.04$ of each turn. Useless
+as a compass in a cabin, over the minute or two of a turn it measures how far the phone turned. So each turn
+is also followed in the field, and when the field stayed steady (its strength within $30\%$, its horizontal
+part $15~\mu$T or more, the phone not handled) a felt turn takes the field's angle if the field turned $8\dg$
+or more further the same way, or $10\dg$ or more the other way; a rotation the rules did not accept counts
+when the gyroscope and the field both turned $8\dg$ the same way. Smaller field turns are left out: next to a
+magnet the field drifted $5$ to $8\dg$ with no turn at all.
 
 \subsection{Direction}\label{sec:direction}
 
@@ -311,13 +334,13 @@ agreed with every journey whose vehicle was known. Walking is the time the app w
 
 \begin{table}[t]
 \centering\small
-\caption{The recordings. GPS~km is the distance GPS could check ($^\dagger$the four-hour flight's is its ADS-B track); half-minutes are the stretches used
+\caption{The recordings. GPS~km is the distance GPS could check ($^\dagger$the four-hour flights' are their ADS-B tracks); half-minutes are the stretches used
 for speed; direction is graded in recordings with at least $50$ graded seconds.}
 \label{tab:dataset}
 \input{tables/tab_dataset.tex}
 \end{table}
 
-Two flights are too few to learn the air speed from, so the typical flight is learned from two public
+Three flights are too few to learn the air speed from, so the typical flight is learned from two public
 sources. NASA's DASHlink archive of flight recorder data~\cite{dashlink} holds $302$ flights of one regional
 jet in airline service with a takeoff, one value a second from the roll to landing. A day of the OpenSky
 Network's worldwide ADS-B state vectors~\cite{opensky}, one report every $10$~s, holds $\nAirTakeoffs$ takeoffs whose
@@ -325,8 +348,10 @@ liftoff was received; $\nAirJets$ were by jets ($\nAirNarrow$ single-aisle and $
 aircraft database), each followed through the day to its cruise and, for $1{,}079$, down from the moment it
 was $300$~m below its last cruise level, where the recorded cabin started down. OpenSky's flights begin at
 liftoff, so their clock starts NASA's median $25$~s earlier and the roll's own minute is NASA's. Both are
-pooled, each flight counting once in each minute. The four-hour flight had no GPS in the air; its answer is
-the aircraft's public ADS-B track, with the gaps over the sea filled by straight lines.
+pooled, each flight counting once in each minute. The two four-hour flights, out and back on the same
+route in the same type of twin-aisle jet, had no GPS in the air; their answer is the aircraft's public ADS-B
+track, with the gaps over the sea filled by straight lines. Out, one phone was in a hand and one in a bag;
+back, one phone was in use, one lay by a power socket and a tablet lay on charge.
 
 \subsection{Measuring the newest version}\label{sec:eval}
 
@@ -348,7 +373,7 @@ recordings split into eight groups), and the store tested holding only $60$ to $
 phone had learned.
 \item \textbf{The flights:} the app's own code for the takeoff integration and test, the typical
 flight and the direction in the air, compiled and run on the flights' raw samples and the cabin's
-recorded pressure, against the short flight's GPS and the long flight's ADS-B track.
+recorded pressure, against the short flight's GPS and the long flights' ADS-B tracks.
 \item \textbf{The typical flight, held out:} each NASA and OpenSky flight measured by medians built without
 its aircraft (the aircraft split into five groups), from the roll to landing.
 \end{itemize}
@@ -557,7 +582,10 @@ $\nAirLongCruise$ in the cruise and $\nAirLongDescent$ in the descent, against $
 before counted $\nAirTiltHand\%$ on the phone in a hand and $\nAirTiltBag\%$ on the one in a bag, which turned over at the
 takeoff push and read a tilt beyond anything NASA's flights had. On the short flight with GPS
 ($\nAirShortKm$~km from the roll) the app counted $\nAirShortPooledKm$~km, $\nAirShortPooledA$~km/h off GPS in minutes $1$ to $3$ and
-$\nAirShortPooledC$ in minutes $5$ to $10$; held at the measured speed, the flight counts $\nAirShortHoldKm$~km. Held out by
+$\nAirShortPooledC$ in minutes $5$ to $10$; held at the measured speed, the flight counts $\nAirShortHoldKm$~km. On the
+return flight ($\nAirRetKm$~km by ADS-B), as the phone that measured its takeoff showed it with the landing as the
+cabin now reads it, the app counted $\nAirRetShare\%$, typically $\nAirRetClimb$~km/h off in the climb, $\nAirRetCruise$ in the cruise
+and $\nAirRetDescent$ in a descent that took fifty minutes, longer than the typical flight's. Held out by
 aircraft, the pooled flights came within $10\%$ of the distance on $\nAirHeldOS\%$ of OpenSky's jets and $\nAirHeldNASA\%$ of
 NASA's flights.
 
@@ -576,33 +604,44 @@ $42$~km/h off GPS; the app logs it beside the medians and uses the medians.
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/fig5_flight.pdf}
-\caption{Direction in the air on the four-hour flight: the heading minus the aircraft's track, from the
-compass the app used before and from the takeoff roll and the gyroscope; the band is $\pm30\dg$. The phone
-in the bag was stopped after two hours and a half.}
+\caption{Direction in the air: the heading minus the aircraft's track (ADS-B; GPS on the short flight), as
+the app's own code computes it when replayed on each recording, before (the roll in iOS's frame, turns only
+when felt) and now (the roll matched to the runway, turn episodes checked against the field); the band is
+$\pm30\dg$. Out: the phone in the bag was stopped after two hours. Back: one phone in use, one lying by a
+power socket, a tablet on charge that was handled through the takeoff.}
 \label{fig:flight}
 \end{figure}
 
-In the air the compass the app used before was typically $\nAirDirHandOld\dg$ off the track with the phone in a
-hand and $\nAirDirBagOld\dg$ in a bag. From the takeoff roll and the gyroscope (Figure~\ref{fig:flight}) it was
-$\nAirDirHand\dg$ in the hand, within $30\dg$ for $\nAirDirHandW\%$ of the flight, and $\nAirDirBag\dg$ in the bag ($\nAirDirBagW\%$); on the
-short flight $\nAirDirShort\dg$ against $\nAirDirShortOld\dg$. Most of what remains is gathered in the climb's large turns, before the
-gyroscope's drift has been learned, and in turns made while iOS has paused the app, which no sensor
-reading afterwards recovers.
+Over the six recordings the heading was typically $\nAirDirAll\dg$ off the track, against $\nAirDirAllOld\dg$ before, and within
+$30\dg$ of it $\nAirDirAllW\%$ of the time; on the five phones $\nAirDirPhones\dg$ against $\nAirDirPhonesOld\dg$ (Figure~\ref{fig:flight}). Back, the
+phone in use was $\nAirDirRetPro\dg$ off ($\nAirDirRetProOld\dg$ before) and the one by the socket $\nAirDirRetPhone\dg$ ($\nAirDirRetPhoneOld\dg$): its push read
+$12\dg$ off the runway, and the field restored the turns iOS had shortened, $94\dg$ of the $209\dg$ orbit before
+the landing among them. Out, the phone in the bag was $\nAirDirBag\dg$ off ($\nAirDirBagOld\dg$), and the short flight $\nAirDirShort\dg$
+($\nAirDirShortOld\dg$). Two did worse or stayed poor. The phone in the hand on the way out was $\nAirDirHand\dg$ off against
+$\nAirDirHandOld\dg$: iOS paused the app for $29$ and $25$ minutes while the plane turned $35$ and $8\dg$, which no sensor
+reading afterwards recovers, and the earlier rule came out ahead only by counting the phone being handled
+as a $15\dg$ turn. The tablet, handled through the takeoff and lying in a field that a charger swung by
+hundreds of degrees, started the climb far off and stayed $\nAirDirRetPad\dg$ off ($\nAirDirRetPadOld\dg$).
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/fig10_flightroute.pdf}
-\caption{The flights drawn with no GPS after the first point. (a)~The four-hour flight: its ADS-B track
-(dashed where the receivers lost it over the sea), the app with the phone in a hand and in a bag (until it
-was stopped), and the compass and tilt network the app used before. (b)~The short flight against GPS.
-Like the example routes in Figures~\ref{fig:moto} and~\ref{fig:car} they are turned by an arbitrary angle,
-on a plain km grid, so as not to show where they were recorded.}
+\caption{The flights drawn with no GPS after the first point: the app's speed, the same for every device of a
+flight, with each device's heading before (dashed) and now. (a)~Out: ADS-B (dashed where the receivers lost
+it over the sea), the phone in a hand and the one in a bag until it was stopped. (b)~The short flight
+against GPS. (c)~Back: the phone in use and the one by the socket; the tablet is left out, its route far off
+the map. Like the example routes in Figures~\ref{fig:moto} and~\ref{fig:car} they are turned by an arbitrary
+angle, on a plain km grid, so as not to show where they were recorded.}
 \label{fig:flightroute}
 \end{figure}
 
 Figure~\ref{fig:flightroute} puts speed and direction together. Drawn from the runway with nothing but what
-the phone senses, the four-hour flight ended $\nAirEndHand$~km from where the aircraft landed, against $\nAirEndHandOld$~km
-before; the short flight ended $\nAirEndShort$~km from where GPS ended, against $\nAirEndShortOld$~km.
+the phone senses, the return flight ended $\nAirEndRetPro$~km from the airport on the phone in use and
+$\nAirEndRetPhone$~km on the one by the socket, against $\nAirEndRetProOld$ and $\nAirEndRetPhoneOld$~km before; out, the phone in the
+hand ended $\nAirEndHand$~km off ($\nAirEndHandOld$ before) and the one in the bag $\nAirEndBag$~km from where the plane was when
+it stopped ($\nAirEndBagOld$); the short flight ended $\nAirEndShort$~km from where GPS ended, against $\nAirEndShortOld$~km. What
+remains is mostly the speed: the app reads a typical airliner, and a tailwind of $50$~km/h over four hours
+is $200$~km.
 
 \clearpage
 
@@ -804,8 +843,10 @@ left out of the comparisons (Section~\ref{sec:eval}), so this loss is not in the
 did at that point of a flight, not a measurement of this one. A headwind or tailwind, a faster or slower
 aircraft, a long hold or a short hop will make it read high or low: a twin-aisle jet reads several percent
 low in the cruise. Examples learned on the phone's own earlier flights with GPS take over when there are
-some, which two flights could not test. Turns made while iOS has paused the app are not seen, and a flight
-is not picked up again if iOS ends the app.
+some, which three flights could not test. Turns made while iOS has paused the app are not seen, and a flight
+is not picked up again if iOS ends the app. A turn that iOS shortens on a phone lying still is made up only
+where the magnetic field is steady, which it was not beside a charging tablet; and a phone handled through
+the takeoff starts from a roll it could not measure.
 \end{itemize}
 
 \subsection{What did not work}
@@ -904,8 +945,10 @@ A phone's own sensors can draw a usable route without satellites. Direction is t
 learned from the vehicle's turns on a heading kept honest by its stops and, when possible, by the
 magnetometer, it stays within $30\dg$ of GPS most of the time on every kind of travel measured. Speed
 from vibration is close in a car and on foot but compressed on a motorcycle. In the air, the takeoff
-measured by the phone and then the typical speed of public airline flight data counted a four-hour flight
-to within $\the\numexpr100-\nAirLongShare\relax\%$ of its ADS-B track and a short one to within GPS's distance. The largest remaining error is a
+measured by the phone and then the typical speed of public airline flight data counted two four-hour flights
+to within $\the\numexpr100-\nAirLongShare\relax\%$ and $\the\numexpr100-\nAirRetShare\relax\%$ of their ADS-B tracks and a short one to within GPS's
+distance, and its direction, from the runway and the gyroscope checked against the magnetic field, was
+typically $\nAirDirAll\dg$ off. The largest remaining error is a
 constant turn over a whole drive, from where the heading started and from the angle learned for the
 phone, which so far only a clean magnetic field has been able to reduce.
 
@@ -941,6 +984,8 @@ filter for attitude determination of a smartphone. \emph{IEEE Sensors Journal}, 
 \bibitem{opensky} M.~Sch\"afer, M.~Strohmeier, V.~Lenders, I.~Martinovic and M.~Wilhelm. Bringing up OpenSky:
 a large-scale ADS-B sensor network for research. In \emph{Proc.\ IPSN}, 2014. Data:
 \url{https://opensky-network.org}.
+\bibitem{ourairports} OurAirports. Open data downloads: airports and runways (public domain).
+\url{https://ourairports.com/data/}.
 \end{thebibliography}
 
 \appendix

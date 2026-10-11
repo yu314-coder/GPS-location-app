@@ -370,10 +370,13 @@ class WorkoutSession: ObservableObject {
     private var airDistanceOwed: Double = 0
     /// Which way the plane is going (build 114, reworked in 124): the takeoff roll's direction matched to the
     /// departure runway, then the gyro's turns - felt, or gentle and steady - with drift and a hand moving the
-    /// phone left out. See FlightHeading; it replaces the compass in the air, which a cabin ruins.
+    /// phone left out, each turn checked against the magnetometer (build 126: iOS shortens turns on a still
+    /// phone). See FlightHeading; it replaces the compass in the air, which a cabin ruins.
     private var flightHeading = FlightHeading()
     /// The roll direction already written to the events log.
     private var loggedRollDirection: Double?
+    /// The last turn FlightHeading took from the magnetometer that the log has (build 126).
+    private var loggedMagneticTurnAt: Date?
     /// THE PLANE'S HEIGHT (build 115): FlightProfile.altitudeMeters above the ground the plane took off from,
     /// on the route's points while flying; never the cabin pressure, which is not the plane's height.
     private var flightBaseAltitude = 0.0
@@ -2568,9 +2571,13 @@ class WorkoutSession: ObservableObject {
             if gm > 0.5 {
                 let down = (w.x * g.x + w.y * g.y + w.z * g.z) / gm * 180 / .pi
                 let fx = ua.x + g.x, fy = ua.y + g.y, fz = ua.z + g.z
+                // The calibrated field, for FlightHeading's check of each turn (build 126).
+                let mf = motion.magneticField
                 self.flightHeading.ingest(rotationAboutDown: down, force: (fx * fx + fy * fy + fz * fz).squareRoot(),
                                           rotationMagnitude: (w.x * w.x + w.y * w.y + w.z * w.z).squareRoot() * 180 / .pi,
-                                          down: (g.x, g.y, g.z), dt: dt, at: Date())
+                                          down: (g.x, g.y, g.z),
+                                          field: mf.accuracy == .uncalibrated ? nil : (mf.field.x, mf.field.y, mf.field.z),
+                                          dt: dt, at: Date())
             }
             self.flightTilt.ingest(gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
                                    dt: dt, launch: self.launchIntegrator)
@@ -4387,6 +4394,10 @@ class WorkoutSession: ObservableObject {
         }
         // A roll that never became a flight leaves nothing owed.
         if !flightPhase.isAirborne, !flightForced, !takeoffUnderway(at: now) { airDistanceOwed = 0 }
+        if let m = flightHeading.lastMagneticTurn, m.at != loggedMagneticTurnAt {
+            loggedMagneticTurnAt = m.at
+            sessionDiagnostics.recordEvent("flight_turn_field", detail: String(format: "gyro %.1f, field %.1f", m.gyro, m.field))
+        }
         if let used = flightHeading.rollDirection, used != loggedRollDirection {
             loggedRollDirection = used
             let runways = flightHeading.departureRunways.map { String(format: "%.1f", $0) }.joined(separator: "/")
