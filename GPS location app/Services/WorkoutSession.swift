@@ -1750,9 +1750,26 @@ class WorkoutSession: ObservableObject {
         // warm-up pool. Speed bias -16 km/h, distance -27.5%.
         //
         // Cabin pressure remains, and it is the sensor that actually worked: it says WHETHER
-        // the aircraft is flying, never how fast.
-        flightPhase.isAirborne
+        // the aircraft is flying, never how fast. Or the flight forced on by hand (build 123).
+        flightPhase.isAirborne || flightForced
     }
+
+    /// EMERGENCY: THE FLIGHT FORCED ON (build 123). The flight model runs only while the cabin's pressure says
+    /// airborne; if that reading falls back to the ground mid-flight, the ground engines take over and read a
+    /// smooth cabin as nearly standing still. Switched on, this keeps the flight model running whatever the cabin
+    /// says, timed from this workout's measured takeoff roll, else the last flight's, else - switched on with
+    /// nothing known, as after iOS ended the app mid-flight - half an hour before it was switched on, which reads
+    /// as cruise. A takeoff measured after it is switched on takes over. Off at the start of every workout.
+    @Published var flightForced = false {
+        didSet {
+            guard flightForced != oldValue else { return }
+            if isActive { sessionDiagnostics.recordEvent("flight_forced", detail: flightForced ? "on" : "off") }
+            forcedFlightFallbackRoll = flightForced ? Date().addingTimeInterval(-30 * 60) : nil
+        }
+    }
+    private var forcedFlightFallbackRoll: Date?
+    /// The takeoff roll of the last flight this workout flew, kept after the cabin says it landed.
+    private var lastFlightRoll: Date?
     /// THE MODEL DECLINING MUST NOT MEAN THE CAR STOPPED.
     ///
     /// The lookup returns nil when nothing it has stored resembles the present signature, which
@@ -2566,6 +2583,7 @@ class WorkoutSession: ObservableObject {
         takeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1
         airborneSince = nil; airDistanceOwed = 0
         flightHeading = FlightHeading(); cabinReachedCruise = false
+        flightForced = false; lastFlightRoll = nil; forcedFlightFallbackRoll = nil
         flightBaseAltitude = 0; lastPointHadFlightAltitude = false
         rollTrack = nil; confirmedRollAnchor = -1; takeoffHandover = nil
         locationManager.freezeDeclination = false   // this trip's own, until its first point
@@ -4085,6 +4103,7 @@ class WorkoutSession: ObservableObject {
     /// but only once the cabin's climb confirms a flight (FlightPhaseEstimator.climbConfirmed): the
     /// cabin alone also rises on a hill road (a car drive on 4 Oct read as airborne at 98 m).
     private func flightRollStart(at now: Date) -> Date? {
+        if flightForced { return takeoffRollAt ?? lastFlightRoll ?? forcedFlightFallbackRoll }
         let detected = airborneSince ?? now
         if let roll = takeoffRollAt, roll <= detected, detected.timeIntervalSince(roll) < 15 * 60 {
             return roll
@@ -4270,18 +4289,19 @@ class WorkoutSession: ObservableObject {
             flightPhase.ingest(relativeAltitude: relAlt, at: now)
 
         }
-        if flightPhase.isAirborne {
+        if flightPhase.isAirborne || flightForced {
             if airborneSince == nil {
                 airborneSince = now
                 flightBaseAltitude = flight.locations.last(where: { !$0.isEstimated })?.altitude ?? 0
             }
             if flightPhase.phase == .cruise { cabinReachedCruise = true }
+            if !flightForced, let r = flightRollStart(at: now) { lastFlightRoll = r }
         } else if airborneSince != nil {
             airborneSince = nil; airDistanceOwed = 0
             cabinReachedCruise = false; flightHeading.endFlight()
         }
         // A roll that never became a flight leaves nothing owed.
-        if !flightPhase.isAirborne, !takeoffUnderway(at: now) { airDistanceOwed = 0 }
+        if !flightPhase.isAirborne, !flightForced, !takeoffUnderway(at: now) { airDistanceOwed = 0 }
         // After the climb only felt turns count: from the cabin's first cruise, or 15 minutes after
         // the roll with no barometer (NASA's median climb took 14).
         flightHeading.cruising = cabinReachedCruise

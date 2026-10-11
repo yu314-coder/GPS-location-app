@@ -659,6 +659,31 @@ struct LiveSessionView: View {
                         }
                         .disabled(!workoutSession.isActive)
 
+                        // EMERGENCY FLIGHT (build 123): keep the flight model running if the phone stops
+                        // flying on its own mid-flight (the cabin reading fell back to the ground).
+                        Button(action: {
+                            workoutSession.flightForced.toggle()
+                        }) {
+                            HStack {
+                                Image(systemName: "airplane")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(workoutSession.flightForced ? "Flight: forced ON" : "Flight: Auto")
+                                        .fontWeight(.semibold)
+                                    Text(workoutSession.flightForced
+                                         ? "The flight model runs whatever the cabin says. Turn off after landing."
+                                         : "Tap if the phone stops flying mid-flight")
+                                        .font(.caption2)
+                                        .opacity(0.9)
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(workoutSession.flightForced ? Color.cyan : Color.gray.opacity(0.5))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
+                        .disabled(!workoutSession.isActive)
+
                         // WHEN THE MODEL IS OUT OF ITS DEPTH, SAY SO ON SCREEN.
                         //
                         // The regime gate makes Velocity Mode decline rather than assert a speed

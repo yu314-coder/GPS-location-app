@@ -376,6 +376,32 @@ struct LiveSessionView: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel(workoutSession.flightSpeedForced ? "Flight speed on" : "Flight speed automatic")
 
+                        // EMERGENCY FLIGHT (build 123): if the watch stops flying on its own mid-flight, keep the
+                        // flight model running whatever the cabin says. Turn off after landing.
+                        Button(action: {
+                            workoutSession.flightEmergency.toggle()
+                        }) {
+                            VStack(spacing: 2) {
+                                HStack {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.caption)
+                                    Text(workoutSession.flightEmergency ? "Flight forced ON" : "Force flight")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                }
+                                Text(workoutSession.flightEmergency ? "Turn off after landing" : "If it stops flying mid-flight")
+                                    .font(.system(size: 10))
+                                    .opacity(0.85)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(workoutSession.flightEmergency ? Color.orange : Color.gray.opacity(0.4))
+                            .foregroundColor(.white)
+                            .cornerRadius(20)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(workoutSession.flightEmergency ? "Flight forced on" : "Force flight")
+
                         // Stop button
                         Button(action: {
                             showStopConfirmation = true

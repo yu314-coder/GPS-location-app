@@ -412,6 +412,17 @@ class WorkoutSession: NSObject, ObservableObject {
     /// found the flight is relaying a ground speed. Off (Auto): the flight must be confirmed by a
     /// takeoff roll or by the cabin's climb.
     @Published var flightSpeedForced = false
+    /// EMERGENCY FLIGHT (build 123). If the cabin's pressure reading falls back to the ground mid-flight the
+    /// flight model stops and the ground engines read a smooth cabin as nearly standing still. On, the flight
+    /// model runs whatever the cabin says, timed from this flight's takeoff roll (the watch's own, else the
+    /// iPhone's, else the last flight's this workout), or - with nothing known - from half an hour before it was
+    /// switched on, which reads as cruise. Unlike Flight ON it does not wait for a takeoff. Off at every start.
+    @Published var flightEmergency = false {
+        didSet { watchForcedFallbackRoll = flightEmergency ? Date().addingTimeInterval(-30 * 60) : nil }
+    }
+    private var watchForcedFallbackRoll: Date?
+    /// The takeoff roll of the last flight this workout flew, kept after the cabin says it landed.
+    private var lastWatchFlightRoll: Date?
     /// What the flight speed is doing, for the button's caption.
     @Published private(set) var flightStatus = "On the ground"
 
@@ -435,13 +446,17 @@ class WorkoutSession: NSObject, ObservableObject {
     /// each only if it came within 15 minutes before the cabin left the ground; otherwise two
     /// minutes before the cabin left the ground, once the climb confirms it or the button is on.
     private func watchFlightRoll(at now: Date) -> Date? {
+        if flightEmergency { return ownTakeoffRollAt ?? relayedTakeoffRoll ?? lastWatchFlightRoll ?? watchForcedFallbackRoll }
         guard flightPhase.isAirborne || watchTakeoffUnderway(at: now) else { return nil }
         let detected = watchAirborneSince ?? now
         for roll in [relayedTakeoffRoll, ownTakeoffRollAt].compactMap({ $0 })
         where roll <= detected && detected.timeIntervalSince(roll) < 15 * 60 {
+            lastWatchFlightRoll = roll
             return roll
         }
-        return (flightPhase.climbConfirmed || flightSpeedForced) ? detected.addingTimeInterval(-120) : nil
+        let fallback = (flightPhase.climbConfirmed || flightSpeedForced) ? detected.addingTimeInterval(-120) : nil
+        if let fallback { lastWatchFlightRoll = fallback }
+        return fallback
     }
 
     /// The flight's speed (m/s) while the cabin says airborne and the flight is confirmed; nil
@@ -704,7 +719,7 @@ class WorkoutSession: NSObject, ObservableObject {
             self.watchDiagnostics.latestRelativeAltitude = relativeAltitude
             self.watchDiagnostics.latestPressure = pressure
             self.flightPhase.ingest(relativeAltitude: relativeAltitude, at: timestamp)
-            if self.flightPhase.isAirborne {
+            if self.flightPhase.isAirborne || self.flightEmergency {
                 if self.watchAirborneSince == nil { self.watchAirborneSince = timestamp }
                 if self.flightPhase.phase == .cruise { self.cabinReachedCruise = true }
             } else {
@@ -915,7 +930,7 @@ class WorkoutSession: NSObject, ObservableObject {
             flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
             launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1; confirmedRollAnchor = -1; takeoffHandover = nil
             flightHeading = FlightHeading(); cabinReachedCruise = false
-            flightSpeedForced = false; flightStatus = "On the ground"
+            flightSpeedForced = false; flightEmergency = false; lastWatchFlightRoll = nil; flightStatus = "On the ground"
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             lastGoodFixTimeWatch = nil; latestGPSFixTimeWatch = nil
             watchDiagnostics.reset(workoutStart: flight.startDate)
@@ -2931,10 +2946,12 @@ class WorkoutSession: NSObject, ObservableObject {
             let iPhoneFlying = lastRelayedFlightAt.map { now.timeIntervalSince($0) < 10 } ?? false
             flightStatus = ownFlight != nil ? "In the air" + (iPhoneFlying && relayedSpeed != nil ? " · iPhone's speed" : " · watch's own speed")
                 : flightPhase.isAirborne ? "Cabin climbing · confirming" : (flightSpeedForced ? "Waiting for takeoff" : "On the ground")
-            if engineChoice == .auto, let relayed = relayedSpeed, !(flightSpeedForced && ownFlight != nil && !iPhoneFlying) {
+            if flightEmergency { flightStatus = "Emergency: flight forced on" }
+            let watchLeads = flightSpeedForced || flightEmergency
+            if engineChoice == .auto, let relayed = relayedSpeed, !(watchLeads && ownFlight != nil && !iPhoneFlying) {
                 motionFallbackSpeed = relayed
                 accelSource = "iPhone-DR"
-            } else if relayedSpeed == nil || flightSpeedForced, let flying = ownFlight {
+            } else if relayedSpeed == nil || watchLeads, let flying = ownFlight {
                 // In the air with no iPhone: the iPhone's own air speed, carried on (see
                 // watchFlightSpeed). Ahead of the ground engines, which were taught on roads.
                 motionFallbackSpeed = flying
