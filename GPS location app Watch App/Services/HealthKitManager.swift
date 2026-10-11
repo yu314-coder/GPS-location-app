@@ -591,6 +591,7 @@ class HealthKitManager: ObservableObject {
         startDate: Date,
         endDate: Date,
         activityType: HKWorkoutActivityType,
+        locations: [FlightLocation] = [],
         completion: @escaping (Bool) -> Void
     ) {
         guard metrics.totalDistance > 0,
@@ -599,16 +600,17 @@ class HealthKitManager: ObservableObject {
             return
         }
 
-        let sample = HKQuantitySample(
-            type: distanceType,
-            quantity: HKQuantitySafe(unit: .meter(), doubleValue: metrics.totalDistance),
-            start: startDate,
-            end: endDate,
-            metadata: distanceSampleMetadata(source: "officialGPS")
-        )
+        // Build 122: minute by minute along the whole track (MinuteDistance), adding up to the same distance, so
+        // Fitness has a pace to show; one sample for the whole workout if there is no track to spread it along.
+        let minutes = MinuteDistance.split(locations: locations, total: metrics.totalDistance, start: startDate, end: endDate)
+        let samples: [HKQuantitySample] = minutes.isEmpty
+            ? [HKQuantitySample(type: distanceType, quantity: HKQuantitySafe(unit: .meter(), doubleValue: metrics.totalDistance),
+                                start: startDate, end: endDate, metadata: distanceSampleMetadata(source: "officialGPS"))]
+            : minutes.map { HKQuantitySample(type: distanceType, quantity: HKQuantitySafe(unit: .meter(), doubleValue: $0.meters),
+                                             start: $0.start, end: $0.end, metadata: distanceSampleMetadata(source: "officialGPS")) }
 
         print("⌚ 📏 Adding official workout GPS distance before finish: \(String(format: "%.2f", metrics.totalDistance))m")
-        builder.add([sample]) { success, error in
+        builder.add(samples) { success, error in
             if success {
                 print("⌚ ✅ Official workout distance sample added")
             } else {

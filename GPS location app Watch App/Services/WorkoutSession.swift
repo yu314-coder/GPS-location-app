@@ -1247,12 +1247,18 @@ class WorkoutSession: NSObject, ObservableObject {
                     endDate: endDate,
                     activityType: exportType
                 ) {
+                    // The whole track (build 122): the checkpointed points on disk and the newest still in memory,
+                    // to spread the distance minute by minute.
+                    let persistedTrack = FlightDataStore.shared.loadFlightDetails(id: self.flight.id)?.locations ?? []
+                    let lastPersisted = persistedTrack.last?.timestamp ?? .distantPast
+                    let wholeTrack = persistedTrack + self.flight.locations.filter { $0.timestamp > lastPersisted }
                     self.healthKitManager.addWorkoutTotalDistanceSample(
                         to: builder,
                         metrics: healthKitMetrics,
                         startDate: self.flight.startDate,
                         endDate: endDate,
-                        activityType: exportType
+                        activityType: exportType,
+                        locations: wholeTrack
                     ) { distanceAdded in
                         if !distanceAdded {
                             print("⌚ ⚠️ GPS workout total distance sample was not added before finish")

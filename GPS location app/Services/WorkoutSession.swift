@@ -2917,9 +2917,8 @@ class WorkoutSession: ObservableObject {
         print("📊 Flight data collected: \(locationsForHealthKit.count) locations")
         completion(true)
         #else
-        // On real device, always save via direct workout creation to ensure
-        // the displayed distance is preserved.
-        print("✅ Saving to HealthKit using direct workout save (displayed distance)")
+        // On a real device: the builder save with the displayed distance minute by minute (build 122).
+        print("✅ Saving to HealthKit (builder, distance minute by minute)")
         fallbackSaveToHealthKit(locations: locationsForHealthKit, endDate: endDate) { success in
             completion(success)
         }
@@ -3255,7 +3254,10 @@ class WorkoutSession: ObservableObject {
 
         // Don't check authorization again - just attempt the save
         // Excessive authorization checks cause Error(7) state machine failures
-        self.healthKitManager.saveWorkoutDirectly(
+        // Build 122: through a fresh HKWorkoutBuilder, created only now (not at the start, which caused Error 7), so
+        // the workout carries Health's own statistics and Fitness can show its pace. The distance goes minute by
+        // minute along the route and adds up to the displayed distance; on failure it retries, then saves directly.
+        self.healthKitManager.saveWorkout(
             flight: self.flight,
             locations: locations,
             metrics: self.currentMetrics

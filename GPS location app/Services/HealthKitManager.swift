@@ -753,6 +753,15 @@ class HealthKitManager: ObservableObject {
             "com.exmstc.gps.gpsDistanceMeters": metrics.totalDistance,
             HKMetadataKeyTimeZone: TimeZone.current.identifier
         ]
+        // Build 122: the average and top speed, as the builder save writes them.
+        let workoutSeconds = endDate.timeIntervalSince(flight.startDate)
+        if metrics.totalDistance > 0, workoutSeconds > 0 {
+            metadata[HKMetadataKeyAverageSpeed] = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()),
+                                                                 doubleValue: metrics.totalDistance / workoutSeconds)
+        }
+        if metrics.maxSpeed > 0 {
+            metadata[HKMetadataKeyMaximumSpeed] = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.maxSpeed)
+        }
         metrics.healthKitSensorMetadata.forEach { metadata[$0.key] = $0.value }
 
         if let effort = flight.effort {
@@ -791,6 +800,7 @@ class HealthKitManager: ObservableObject {
                 let supplementalSamples = self.buildDirectSaveSupplementalSamples(
                     metrics: metrics,
                     activityType: exportType,
+                    locations: locations,
                     startDate: flight.startDate,
                     endDate: endDate
                 )
@@ -1099,16 +1109,19 @@ class HealthKitManager: ObservableObject {
         includeDistanceSamples: Bool = true,
         completion: @escaping () -> Void
     ) {
-        let speedSamples = buildSpeedSamples(metrics: metrics, activityType: activityType)
+        let minutes = MinuteDistance.split(locations: locations, total: metrics.totalDistance, start: startDate, end: endDate)
+        let speedSamples = minutes.isEmpty ? buildSpeedSamples(metrics: metrics, activityType: activityType)
+                                           : buildMinuteSpeedSamples(minutes, activityType: activityType)
         let advancedSamples = buildAdvancedMetricSamples(metrics: metrics, activityType: activityType, locations: locations)
         let energySamples = buildActiveEnergySamples(metrics: metrics, startDate: startDate, endDate: endDate)
         let basalSamples = buildBasalEnergySamples(metrics: metrics, startDate: startDate, endDate: endDate)
         let distanceSamples = includeDistanceSamples
-            ? buildDistanceSamples(metrics: metrics, activityType: activityType, startDate: startDate, endDate: endDate)
+            ? buildDistanceSamples(metrics: metrics, activityType: activityType, locations: locations, startDate: startDate, endDate: endDate)
             : []
         let stepSamples = buildStepCountSamples(metrics: metrics, activityType: activityType, startDate: startDate, endDate: endDate)
         let heartRateSamples = buildHeartRateSamples(metrics: metrics, startDate: startDate, endDate: endDate)
-        let allSamples = speedSamples + advancedSamples + energySamples + basalSamples + distanceSamples + stepSamples + heartRateSamples
+        // Distance first (build 122): it is what Fitness's distance and pace come from.
+        let allSamples = distanceSamples + speedSamples + stepSamples + energySamples + basalSamples + heartRateSamples + advancedSamples
 
         guard !allSamples.isEmpty else {
             completion()
@@ -1145,13 +1158,27 @@ class HealthKitManager: ObservableObject {
                     }
                 } else {
                     print("⚠️ Failed to add workout sample batch \(batchNumber): \(error?.localizedDescription ?? "Unknown")")
-                    // Continue anyway - don't fail the entire workout
-                    completion()
+                    // Carry on with the next batch (build 122): one rejected batch used to drop every batch after it.
+                    currentIndex = endIndex
+                    if currentIndex < allSamples.count { addNextBatch() } else { completion() }
                 }
             }
         }
 
         addNextBatch()
+    }
+
+    /// Build 122: one speed a minute from the same minutes as the distance (the live save has cleared the speed
+    /// history by the time it reaches HealthKit).
+    private func buildMinuteSpeedSamples(_ minutes: [MinuteDistance.Minute], activityType: HKWorkoutActivityType) -> [HKQuantitySample] {
+        let id: HKQuantityTypeIdentifier = (activityType == .running || activityType == .walking || activityType == .hiking) ? .runningSpeed : .cyclingSpeed
+        guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return [] }
+        return minutes.compactMap { m in
+            let seconds = m.end.timeIntervalSince(m.start)
+            guard seconds > 0 else { return nil }
+            return HKQuantitySample(type: type, quantity: HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: m.meters / seconds),
+                                    start: m.start, end: m.end)
+        }
     }
 
     private func buildSpeedSamples(metrics: FlightMetrics, activityType: HKWorkoutActivityType) -> [HKQuantitySample] {
@@ -1366,10 +1393,14 @@ class HealthKitManager: ObservableObject {
     private func buildDistanceSamples(
         metrics: FlightMetrics,
         activityType: HKWorkoutActivityType,
+        locations: [FlightLocation] = [],
         startDate: Date,
         endDate: Date
     ) -> [HKQuantitySample] {
         guard metrics.totalDistance > 0 else { return [] }
+        // Build 122: the workout's distance minute by minute along the route (MinuteDistance), so Fitness has a
+        // pace to show; the minutes add up to exactly the same distance.
+        let minutes = MinuteDistance.split(locations: locations, total: metrics.totalDistance, start: startDate, end: endDate)
 
         var identifiers: [HKQuantityTypeIdentifier]
         switch activityType {
@@ -1393,6 +1424,13 @@ class HealthKitManager: ObservableObject {
             let distanceQuantity = HKQuantitySafe(unit: .meter(), doubleValue: source.value)
             for identifier in identifiers {
                 guard let distanceType = HKQuantityType.quantityType(forIdentifier: identifier) else { continue }
+                if source.label == "gps", !minutes.isEmpty {
+                    samples += minutes.map {
+                        HKQuantitySample(type: distanceType, quantity: HKQuantitySafe(unit: .meter(), doubleValue: $0.meters),
+                                         start: $0.start, end: $0.end)
+                    }
+                    continue
+                }
                 let sample = HKQuantitySample(
                     type: distanceType,
                     quantity: distanceQuantity,
@@ -1409,15 +1447,20 @@ class HealthKitManager: ObservableObject {
     private func buildDirectSaveSupplementalSamples(
         metrics: FlightMetrics,
         activityType: HKWorkoutActivityType,
+        locations: [FlightLocation],
         startDate: Date,
         endDate: Date
     ) -> [HKQuantitySample] {
         let distanceSamples = buildDistanceSamples(
             metrics: metrics,
             activityType: activityType,
+            locations: locations,
             startDate: startDate,
             endDate: endDate
         )
+        let speedSamples = buildMinuteSpeedSamples(
+            MinuteDistance.split(locations: locations, total: metrics.totalDistance, start: startDate, end: endDate),
+            activityType: activityType)
         let energySamples = buildActiveEnergySamples(metrics: metrics, startDate: startDate, endDate: endDate)
         let basalSamples = buildBasalEnergySamples(metrics: metrics, startDate: startDate, endDate: endDate)
         let stepSamples = buildStepCountSamples(
@@ -1426,7 +1469,7 @@ class HealthKitManager: ObservableObject {
             startDate: startDate,
             endDate: endDate
         )
-        return distanceSamples + energySamples + basalSamples + stepSamples
+        return distanceSamples + speedSamples + energySamples + basalSamples + stepSamples
     }
 
     private func buildHeartRateSamples(metrics: FlightMetrics, startDate: Date, endDate: Date) -> [HKQuantitySample] {
