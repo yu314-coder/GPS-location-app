@@ -368,11 +368,12 @@ class WorkoutSession: ObservableObject {
     /// function of time, so what it would have counted is known; it is paid back at no more than the
     /// current speed again per tick, so no single step of the route jumps.
     private var airDistanceOwed: Double = 0
-    /// Which way the plane is going (build 114): the takeoff roll's direction, then the gyro with its bias
-    /// learned and taken off, through the climb every second and in cruise only in felt turns. See
-    /// FlightHeading; it replaces the compass in the air, which a cabin ruins.
+    /// Which way the plane is going (build 114, reworked in 124): the takeoff roll's direction matched to the
+    /// departure runway, then the gyro's turns - felt, or gentle and steady - with drift and a hand moving the
+    /// phone left out. See FlightHeading; it replaces the compass in the air, which a cabin ruins.
     private var flightHeading = FlightHeading()
-    private var cabinReachedCruise = false
+    /// The roll direction already written to the events log.
+    private var loggedRollDirection: Double?
     /// THE PLANE'S HEIGHT (build 115): FlightProfile.altitudeMeters above the ground the plane took off from,
     /// on the route's points while flying; never the cabin pressure, which is not the plane's height.
     private var flightBaseAltitude = 0.0
@@ -2549,7 +2550,8 @@ class WorkoutSession: ObservableObject {
                 let down = (w.x * g.x + w.y * g.y + w.z * g.z) / gm * 180 / .pi
                 let fx = ua.x + g.x, fy = ua.y + g.y, fz = ua.z + g.z
                 self.flightHeading.ingest(rotationAboutDown: down, force: (fx * fx + fy * fy + fz * fz).squareRoot(),
-                                          dt: dt, at: Date())
+                                          rotationMagnitude: (w.x * w.x + w.y * w.y + w.z * w.z).squareRoot() * 180 / .pi,
+                                          down: (g.x, g.y, g.z), dt: dt, at: Date())
             }
             self.flightTilt.ingest(gravity: [motion.gravity.x, motion.gravity.y, motion.gravity.z],
                                    dt: dt, launch: self.launchIntegrator)
@@ -2582,7 +2584,7 @@ class WorkoutSession: ObservableObject {
         lastFlightAnswers = (nil, nil, nil)
         takeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1
         airborneSince = nil; airDistanceOwed = 0
-        flightHeading = FlightHeading(); cabinReachedCruise = false
+        flightHeading = FlightHeading(); loggedRollDirection = nil
         flightForced = false; lastFlightRoll = nil; forcedFlightFallbackRoll = nil
         flightBaseAltitude = 0; lastPointHadFlightAltitude = false
         rollTrack = nil; confirmedRollAnchor = -1; takeoffHandover = nil
@@ -4086,6 +4088,7 @@ class WorkoutSession: ObservableObject {
         } else if rollCandidateAt == nil {
             rollCandidateAt = now
             flightHeading.beginRoll(at: now)
+            flightHeading.departureRunways = departureRunwayAxes(at: now)
             rollTrack = (now, 0, 0)
         }
         if let start = rollCandidateAt, v >= Self.ROLL_CONFIRM_SPEED, takeoffRollAt != start,
@@ -4095,6 +4098,15 @@ class WorkoutSession: ObservableObject {
             takeoffHandover = nil
             flightHeading.confirmRoll(startedAt: start)
         }
+    }
+
+    /// The runways at the airport of the phone's last fix (build 124): the takeoff roll takes the direction of
+    /// the one it matches. A fix from the last six hours, to within 3 km; none, and the roll keeps its own push.
+    private func departureRunwayAxes(at now: Date) -> [Double] {
+        guard let fix = locationManager.latestRawLocation ?? locationManager.currentLocation,
+              fix.horizontalAccuracy >= 0, fix.horizontalAccuracy <= 3000,
+              now.timeIntervalSince(fix.timestamp) < 6 * 3600 else { return [] }
+        return DepartureRunways.axes(nearLatitude: fix.coordinate.latitude, longitude: fix.coordinate.longitude)
     }
 
     /// When this flight's takeoff roll began: the roll found by noteTakeoffRoll, if it came within
@@ -4294,18 +4306,19 @@ class WorkoutSession: ObservableObject {
                 airborneSince = now
                 flightBaseAltitude = flight.locations.last(where: { !$0.isEstimated })?.altitude ?? 0
             }
-            if flightPhase.phase == .cruise { cabinReachedCruise = true }
             if !flightForced, let r = flightRollStart(at: now) { lastFlightRoll = r }
         } else if airborneSince != nil {
             airborneSince = nil; airDistanceOwed = 0
-            cabinReachedCruise = false; flightHeading.endFlight()
+            flightHeading.endFlight(); loggedRollDirection = nil
         }
         // A roll that never became a flight leaves nothing owed.
         if !flightPhase.isAirborne, !flightForced, !takeoffUnderway(at: now) { airDistanceOwed = 0 }
-        // After the climb only felt turns count: from the cabin's first cruise, or 15 minutes after
-        // the roll with no barometer (NASA's median climb took 14).
-        flightHeading.cruising = cabinReachedCruise
-            || (takeoffRollAt.map { now.timeIntervalSince($0) > 15 * 60 } ?? false)
+        if let used = flightHeading.rollDirection, used != loggedRollDirection {
+            loggedRollDirection = used
+            let runways = flightHeading.departureRunways.map { String(format: "%.1f", $0) }.joined(separator: "/")
+            sessionDiagnostics.recordEvent("flight_heading", detail: String(format: "roll push %.1f, used %.1f",
+                flightHeading.measuredRollDirection ?? -1, used) + ", runways " + (runways.isEmpty ? "none" : runways))
+        }
 
         let pedometerIsCounting = lastStepIncrementTime.map { now.timeIntervalSince($0) < 20.0 } ?? false
         let velHeading = nextSpeed > 0.1

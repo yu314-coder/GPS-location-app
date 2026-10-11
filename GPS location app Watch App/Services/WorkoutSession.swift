@@ -389,9 +389,8 @@ class WorkoutSession: NSObject, ObservableObject {
     /// then 200 km/h within 30 s. A wrist is not a bag, so this is untested on a real flight; the
     /// cabin's own confirmation (FlightPhaseEstimator.climbConfirmed) backs it up.
     private var launchIntegrator = LaunchIntegrator()
-    /// Which way the plane is going, from its own sensors (build 114): see FlightHeading (the iPhone's file).
+    /// Which way the plane is going, from its own sensors (build 114, reworked in 124): see FlightHeading (the iPhone's file).
     private var flightHeading = FlightHeading()
-    private var cabinReachedCruise = false
     private var ownTakeoffRollAt: Date?
     private var rollCandidateAt: Date?
     private var rollCandidateAnchor = -1
@@ -434,6 +433,14 @@ class WorkoutSession: NSObject, ObservableObject {
         let now = Date()
         if v < 15.43 { rollCandidateAt = nil } else if rollCandidateAt == nil {
             rollCandidateAt = now; flightHeading.beginRoll(at: now)
+            // The runways at the airport of the watch's last fix (build 124): the roll takes the one it matches.
+            if let fix = locationManager.currentLocation, fix.horizontalAccuracy >= 0, fix.horizontalAccuracy <= 3000,
+               now.timeIntervalSince(fix.timestamp) < 6 * 3600 {
+                flightHeading.departureRunways = DepartureRunways.axes(nearLatitude: fix.coordinate.latitude,
+                                                                       longitude: fix.coordinate.longitude)
+            } else {
+                flightHeading.departureRunways = []
+            }
         }
         if let start = rollCandidateAt, v >= 55.6, ownTakeoffRollAt != start,
            now.timeIntervalSince(start) <= 30 {
@@ -721,13 +728,10 @@ class WorkoutSession: NSObject, ObservableObject {
             self.flightPhase.ingest(relativeAltitude: relativeAltitude, at: timestamp)
             if self.flightPhase.isAirborne || self.flightEmergency {
                 if self.watchAirborneSince == nil { self.watchAirborneSince = timestamp }
-                if self.flightPhase.phase == .cruise { self.cabinReachedCruise = true }
             } else {
-                if self.watchAirborneSince != nil { self.flightHeading.endFlight(); self.cabinReachedCruise = false }
+                if self.watchAirborneSince != nil { self.flightHeading.endFlight() }
                 self.watchAirborneSince = nil
             }
-            self.flightHeading.cruising = self.cabinReachedCruise
-                || (self.ownTakeoffRollAt.map { timestamp.timeIntervalSince($0) > 15 * 60 } ?? false)
             self.currentMetrics.updateWithBarometricAltitude(
                 relativeAltitude: relativeAltitude,
                 pressure: pressure,
@@ -929,7 +933,7 @@ class WorkoutSession: NSObject, ObservableObject {
             learnedSpeed.beginSession()
             flightPhase.reset(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
             launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1; confirmedRollAnchor = -1; takeoffHandover = nil
-            flightHeading = FlightHeading(); cabinReachedCruise = false
+            flightHeading = FlightHeading()
             flightSpeedForced = false; flightEmergency = false; lastWatchFlightRoll = nil; flightStatus = "On the ground"
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             lastGoodFixTimeWatch = nil; latestGPSFixTimeWatch = nil
@@ -2072,7 +2076,9 @@ class WorkoutSession: NSObject, ObservableObject {
             if gmag > 0.5 {
                 let fx = rawA.x + rawG.x, fy = rawA.y + rawG.y, fz = rawA.z + rawG.z
                 self.flightHeading.ingest(rotationAboutDown: (rot.x * rawG.x + rot.y * rawG.y + rot.z * rawG.z) / gmag * 180 / .pi,
-                                          force: (fx * fx + fy * fy + fz * fz).squareRoot(), dt: sampleDt, at: nowSample)
+                                          force: (fx * fx + fy * fy + fz * fz).squareRoot(),
+                                          rotationMagnitude: rotMag * 180 / .pi, down: (rawG.x, rawG.y, rawG.z),
+                                          dt: sampleDt, at: nowSample)
             }
             let ua = motion.userAcceleration
             lastMotionAccelMagnitude = sqrt(ua.x*ua.x + ua.y*ua.y + ua.z*ua.z) * 9.80665

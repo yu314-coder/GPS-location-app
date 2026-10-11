@@ -17,6 +17,8 @@ FILES=(
   "Services/FlightProfile.swift"
   "Services/LaunchIntegrator.swift"
   "Services/FlightHeading.swift"
+  "Services/DepartureRunways.swift"
+  "Resources/runways.json"
   "Resources/speed_network.json"
 )
 status=0

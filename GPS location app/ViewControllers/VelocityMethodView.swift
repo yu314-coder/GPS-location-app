@@ -457,10 +457,12 @@ struct VelocityMethodView: View {
                 (shown above) counted 39% on a phone in a bag. What it gives is a typical airliner's \
                 speed, so wind or a faster or slower aircraft will move it. ADS-B data: OpenSky Network, \
                 "Bringing up OpenSky: A large-scale ADS-B sensor network for research" (IPSN 2014). \
-                The direction in the air no longer uses the compass, which a cabin disturbs: it starts \
-                from the direction of the takeoff roll and follows the gyroscope, with its drift learned \
-                on straight flight, counting only turns the cabin can feel once in cruise. \
-                Direction in the air: \(N.FlAir)° median error.
+                The direction in the air does not use the compass, which a cabin disturbs: it starts \
+                from the takeoff roll's push, matched to a runway of the airport the phone was last \
+                fixed at (OurAirports, public domain), and follows the gyroscope through felt turns \
+                and gentle steady ones, leaving out its drift and any moment the phone is in a hand. \
+                Direction in the air: \(N.FlAir)° median error on three flights graded by ADS-B and \
+                GPS (\(N.FlAirOld)° before build 124).
                 """)
                 .font(.caption2).foregroundStyle(.secondary)
                 Divider()
@@ -2077,7 +2079,8 @@ enum VelocityMethodData {
         static let FifthMagTurn = "169"
         static let FirstMagF = "85"
         static let FirstMagG = "95"
-        static let FlAir = "14"
+        static let FlAir = "16"
+        static let FlAirOld = "39"
         static let FlEnd = "16"
         static let FlEndNet = "18.7"
         static let FlEndShare = "25"
