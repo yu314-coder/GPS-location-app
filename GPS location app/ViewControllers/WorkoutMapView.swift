@@ -1818,7 +1818,7 @@ private func convertWorkoutToMapFlight(_ workout: HKWorkout, locations: [FlightL
     flight.workoutUUID = workout.uuid
 
     var metrics = FlightMetrics()
-    metrics.totalDistance = workout.appDistanceMeters ?? calculatedRouteDistance(from: locations)
+    metrics.totalDistance = workout.totalDistance?.doubleValue(for: .meter()) ?? calculatedRouteDistance(from: locations)
     metrics.duration = workout.duration
     if metrics.duration > 0 {
         metrics.averageSpeed = metrics.totalDistance / metrics.duration
@@ -1848,7 +1848,7 @@ private func convertWorkoutToMapFlight(_ workout: HKWorkout, locations: [FlightL
         metrics.updateWithLocation(location, previousLocation: previous, elapsedTime: location.timestamp.timeIntervalSince(workout.startDate))
         previous = location
     }
-    metrics.totalDistance = workout.appDistanceMeters ?? metrics.totalDistance
+    metrics.totalDistance = workout.totalDistance?.doubleValue(for: .meter()) ?? metrics.totalDistance
     metrics.duration = workout.duration
     if metrics.duration > 0 {
         metrics.averageSpeed = metrics.totalDistance / metrics.duration

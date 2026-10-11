@@ -509,9 +509,12 @@ class HealthKitManager: ObservableObject {
 
         // Create workout configuration
         let configuration = HKWorkoutConfiguration()
-        let chosenType = flight.workoutType.flatMap { HKWorkoutActivityType(rawValue: $0) }.map(exportActivityType) ?? .walking
-        let onFootMeters = HealthDistance.onFootIntervals(locations).reduce(0) { $0 + $1.meters }
-        configuration.activityType = HealthDistance.exportType(chosenType, totalMeters: metrics.totalDistance, onFootMeters: onFootMeters)
+        if let rawValue = flight.workoutType,
+           let activityType = HKWorkoutActivityType(rawValue: rawValue) {
+            configuration.activityType = exportActivityType(activityType)
+        } else {
+            configuration.activityType = .walking // Fallback for older data
+        }
         configuration.locationType = .outdoor
 
         // Create workout builder
@@ -565,14 +568,14 @@ class HealthKitManager: ObservableObject {
             }
             metadata[HKMetadataKeyTimeZone] = TimeZone.current.identifier
 
-            metadata["com.exmstc.gps.onFootDistanceMeters"] = onFootMeters
-            // Build 120: no average or top speed - the journey's speed is a vehicle's as often as not.
-            if false, metrics.averageSpeed > 0 {
+            // Add average speed metadata (HealthKit standard key)
+            if metrics.averageSpeed > 0 {
                 let avgSpeedQuantity = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.averageSpeed)
                 metadata[HKMetadataKeyAverageSpeed] = avgSpeedQuantity
             }
 
-            if false, metrics.maxSpeed > 0 {
+            // Add max speed metadata
+            if metrics.maxSpeed > 0 {
                 let maxSpeedQuantity = HKQuantitySafe(unit: HKUnit.meter().unitDivided(by: .second()), doubleValue: metrics.maxSpeed)
                 metadata[HKMetadataKeyMaximumSpeed] = maxSpeedQuantity
             }
@@ -728,14 +731,8 @@ class HealthKitManager: ObservableObject {
     ) {
         let endDate = flight.endDate ?? flight.startDate.addingTimeInterval(max(metrics.duration, 0))
         let activityType = flight.workoutType.flatMap { HKWorkoutActivityType(rawValue: $0) } ?? .walking
-        // Only what was covered on foot is walking distance (build 120; HealthDistance).
-        let onFoot = HealthDistance.onFootIntervals(locations)
-        let onFootMeters = onFoot.reduce(0) { $0 + $1.meters }
-        let healthType = HealthDistance.exportType(exportActivityType(activityType), totalMeters: metrics.totalDistance,
-                                                   onFootMeters: onFootMeters)
 
         var metadata: [String: Any] = [
-            "com.exmstc.gps.onFootDistanceMeters": onFootMeters,
             "origin": flight.origin ?? "Unknown",
             "destination": flight.destination ?? "Unknown",
             "maxAltitude": metrics.maxAltitude,
@@ -768,16 +765,15 @@ class HealthKitManager: ObservableObject {
             metadata["com.exmstc.gps.nativeStepCount"] = stepCount
         }
 
-        let healthDistance = healthType == .cycling ? metrics.totalDistance : onFootMeters
-        let totalDistance = healthDistance >= 1
-            ? HKQuantitySafe(unit: .meter(), doubleValue: healthDistance)
+        let totalDistance = metrics.totalDistance > 0
+            ? HKQuantitySafe(unit: .meter(), doubleValue: metrics.totalDistance)
             : nil
         let totalEnergy = metrics.caloriesBurned > 0
             ? HKQuantitySafe(unit: .kilocalorie(), doubleValue: metrics.caloriesBurned)
             : nil
 
         let workout = HKWorkout(
-            activityType: healthType,
+            activityType: exportActivityType(activityType),
             start: flight.startDate,
             end: endDate,
             workoutEvents: nil,
@@ -791,10 +787,10 @@ class HealthKitManager: ObservableObject {
             if success {
                 print("✅ Direct workout saved: \(workout.uuid)")
 
+                let exportType = self.exportActivityType(activityType)
                 let supplementalSamples = self.buildDirectSaveSupplementalSamples(
                     metrics: metrics,
-                    activityType: healthType,
-                    onFoot: onFoot,
+                    activityType: exportType,
                     startDate: flight.startDate,
                     endDate: endDate
                 )
@@ -1103,15 +1099,12 @@ class HealthKitManager: ObservableObject {
         includeDistanceSamples: Bool = true,
         completion: @escaping () -> Void
     ) {
-        // Build 120: no speed or gait samples (step length, power...) made from the journey's speed, which is a
-        // vehicle's as often as not; distance only for the stretches on foot.
-        let speedSamples: [HKQuantitySample] = []
-        let advancedSamples: [HKQuantitySample] = []
+        let speedSamples = buildSpeedSamples(metrics: metrics, activityType: activityType)
+        let advancedSamples = buildAdvancedMetricSamples(metrics: metrics, activityType: activityType, locations: locations)
         let energySamples = buildActiveEnergySamples(metrics: metrics, startDate: startDate, endDate: endDate)
         let basalSamples = buildBasalEnergySamples(metrics: metrics, startDate: startDate, endDate: endDate)
         let distanceSamples = includeDistanceSamples
-            ? buildDistanceSamples(metrics: metrics, activityType: activityType,
-                                   onFoot: HealthDistance.onFootIntervals(locations), startDate: startDate, endDate: endDate)
+            ? buildDistanceSamples(metrics: metrics, activityType: activityType, startDate: startDate, endDate: endDate)
             : []
         let stepSamples = buildStepCountSamples(metrics: metrics, activityType: activityType, startDate: startDate, endDate: endDate)
         let heartRateSamples = buildHeartRateSamples(metrics: metrics, startDate: startDate, endDate: endDate)
@@ -1266,8 +1259,7 @@ class HealthKitManager: ObservableObject {
             stepSources.append((nativeSteps, "pedometer-native"))
         }
 
-        // Build 120: no steps estimated from distance - a car or a flight is not steps.
-        if false, isStepBasedActivity && metrics.totalDistance > 0 {
+        if isStepBasedActivity && metrics.totalDistance > 0 {
             let strideLength: Double = activityType == .running ? 1.2 : 0.75
             let estimatedSteps = metrics.totalDistance / strideLength
             print("📱 👟 Using GPS-estimated steps: \(String(format: "%.0f", estimatedSteps)) (distance \(String(format: "%.2f", metrics.totalDistance/1000))km)")
@@ -1371,35 +1363,58 @@ class HealthKitManager: ObservableObject {
         return [sample]
     }
 
-    /// Build 120: walking and running distance only for the stretches on foot (HealthDistance); a cycling workout
-    /// keeps its distance as cycling distance and is no longer mirrored into walking. The pedometer's own distance
-    /// is not written again: Health already has it from the phone.
     private func buildDistanceSamples(
         metrics: FlightMetrics,
         activityType: HKWorkoutActivityType,
-        onFoot: [HealthDistance.Interval],
         startDate: Date,
         endDate: Date
     ) -> [HKQuantitySample] {
-        if activityType == .cycling {
-            guard metrics.totalDistance > 0, let type = HKQuantityType.quantityType(forIdentifier: .distanceCycling) else { return [] }
-            return [HKQuantitySample(type: type, quantity: HKQuantitySafe(unit: .meter(), doubleValue: metrics.totalDistance),
-                                     start: startDate, end: endDate)]
+        guard metrics.totalDistance > 0 else { return [] }
+
+        var identifiers: [HKQuantityTypeIdentifier]
+        switch activityType {
+        case .cycling:
+            // Keep cycling distance, and mirror to walking/running so Health totals track user movement.
+            identifiers = [.distanceCycling, .distanceWalkingRunning]
+        case .running, .walking, .hiking:
+            // Redundant write for walking/running to improve Health aggregation reliability.
+            identifiers = [.distanceWalkingRunning, .distanceCycling]
+        default:
+            identifiers = [.distanceWalkingRunning]
         }
-        return HealthDistance.walkingSamples(onFoot)
+
+        var sourceDistances: [(label: String, value: Double)] = [("gps", metrics.totalDistance)]
+        if let nativeStepDistance = metrics.nativeStepDistance, nativeStepDistance > 0 {
+            sourceDistances.append(("nativeStep", nativeStepDistance))
+        }
+
+        var samples: [HKQuantitySample] = []
+        for source in sourceDistances {
+            let distanceQuantity = HKQuantitySafe(unit: .meter(), doubleValue: source.value)
+            for identifier in identifiers {
+                guard let distanceType = HKQuantityType.quantityType(forIdentifier: identifier) else { continue }
+                let sample = HKQuantitySample(
+                    type: distanceType,
+                    quantity: distanceQuantity,
+                    start: startDate,
+                    end: endDate
+                )
+                samples.append(sample)
+            }
+        }
+
+        return samples
     }
 
     private func buildDirectSaveSupplementalSamples(
         metrics: FlightMetrics,
         activityType: HKWorkoutActivityType,
-        onFoot: [HealthDistance.Interval],
         startDate: Date,
         endDate: Date
     ) -> [HKQuantitySample] {
         let distanceSamples = buildDistanceSamples(
             metrics: metrics,
             activityType: activityType,
-            onFoot: onFoot,
             startDate: startDate,
             endDate: endDate
         )
@@ -1906,8 +1921,8 @@ class HealthKitManager: ObservableObject {
                 }
 
                 // Recalculate steps with correct distance
-                if false, correctedMetrics.stepsCount == nil || correctedMetrics.stepsCount == 0 {
-                    // Re-estimate steps from corrected distance (build 120: no longer - distance is not steps)
+                if correctedMetrics.stepsCount == nil || correctedMetrics.stepsCount == 0 {
+                    // Re-estimate steps from corrected distance
                     let activityType = flight.workoutType.flatMap { HKWorkoutActivityType(rawValue: $0) } ?? .walking
                     if activityType == .running || activityType == .walking || activityType == .hiking {
                         let strideLength: Double = activityType == .running ? 1.2 : 0.75

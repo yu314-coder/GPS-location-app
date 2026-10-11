@@ -156,7 +156,7 @@ struct FlightHistoryView: View {
     private var totalDistance: Double {
         let flightDistance = flightDataStore.savedFlights.reduce(0.0) { $0 + ($1.metrics?.totalDistance ?? 0) }
         let workoutDistance = workouts.reduce(0.0) { sum, workout in
-            if let distance = workout.appDistanceMeters {
+            if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
                 return sum + distance
             }
             return sum
@@ -256,7 +256,7 @@ struct FlightHistoryView: View {
         var metrics = FlightMetrics()
 
         // Distance
-        if let distance = workout.appDistanceMeters {
+        if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
             metrics.totalDistance = distance
         }
 
@@ -362,7 +362,7 @@ struct HealthKitWorkoutCard: View {
 
             // Metrics
             HStack(spacing: 0) {
-                if let distance = workout.appDistanceMeters {
+                if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
                     WorkoutMetricItem(
                         icon: "figure.walk",
                         value: String(format: "%.2f", distance / 1000.0),

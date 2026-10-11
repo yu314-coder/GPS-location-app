@@ -337,7 +337,7 @@ class WorkoutAnalyticsManager: ObservableObject {
             var totalDistance: Double = 0
 
             for workout in matchingWorkouts {
-                guard let distance = workout.appDistanceMeters else { continue }
+                guard let distance = workout.totalDistance?.doubleValue(for: .meter()) else { continue }
                 let year = calendar.component(.year, from: workout.startDate)
                 let month = calendar.component(.month, from: workout.startDate)
                 let monthStart = calendar.date(from: DateComponents(year: year, month: month, day: 1)) ?? calendar.startOfDay(for: workout.startDate)
@@ -477,7 +477,7 @@ class WorkoutAnalyticsManager: ObservableObject {
 
             var dailyDistances: [Int: Double] = [:]
             for workout in workouts.filter({ filter.matches($0) }) {
-                if let distance = workout.appDistanceMeters {
+                if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
                     let day = calendar.component(.day, from: workout.startDate)
                     dailyDistances[day, default: 0] += distance
                 }
@@ -523,7 +523,7 @@ class WorkoutAnalyticsManager: ObservableObject {
 
             var monthlyDistances: [Int: Double] = [:]
             for workout in workouts.filter({ filter.matches($0) }) {
-                if let distance = workout.appDistanceMeters {
+                if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
                     let month = calendar.component(.month, from: workout.startDate)
                     monthlyDistances[month, default: 0] += distance
                 }
@@ -561,7 +561,7 @@ class WorkoutAnalyticsManager: ObservableObject {
 
             let totalDistance = workouts
                 .filter { filter.matches($0) }
-                .compactMap { $0.appDistanceMeters }
+                .compactMap { $0.totalDistance?.doubleValue(for: .meter()) }
                 .reduce(0, +)
 
             completion(totalDistance)

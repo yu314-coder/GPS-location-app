@@ -1233,11 +1233,6 @@ class WorkoutSession: NSObject, ObservableObject {
                 print("⌚ ⚠️ Failed to add workout metadata: \(metadataError?.localizedDescription ?? "Unknown")")
             }
 
-            // The whole track for what was on foot (build 120): the checkpointed points from disk and the newest still
-            // in memory.
-            let persistedTrack = FlightDataStore.shared.loadFlightDetails(id: self.flight.id)?.locations ?? []
-            let lastPersisted = persistedTrack.last?.timestamp ?? .distantPast
-            let onFoot = HealthDistance.onFootIntervals(persistedTrack + self.flight.locations.filter { $0.timestamp > lastPersisted })
             self.healthKitManager.addWorkoutSamples(
                 to: builder,
                 metrics: healthKitMetrics,
@@ -1257,8 +1252,7 @@ class WorkoutSession: NSObject, ObservableObject {
                         metrics: healthKitMetrics,
                         startDate: self.flight.startDate,
                         endDate: endDate,
-                        activityType: exportType,
-                        onFoot: onFoot
+                        activityType: exportType
                     ) { distanceAdded in
                         if !distanceAdded {
                             print("⌚ ⚠️ GPS workout total distance sample was not added before finish")
@@ -1311,8 +1305,8 @@ class WorkoutSession: NSObject, ObservableObject {
                                         startDate: self.flight.startDate,
                                         endDate: endDate,
                                         activityType: exportType,
-                                        includeGPSDistance: false,          // build 120: on-foot only, added above
-                                        includeNativeStepDistance: false    // Health has the watch's own pedometer
+                                        includeGPSDistance: !distanceAdded,
+                                        includeNativeStepDistance: true
                                     ) { _, _ in
                                         // 5. Save route to the existing workout. CRITICAL: use the FULL
                                         // persisted track from disk — NOT self.flight.locations, which is
