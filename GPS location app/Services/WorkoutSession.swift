@@ -5746,8 +5746,22 @@ class WorkoutSession: ObservableObject {
                                 // rejected: it would have blocked 5% of real walking seconds while
                                 // still letting a third of phantom-step moments through on rides.
                                 let gpsVetoesSteps = !self.forceMotionFallback && self.gpsSaysFasterThanWalking
+                                // A POCKET ON A MOVING BIKE HOLDS STILL; A POCKET ON A WALKING LEG SWINGS (build 133).
+                                //
+                                // When the classifier has not said [car] for two minutes - it often says nothing for
+                                // a whole ride's first minutes - the recency guard above is off, and road bumps the
+                                // pedometer counts as steps revoked the vehicle at speed. 2026-10-12 08:11: 52 "steps"
+                                // in 28 s at 41-56 km/h, the ride handed to the pedometer for 25 s at 1-4 km/h, about
+                                // 350 m lost. The phone's rotation tells the two apart: across 17 recordings the
+                                // smoothed rotation at such a moment was under 0.40 rad/s on 87 of 88 phantom batches
+                                // (median 0.2), and at or above it on all real walks but a handful of moments - each
+                                // one, on inspection, the bike slowing to a stop in traffic, not a walk. A model-speed
+                                // veto (build 48) and a recent-riding-speed veto were both tried: the app's held speed
+                                // is often still high when the rider has already got off, so each blocked real walks.
+                                // Only a vehicle is protected: with none current, steps behave as before.
+                                let stepsLookCarried = !self.vehicleContextIsCurrent || self.deviceIsBeingHandled
                                 if self.stepCadence >= 1.0, !self.activityIsAutomotive,
-                                   !gpsVetoesSteps,
+                                   !gpsVetoesSteps, stepsLookCarried,
                                    !automotiveRecently || self.handlingShowsDismount {
                                     self.lastStepIncrementTime = now
                                     // Counted steps at a walking cadence are direct evidence of
