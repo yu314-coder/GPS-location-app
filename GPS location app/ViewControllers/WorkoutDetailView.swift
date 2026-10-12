@@ -817,7 +817,7 @@ struct WorkoutDetailView: View {
                         }
                     }
 
-                    // Developer (build 128): this workout's own logs, re-run with this build, replacing it when saved.
+                    // Developer (build 128): this workout's own logs, re-run with this build; saved beside it, or in its place if asked (build 130).
                     if hasSavedLogs, developerUnlocked, let recordingStamp {
                         NavigationLink {
                             WorkoutImportView(preselectStamp: recordingStamp, onReplaced: { replacedByRerun = true })
