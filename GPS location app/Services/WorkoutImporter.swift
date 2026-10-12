@@ -30,9 +30,17 @@ final class WorkoutImporter: ObservableObject {
         var notes: [String]
         /// This phone's own workout from the same moment, if there is one.
         var sameMoment: Flight?
+        /// Rebuilt from this phone's own logs (build 128): the workout it replaces is its own.
+        var ownRecording = false
     }
 
     @Published private(set) var sources: [Source] = []
+    /// This phone's own recordings (build 128), read where they are: no copying, no picker.
+    @Published private(set) var ownSources: [Source] = []
+    /// Stamps of the recordings whose workout is saved on this phone.
+    @Published private(set) var savedStamps: Set<String> = []
+    /// The folder has been listed at least once.
+    @Published private(set) var ownLoaded = false
     @Published private(set) var busy = false
     @Published private(set) var progress = 0.0
     @Published private(set) var status: String?
@@ -86,21 +94,54 @@ final class WorkoutImporter: ObservableObject {
         }
     }
 
+    // MARK: - This phone
+
+    /// THE SAME PHONE (build 128). A workout recorded here already has its logs in Documents/VelocityLogs and its
+    /// saved workout beside them, so re-running it needs no AirDrop and no Files: list the recordings, newest
+    /// first, and mark those whose workout is still saved, so it can be replaced by the re-run.
+    func loadOwnRecordings() {
+        Task.detached(priority: .userInitiated) {
+            let dir = SessionDiagnosticsRecorder.velocityLogDirectory
+            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+            let logs = WorkoutLogReplay.scan(files).logs
+            await MainActor.run {
+                self.ownSources = logs.map { .logs($0) }
+                self.savedStamps = Set(FlightDataStore.shared.savedFlights.map { SessionDiagnosticsRecorder.logStamp(for: $0.startDate) })
+                self.ownLoaded = true
+            }
+        }
+    }
+
+    func isOwn(_ source: Source) -> Bool { ownSources.contains(source) }
+
     // MARK: - Reading
 
     func read(_ source: Source, rerunFlight: Bool, useLoggedGPS: Bool) {
+        let own = isOwn(source)
         busy = true; progress = 0; preview = nil; cancelFlag.value = false
         let flag = cancelFlag
         status = rerunFlight ? "Reading the logs and re-running the flight…" : "Reading…"
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                let (flight, lines, notes) = try Self.build(source, rerunFlight: rerunFlight, useLoggedGPS: useLoggedGPS,
+                let (flight, lines, notes) = try Self.build(source, own: own, rerunFlight: rerunFlight, useLoggedGPS: useLoggedGPS,
                     progress: { p in Task { @MainActor in self?.progress = p } },
                     cancelled: { flag.value })
                 await MainActor.run {
                     guard let self else { return }
-                    let same = FlightDataStore.shared.savedFlights.first { abs($0.startDate.timeIntervalSince(flight.startDate)) < 180 }
-                    self.preview = Preview(flight: flight, lines: lines, notes: notes, sameMoment: same)
+                    // This phone's own recording replaces the workout it was recorded as (same stamp); otherwise one that
+                    // started within three minutes.
+                    var same: Flight?
+                    if own, case .logs(let set) = source {
+                        same = FlightDataStore.shared.savedFlights.first { SessionDiagnosticsRecorder.logStamp(for: $0.startDate) == set.stamp }
+                    }
+                    same = same ?? FlightDataStore.shared.savedFlights.first { abs($0.startDate.timeIntervalSince(flight.startDate)) < 180 }
+                    var rebuilt = flight
+                    if own, let same {
+                        // Keep what the owner set on the original: its name, places and effort, and the moment it began.
+                        rebuilt.startDate = min(rebuilt.startDate, same.startDate)
+                        rebuilt.origin = same.origin; rebuilt.destination = same.destination; rebuilt.effort = same.effort
+                    }
+                    self.preview = Preview(flight: rebuilt, lines: lines, notes: notes, sameMoment: same, ownRecording: own)
                     self.busy = false; self.status = nil
                 }
             } catch {
@@ -111,7 +152,7 @@ final class WorkoutImporter: ObservableObject {
 
     func cancel() { cancelFlag.value = true }
 
-    nonisolated private static func build(_ source: Source, rerunFlight: Bool, useLoggedGPS: Bool,
+    nonisolated private static func build(_ source: Source, own: Bool, rerunFlight: Bool, useLoggedGPS: Bool,
                                           progress: @escaping (Double) -> Void, cancelled: @escaping () -> Bool) throws
         -> (Flight, [(String, String)], [String]) {
         switch source {
@@ -130,7 +171,7 @@ final class WorkoutImporter: ObservableObject {
             let r = try WorkoutLogReplay.rebuild(set, rerunFlight: rerunFlight, useLoggedGPS: useLoggedGPS,
                                                  runways: { DepartureRunways.axes(nearLatitude: $0, longitude: $1) },
                                                  progress: progress, cancelled: cancelled)
-            let flight = makeFlight(r)
+            let flight = makeFlight(r, own: own)
             let fmt = DateFormatter(); fmt.dateStyle = .medium; fmt.timeStyle = .short
             let hm = DateFormatter(); hm.dateFormat = "HH:mm:ss"
             var lines: [(String, String)] = [
@@ -159,7 +200,7 @@ final class WorkoutImporter: ObservableObject {
     }
 
     /// The rebuilt route as this app's own workout: its points, and metrics added up the way a live workout's are.
-    nonisolated private static func makeFlight(_ r: WorkoutLogReplay.Result) -> Flight {
+    nonisolated private static func makeFlight(_ r: WorkoutLogReplay.Result, own: Bool) -> Flight {
         var flight = Flight(id: UUID(), startDate: r.start)
         flight.endDate = r.end
         flight.workoutType = r.workoutTypeRaw
@@ -193,8 +234,11 @@ final class WorkoutImporter: ObservableObject {
         metrics.sanitize()
         flight.locations = locations
         flight.metrics = metrics
-        flight.notes = "Imported from " + (r.device ?? "another phone") + (r.build.map { " (build " + $0 + ")" } ?? "")
-            + (r.flight != nil ? ", flight re-run with " + Bundle.appVersionDisplay : "")
+        flight.notes = own
+            ? "Re-run with " + Bundle.appVersionDisplay + " from this phone's recording" + (r.build.map { " (recorded by build " + $0 + ")" } ?? "")
+                + (r.flight != nil ? ", flight re-run" : "")
+            : "Imported from " + (r.device ?? "another phone") + (r.build.map { " (build " + $0 + ")" } ?? "")
+                + (r.flight != nil ? ", flight re-run with " + Bundle.appVersionDisplay : "")
         return flight
     }
 

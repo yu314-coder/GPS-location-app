@@ -487,6 +487,7 @@ enum WorkoutLogReplay {
         var lat = first.lat, lon = first.lon, lastPointT = first.t
         var anchorAcc = max(first.hAcc, 5), sinceFix = 0.0
         var lastGoodFix = -Double.infinity
+        var lastFix = first, refused = 0
         var baseAlt = first.alt
         var recordedKm = 0.0
         points.append(Point(time: Date(timeIntervalSince1970: first.t), latitude: lat, longitude: lon, altitude: first.alt,
@@ -518,6 +519,14 @@ enum WorkoutLogReplay {
                 guard f.t > first.t else { continue }
                 // A fix counts only where the phone was using GPS (Force Velocity off), unless asked for the answer key.
                 if velocityOn(f.t), !useLoggedGPS { continue }
+                // The app refuses a fix that moved far more than its own reported speed allows
+                // (WorkoutSession.fixContradictsItself); the log keeps every fix, so refuse it here too.
+                let dt = f.t - lastFix.t
+                if dt > 0.5, f.speed >= 0,
+                   haversine(lastFix.lat, lastFix.lon, f.lat, f.lon) / dt > max(f.speed * 3, f.speed + 5) {
+                    refused += 1; continue
+                }
+                lastFix = f
                 lat = f.lat; lon = f.lon; anchorAcc = max(f.hAcc, 5); sinceFix = 0; lastGoodFix = f.t
                 if !inFlight(f.t) { baseAlt = f.alt }
                 points.append(Point(time: Date(timeIntervalSince1970: f.t), latitude: f.lat, longitude: f.lon, altitude: f.alt,
@@ -538,6 +547,7 @@ enum WorkoutLogReplay {
         // Ticks recorded before the first fix (a workout begun without GPS) are laid down after it, as the app does.
         let early = ticks.filter { $0.t < first.t && !inFlight($0.t) }
         if !early.isEmpty { notes.append("\(early.count) dead-reckoned ticks before the first fix are left out") }
+        if refused > 0 { notes.append("\(refused) GPS fixes left out, as the app left them out: each moved far further than its own speed") }
 
         var found: FlightFound?
         if let r = run, let rt = r.roll {

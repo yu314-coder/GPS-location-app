@@ -3,8 +3,16 @@ import HealthKit
 import UniformTypeIdentifiers
 
 /// DEVELOPER MODE: Import a workout (build 127). See WorkoutImporter and WorkoutLogReplay.
+/// Build 128: this phone's own recordings are listed directly, and a workout's detail screen opens this with its
+/// own recording chosen (`preselectStamp`) and read at once, showing only that recording; saving it in place of the
+/// original closes this and calls `onReplaced`, and the detail screen of the deleted original then closes too.
 struct WorkoutImportView: View {
+    var preselectStamp: String? = nil
+    var onReplaced: (() -> Void)? = nil
     @StateObject private var importer = WorkoutImporter()
+    @Environment(\.dismiss) private var dismiss
+    @State private var showAllOwn = false
+    @State private var didPreselect = false
     @State private var picking = false
     @State private var chosen: WorkoutImporter.Source?
     @State private var rerunFlight = true
@@ -28,51 +36,82 @@ struct WorkoutImportView: View {
         let f = ByteCountFormatter(); f.allowedUnits = [.useKB, .useMB, .useGB]; f.countStyle = .file; return f
     }()
 
+    private static let stampFormat: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HHmmss"; return f
+    }()
+    private static let shownFormat: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short; return f
+    }()
+
+    /// Opened from a workout's detail screen: that workout only.
+    private var focused: Bool { preselectStamp != nil }
+
     var body: some View {
         List {
-            Section {
-                Button { picking = true } label: {
-                    SettingsRow(symbol: "square.and.arrow.down", tint: .blue, title: "Choose files or a folder",
-                                subtitle: "The other phone's logs, or a flight_details file")
+            if focused {
+                Section {
+                    if let chosen {
+                        sourceRow(chosen)
+                    } else if importer.ownLoaded {
+                        Text("This workout's recording is no longer on this phone.").foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                    }
+                } header: {
+                    Text("This workout's recording")
+                } footer: {
+                    Text("Drawn again from this phone's own logs with this build. Saved, it takes the original's place here and in Apple Health unless you switch that off below.")
                 }
-                .buttonStyle(.plain)
-                .disabled(importer.busy)
-            } footer: {
-                Text("On the other phone: Developer → Session logs → Share all, then AirDrop or save to Files. A recording is its velocity_events, velocity_debug and velocity_raw50hz files; the raw file is what lets a flight be drawn again.")
+            } else {
+                Section {
+                    if importer.ownLoaded, importer.ownSources.isEmpty {
+                        Text("No recordings on this phone.").foregroundStyle(.secondary)
+                    }
+                    ForEach(showAllOwn ? importer.ownSources : Array(importer.ownSources.prefix(8))) { source in
+                        sourceRow(source)
+                    }
+                    if !showAllOwn, importer.ownSources.count > 8 {
+                        Button("Show all \(importer.ownSources.count) recordings") { showAllOwn = true }
+                    }
+                } header: {
+                    Text("On this phone")
+                } footer: {
+                    Text("Re-run a workout recorded here with this build, and replace the original with it. Marked recordings still have their workout saved.")
+                }
+
+                Section {
+                    Button { picking = true } label: {
+                        SettingsRow(symbol: "square.and.arrow.down", tint: .blue, title: "Choose files or a folder",
+                                    subtitle: "The other phone's logs, or a flight_details file")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(importer.busy)
+                } header: {
+                    Text("From another phone")
+                } footer: {
+                    Text("On the other phone: Developer → Session logs → Share all, then AirDrop or save to Files. A recording is its velocity_events, velocity_debug and velocity_raw50hz files; the raw file is what lets a flight be drawn again.")
+                }
+
+                if !importer.sources.isEmpty {
+                    Section {
+                        ForEach(importer.sources) { source in sourceRow(source) }
+                    } header: { Text("Found in the files you chose") }
+                }
             }
 
-            if !importer.sources.isEmpty {
+            if let chosen {
                 Section {
-                    ForEach(importer.sources) { source in
-                        Button { chosen = source } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(title(source)).font(.body)
-                                    Text(detail(source)).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if chosen == source { Image(systemName: "checkmark").foregroundStyle(.tint) }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                    if case .logs(let set) = chosen {
+                        Toggle("Re-run a flight with this build", isOn: $rerunFlight)
+                            .disabled(!set.canRerunFlight)
+                        Toggle("Use the GPS logged in Force Velocity", isOn: $useLoggedGPS)
                     }
-                } header: { Text("Found") }
-
-                if let chosen {
-                    Section {
-                        if case .logs(let set) = chosen {
-                            Toggle("Re-run a flight with this build", isOn: $rerunFlight)
-                                .disabled(!set.canRerunFlight)
-                            Toggle("Use the GPS logged in Force Velocity", isOn: $useLoggedGPS)
-                        }
-                        Button(importer.preview == nil ? "Read" : "Read again") {
-                            importer.read(chosen, rerunFlight: rerunFlight, useLoggedGPS: useLoggedGPS)
-                        }
-                        .disabled(importer.busy)
-                    } footer: {
-                        Text("A flight is found in the logs and drawn again with this build's takeoff, direction, cabin clock and speed. The ground is as the phone drew it: its GPS fixes and its dead-reckoned steps between them. In Force Velocity the app ignored GPS and logged it only as an answer key, so it is left out unless you switch this on.")
+                    Button(importer.preview == nil ? "Read" : "Read again") {
+                        importer.read(chosen, rerunFlight: rerunFlight, useLoggedGPS: useLoggedGPS)
                     }
+                    .disabled(importer.busy)
+                } footer: {
+                    Text("A flight is found in the logs and drawn again with this build's takeoff, direction, cabin clock and speed. The ground is as the phone drew it: its GPS fixes and its dead-reckoned steps between them. In Force Velocity the app ignored GPS and logged it only as an answer key, so it is left out unless you switch this on.")
                 }
             }
 
@@ -108,7 +147,7 @@ struct WorkoutImportView: View {
                     if let same = p.sameMoment {
                         Toggle(isOn: $replaceSameMoment) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Replace this phone's workout")
+                                Text(p.ownRecording ? "Replace the original workout" : "Replace this phone's workout")
                                 Text(String(format: "Started at the same time, %.1f km. It is deleted here%@.",
                                             (same.metrics?.totalDistance ?? 0) / 1000,
                                             same.workoutUUID != nil ? " and in Apple Health" : ""))
@@ -117,7 +156,12 @@ struct WorkoutImportView: View {
                         }
                     }
                     Button {
-                        importer.save(type: type, toHealth: toHealth, replaceSameMoment: replaceSameMoment) { done = $0 }
+                        let replacing = replaceSameMoment && p.sameMoment != nil
+                        importer.save(type: type, toHealth: toHealth, replaceSameMoment: replaceSameMoment) { message in
+                            done = message
+                            // The detail screen underneath shows the original, which is gone now: back to the list.
+                            if replacing, let onReplaced { onReplaced(); dismiss() }
+                        }
                     } label: {
                         Label("Save workout", systemImage: "tray.and.arrow.down.fill")
                     }
@@ -131,7 +175,7 @@ struct WorkoutImportView: View {
                 Section { Label(done, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
             }
         }
-        .navigationTitle("Import a workout")
+        .navigationTitle(focused ? "Re-run this workout" : "Import a workout")
         .navigationBarTitleDisplayMode(.inline)
         .fileImporter(isPresented: $picking, allowedContentTypes: [.commaSeparatedText, .json, .folder, .plainText, .data],
                       allowsMultipleSelection: true) { result in
@@ -140,7 +184,17 @@ struct WorkoutImportView: View {
                 importer.receive(urls)
             }
         }
+        .onAppear { importer.loadOwnRecordings() }
         .onChange(of: importer.sources) { _, s in if chosen == nil, s.count == 1 { chosen = s.first } }
+        .onChange(of: importer.ownSources) { _, own in
+            // Opened from a workout's detail screen: its recording, read at once.
+            guard !didPreselect, let stamp = preselectStamp,
+                  let source = own.first(where: { if case .logs(let set) = $0 { return set.stamp == stamp }; return false }) else { return }
+            didPreselect = true
+            chosen = source
+            if case .logs(let set) = source { rerunFlight = set.canRerunFlight }
+            importer.read(source, rerunFlight: rerunFlight, useLoggedGPS: useLoggedGPS)
+        }
         .onChange(of: chosen) { _, c in
             if case .logs(let set)? = c { rerunFlight = set.canRerunFlight }
         }
@@ -149,13 +203,31 @@ struct WorkoutImportView: View {
                types.contains(where: { $0.0 == t }) { type = t } else { type = .other }
             // A flight goes to Health as Other unless chosen otherwise: no estimated steps for 3,000 km.
             if importer.preview?.flight.notes?.contains("flight re-run") == true { type = .other }
-            replaceSameMoment = false
+            // The same phone's re-run replaces its original by default; another phone's never does unless asked.
+            replaceSameMoment = importer.preview?.ownRecording == true && importer.preview?.sameMoment != nil
         }
+    }
+
+    private func sourceRow(_ source: WorkoutImporter.Source) -> some View {
+        Button { chosen = source } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title(source)).font(.body)
+                    Text(detail(source)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if chosen == source { Image(systemName: "checkmark").foregroundStyle(.tint) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func title(_ s: WorkoutImporter.Source) -> String {
         switch s {
-        case .logs(let set): return "Recording " + set.stamp.replacingOccurrences(of: "_", with: " ")
+        case .logs(let set):
+            if let d = Self.stampFormat.date(from: set.stamp) { return Self.shownFormat.string(from: d) }
+            return "Recording " + set.stamp.replacingOccurrences(of: "_", with: " ")
         case .saved(let url): return url.lastPathComponent
         }
     }
@@ -165,7 +237,8 @@ struct WorkoutImportView: View {
         case .logs(let set):
             let parts = [set.events != nil ? "events" : nil, set.debug != nil ? "debug" : nil,
                          set.raw.isEmpty ? nil : (set.raw.count == 1 ? "raw motion" : "raw motion ×\(set.raw.count)")].compactMap { $0 }
-            return parts.joined(separator: " · ") + " · " + sizeFormatter.string(fromByteCount: set.bytes)
+            let saved = importer.isOwn(s) ? (importer.savedStamps.contains(set.stamp) ? " · workout saved" : " · no saved workout") : ""
+            return parts.joined(separator: " · ") + " · " + sizeFormatter.string(fromByteCount: set.bytes) + saved
         case .saved: return "A saved workout, as that phone saved it"
         }
     }

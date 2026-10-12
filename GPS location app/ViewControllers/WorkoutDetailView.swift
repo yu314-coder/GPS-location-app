@@ -8,6 +8,10 @@ struct WorkoutDetailView: View {
     @ObservedObject private var healthKitManager = HealthKitManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showingShareSheet = false
+    @AppStorage("developerUnlocked") private var developerUnlocked = false
+    /// A flight has thousands of one-kilometre splits (build 128): the first hundred, the rest on request.
+    @State private var showAllSplits = false
+    private static let SPLITS_SHOWN = 100
     @State private var gpxFileURL: URL?
     @State private var detailedFlight: Flight?
     @State private var isLoadingDetails = false
@@ -23,6 +27,8 @@ struct WorkoutDetailView: View {
     /// evaluation; it is read on appear and when the shown workout's start time changes. The files
     /// are created when the workout starts recording, so they already exist when this opens.
     @State private var hasSavedLogs = false
+    /// Replaced by its re-run (build 128): this screen shows a workout that no longer exists, so it closes when it is back.
+    @State private var replacedByRerun = false
 
     /// Composed here rather than when the HealthKit query returns, so the GPS/total counts read
     /// the flight AFTER its details have finished loading asynchronously.
@@ -692,8 +698,8 @@ struct WorkoutDetailView: View {
                                 .font(.headline)
                                 .padding(.horizontal)
 
-                            VStack(spacing: 8) {
-                                ForEach(metrics.splits) { split in
+                            LazyVStack(spacing: 8) {
+                                ForEach(showAllSplits ? metrics.splits : Array(metrics.splits.prefix(Self.SPLITS_SHOWN))) { split in
                                     HStack {
                                         Text("Km \(split.number)")
                                             .font(.subheadline)
@@ -728,6 +734,11 @@ struct WorkoutDetailView: View {
                                     .padding(.horizontal)
                                     .background(Color(.systemGray6))
                                     .cornerRadius(8)
+                                }
+                                if !showAllSplits, metrics.splits.count > Self.SPLITS_SHOWN {
+                                    Button("Show all \(metrics.splits.count) splits") { showAllSplits = true }
+                                        .font(.subheadline)
+                                        .padding(.vertical, 6)
                                 }
                             }
                             .padding(.horizontal)
@@ -804,6 +815,24 @@ struct WorkoutDetailView: View {
                         }
                     }
 
+                    // Developer (build 128): this workout's own logs, re-run with this build, replacing it when saved.
+                    if hasSavedLogs, developerUnlocked {
+                        NavigationLink {
+                            WorkoutImportView(preselectStamp: SessionDiagnosticsRecorder.logStamp(for: activeFlight.startDate),
+                                              onReplaced: { replacedByRerun = true })
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                Text("Re-run with this build")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.purple)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
+                    }
+
                     // Recalculate Distance button
                     if !activeFlight.locations.isEmpty {
                         Button(action: {
@@ -866,6 +895,7 @@ struct WorkoutDetailView: View {
             }
         }
         .onAppear {
+            if replacedByRerun { dismiss(); return }
             loadDetailsIfNeeded()
             loadHealthKitRouteSummary()
             refreshSavedLogs()
@@ -1137,6 +1167,35 @@ struct WorkoutDetailView: View {
 
 // MARK: - Supporting Views
 
+/// A LONG WORKOUT'S CHARTS, DRAWN FROM WHAT THE SCREEN CAN SHOW (build 128). Every chart drew every sample - a four-hour
+/// flight's speed history is 15,000 points (a line and an area each), its motion history at 50 a second up to 800,000
+/// across four charts, with 3,300 one-kilometre splits below them - and opening a 3,000 km workout took the app past
+/// 2 GB and iOS ended it. Charts now get at most `limit` samples: each slice of the timeline keeps its lowest and its
+/// highest, in time order, so peaks and dips still show; at screen width the line looks the same.
+enum ChartThinning {
+    static func thin<T>(_ samples: [T], limit: Int = 1_500, value: (T) -> Double) -> [T] {
+        guard samples.count > limit, limit >= 4 else { return samples }
+        let buckets = limit / 2
+        let size = Double(samples.count) / Double(buckets)
+        var out: [T] = []
+        out.reserveCapacity(buckets * 2)
+        for b in 0..<buckets {
+            let lo = Int(Double(b) * size), hi = min(samples.count, Int(Double(b + 1) * size))
+            guard lo < hi else { continue }
+            var iMin = lo, iMax = lo
+            var vMin = value(samples[lo]), vMax = vMin
+            for i in (lo + 1)..<hi {
+                let v = value(samples[i])
+                if v < vMin { vMin = v; iMin = i }
+                if v > vMax { vMax = v; iMax = i }
+            }
+            if iMin == iMax { out.append(samples[iMin]) }
+            else { out.append(samples[min(iMin, iMax)]); out.append(samples[max(iMin, iMax)]) }
+        }
+        return out
+    }
+}
+
 struct DetailMetricCard: View {
     let icon: String
     let title: String
@@ -1235,6 +1294,11 @@ struct SpeedChartView: View {
     let speedHistory: [SpeedSample]
     let maxSpeed: Double
 
+    init(speedHistory: [SpeedSample], maxSpeed: Double) {
+        self.speedHistory = ChartThinning.thin(speedHistory) { $0.speed }
+        self.maxSpeed = maxSpeed
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Chart {
@@ -1306,6 +1370,12 @@ struct AccelerationChartView: View {
     let accelerationHistory: [AccelerationSample]
     let maxAcceleration: Double
     let maxDeceleration: Double
+
+    init(accelerationHistory: [AccelerationSample], maxAcceleration: Double, maxDeceleration: Double) {
+        self.accelerationHistory = ChartThinning.thin(accelerationHistory) { $0.acceleration }
+        self.maxAcceleration = maxAcceleration
+        self.maxDeceleration = maxDeceleration
+    }
 
     private var yDomain: ClosedRange<Double> {
         let values = accelerationHistory.map(\.acceleration) + [maxAcceleration, maxDeceleration]
@@ -1405,6 +1475,11 @@ struct AccelerationChartView: View {
 struct MotionAccelerationChartView: View {
     let motionAccelerationHistory: [MotionAccelerationSample]
 
+    /// Each axis is thinned again for drawing; this only keeps the four mapped copies small (50 a second for hours).
+    init(motionAccelerationHistory: [MotionAccelerationSample]) {
+        self.motionAccelerationHistory = ChartThinning.thin(motionAccelerationHistory, limit: 12_000) { $0.acceleration }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             MotionAccelerationAxisChart(
@@ -1452,6 +1527,12 @@ private struct MotionAccelerationAxisChart: View {
     let color: Color
     let samples: [(timestamp: Date, value: Double)]
     var forceZeroBaseline = false
+
+    init(title: String, unit: String, color: Color, samples: [(timestamp: Date, value: Double)], forceZeroBaseline: Bool = false) {
+        self.title = title; self.unit = unit; self.color = color
+        self.samples = ChartThinning.thin(samples) { $0.value }
+        self.forceZeroBaseline = forceZeroBaseline
+    }
 
     private var yDomain: ClosedRange<Double> {
         let values = samples.map { $0.value }
@@ -1509,6 +1590,10 @@ private struct MotionAccelerationAxisChart: View {
 struct AttitudeChartView: View {
     let attitudeHistory: [AttitudeSample]
 
+    init(attitudeHistory: [AttitudeSample]) {
+        self.attitudeHistory = ChartThinning.thin(attitudeHistory, limit: 12_000) { $0.pitch }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             MotionAccelerationAxisChart(
@@ -1538,6 +1623,10 @@ struct AttitudeChartView: View {
 @available(iOS 16.0, *)
 struct RotationRateChartView: View {
     let rotationRateHistory: [RotationRateSample]
+
+    init(rotationRateHistory: [RotationRateSample]) {
+        self.rotationRateHistory = ChartThinning.thin(rotationRateHistory, limit: 12_000) { $0.magnitude }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1577,6 +1666,10 @@ struct RotationRateChartView: View {
 struct CompassHeadingChartView: View {
     let compassHeadingHistory: [HeadingSample]
 
+    init(compassHeadingHistory: [HeadingSample]) {
+        self.compassHeadingHistory = ChartThinning.thin(compassHeadingHistory, limit: 12_000) { $0.heading }
+    }
+
     var body: some View {
         MotionAccelerationAxisChart(
             title: "Heading",
@@ -1592,6 +1685,12 @@ struct AltitudeChartView: View {
     let altitudeHistory: [AltitudeSample]
     let maxAltitude: Double
     let minAltitude: Double
+
+    init(altitudeHistory: [AltitudeSample], maxAltitude: Double, minAltitude: Double) {
+        self.altitudeHistory = ChartThinning.thin(altitudeHistory) { $0.altitude }
+        self.maxAltitude = maxAltitude
+        self.minAltitude = minAltitude
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1678,6 +1777,11 @@ struct AltitudeChartView: View {
 struct PaceChartView: View {
     let speedHistory: [SpeedSample]
     let activityType: HKWorkoutActivityType?
+
+    init(speedHistory: [SpeedSample], activityType: HKWorkoutActivityType?) {
+        self.speedHistory = ChartThinning.thin(speedHistory) { $0.speed }
+        self.activityType = activityType
+    }
 
     // Convert speed (m/s) to pace (min/km)
     private var paceHistory: [(timestamp: Date, pace: Double)] {
@@ -1816,6 +1920,10 @@ struct PaceChartView: View {
 struct BarometricAltitudeChartView: View {
     let barometricAltitudeHistory: [BarometricAltitudeSample]
 
+    init(barometricAltitudeHistory: [BarometricAltitudeSample]) {
+        self.barometricAltitudeHistory = ChartThinning.thin(barometricAltitudeHistory) { $0.relativeAltitude }
+    }
+
     private var yDomain: ClosedRange<Double> {
         let values = barometricAltitudeHistory.map(\.relativeAltitude)
         let minValue = values.min() ?? 0
@@ -1871,6 +1979,10 @@ struct BarometricAltitudeChartView: View {
 @available(iOS 16.0, *)
 struct PressureChartView: View {
     let pressureHistory: [PressureSample]
+
+    init(pressureHistory: [PressureSample]) {
+        self.pressureHistory = ChartThinning.thin(pressureHistory) { $0.pressure }
+    }
 
     private var maxPressure: Double {
         pressureHistory.map { $0.pressure * 10 }.max() ?? 1013.0
@@ -1964,6 +2076,10 @@ struct PressureChartView: View {
 @available(iOS 16.0, *)
 struct GPSQualityChartView: View {
     let gpsQualityHistory: [GPSQualitySample]
+
+    init(gpsQualityHistory: [GPSQualitySample]) {
+        self.gpsQualityHistory = ChartThinning.thin(gpsQualityHistory) { $0.score }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

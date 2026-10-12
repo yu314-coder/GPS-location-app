@@ -596,6 +596,10 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         return dir
     }
 
+    /// This phone's log folder and a workout's stamp in it, for Developer → Import a workout (build 128).
+    static var velocityLogDirectory: URL { logDirectory }
+    static func logStamp(for workoutStart: Date) -> String { stamp(for: workoutStart) }
+
     private static func stamp(for workoutStart: Date) -> String {
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd_HHmmss"
