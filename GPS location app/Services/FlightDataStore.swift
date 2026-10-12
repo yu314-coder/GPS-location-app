@@ -210,6 +210,8 @@ class FlightDataStore: ObservableObject {
             details.workoutUUID = workoutUUID
             persistFlightDetails(details)
         }
+        // A watch flight still being merged keeps the link too, or its next checkpoint would write it out again.
+        checkpointLock.lock(); if checkpointFlight?.id == flightID { checkpointFlight?.workoutUUID = workoutUUID }; checkpointLock.unlock()
     }
 
     func resyncSignature(for flight: Flight) -> String {
@@ -266,8 +268,25 @@ class FlightDataStore: ObservableObject {
         }
     }
 
+    /// THE WATCH'S FLIGHT, KEPT BETWEEN CHECKPOINTS (build 127). When the watch can reach the phone it sends each
+    /// checkpoint twice - a file transfer and an immediate message - and both were merged: the location tail was
+    /// replaced (harmless) but every history was appended twice, so a stored watch workout carried its speed,
+    /// altitude and pressure samples twice over. And each merge decoded the whole growing file first. Now a checkpoint
+    /// already merged is skipped, merges run one at a time (the two deliveries arrive on different queues), and the
+    /// merged flight stays in memory for the next checkpoint instead of being read back from disk.
+    private let checkpointLock = NSLock()
+    private var checkpointFlight: Flight?
+    private var mergedCheckpoints = Set<String>()
+
     func mergeFlightCheckpoint(_ checkpoint: FlightCheckpointPayload) {
-        var mergedFlight = loadFlightDetails(id: checkpoint.flightID) ?? Flight(
+        checkpointLock.lock(); defer { checkpointLock.unlock() }
+        let key = "\(checkpoint.flightID)|\(checkpoint.locationStartIndex)|\(checkpoint.totalLocationCount)|\(checkpoint.locations.count)|\(checkpoint.isFinal)|\(checkpoint.metrics.totalDistance)"
+        guard mergedCheckpoints.insert(key).inserted else {
+            print("📱 Watch checkpoint already merged (second delivery) - skipped")
+            return
+        }
+        var mergedFlight = (checkpointFlight?.id == checkpoint.flightID ? checkpointFlight : nil)
+            ?? loadFlightDetails(id: checkpoint.flightID) ?? Flight(
             id: checkpoint.flightID,
             startDate: checkpoint.startDate
         )
@@ -293,7 +312,10 @@ class FlightDataStore: ObservableObject {
             mergedFlight.locations.sort { $0.timestamp < $1.timestamp }
         }
 
-        saveFlightIncremental(mergedFlight, metrics: mergedFlight.metrics ?? checkpoint.metrics)
+        let metrics = mergedFlight.metrics ?? checkpoint.metrics
+        mergedFlight.metrics = metrics
+        checkpointFlight = checkpoint.isFinal ? nil : mergedFlight
+        saveFlightIncremental(mergedFlight, metrics: metrics)
     }
 
     private func mergeMetrics(existing: FlightMetrics?, checkpoint: FlightMetrics) -> FlightMetrics {
@@ -328,6 +350,7 @@ class FlightDataStore: ObservableObject {
 
     func deleteFlight(_ flight: Flight) {
         print("🗑️ Deleting flight: \(flight.id)")
+        checkpointLock.lock(); if checkpointFlight?.id == flight.id { checkpointFlight = nil }; checkpointLock.unlock()
         runOnMain {
             self.savedFlights.removeAll { $0.id == flight.id }
             self.persistFlights()

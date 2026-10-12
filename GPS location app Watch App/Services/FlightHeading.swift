@@ -11,7 +11,8 @@ import Foundation
 /// BR226 (Singapore-Taoyuan) the same push read 194° on the 16 Pro, 203° on the iPad and 215° on the 17 (the
 /// app's own window: 233°) - the 17 lay by a power outlet. So the push is matched to the departure runway
 /// when one is known: the runways of the airport at the phone's last GPS fix (OurAirports, public domain,
-/// bundled; DepartureRunways). Within 40° of one of its two directions, that direction is the start.
+/// bundled; DepartureRunways). Within 40° of one of its two directions, that direction is the start (or within
+/// 60° when no other runway direction comes within 30° more: build 127).
 ///
 /// THEN THE GYROSCOPE ABOUT DOWN, IN TURN EPISODES. BR226 showed three things the build 114 rules missed:
 ///   1. GENTLE TURNS NOBODY FEELS. At 900 km/h a 10° course change at 0.2°/s banks 5°: 0.4% heavier, far below
@@ -62,7 +63,9 @@ import Foundation
 /// The watch carries an identical copy (scripts/check_watch_engine.sh).
 struct FlightHeading {
     static let ROLL_WINDOW: TimeInterval = 35
-    private static let RUNWAY_SNAP = 40.0          // deg: the push within this of a runway direction takes it
+    private static let RUNWAY_SNAP = 40.0          // deg: the push within this of a runway direction takes it,
+    private static let RUNWAY_SNAP_CLEAR = 60.0    // or within this when every other direction is at least
+    private static let RUNWAY_CLEAR = 30.0         // this much further away (build 127)
     private static let TURN_RATE = 0.25            // deg/s (10-s mean, bias off) for a felt turn
     private static let TURN_LOAD = 0.012           // and the cabin this much heavier than its level
     private static let PAYBACK_SECONDS = 300.0     // after a felt turn, the opposite way needs...
@@ -124,7 +127,16 @@ struct FlightHeading {
     private var magRef: [Double]?, magAngle = 0.0, magTurn = 0.0, magMin = 0.0, magMax = 0.0, magSum = 0.0, magN = 0
 
     /// A takeoff roll may be starting (the integration just passed 30 kt): collect its push from now.
-    mutating func beginRoll(at time: Date) {
+    ///
+    /// ON THE GROUND, A NEW ROLL STARTS THE HEADING AFRESH (build 127). The heading is set once, 35 s into a confirmed
+    /// roll, and held until the cabin lands. Replayed on BR226, the iPhone 17's takeoff integration ran away while
+    /// the phone was being handled at the gate - 6.6 m/s faster every second, from a tilt it took for a push - and
+    /// passed 30 kt and 200 km/h within 30 s: a "roll" half an hour before the real one. Its push (92°) became the
+    /// heading, and the real roll down runway 20C was never measured. Live, the same phone's integration crept up
+    /// more slowly and missed the 30-s test, so build 123 got away with it. A roll that begins while the cabin is
+    /// still on the ground now drops any heading held from before; in the air nothing changes.
+    mutating func beginRoll(at time: Date, cabinAirborne: Bool) {
+        if !cabinAirborne, heading != nil { endFlight() }
         rollStart = time; rollConfirmed = false; rollNorth = 0; rollEast = 0; rollSamples = 0
     }
 
@@ -169,10 +181,16 @@ struct FlightHeading {
             let measured = Self.wrap(atan2(rollEast, rollNorth) * 180 / .pi)
             measuredRollDirection = measured
             var used = measured
+            // Build 127: also within 60° when no other runway direction is within 30° more. Replayed, the 17's
+            // push read 244° down runway 20C (203°) - 41° off, by an outlet and timed from 2 s before the roll, while
+            // the plane was still lining up - and Changi's runways are all parallel, so nothing else was close.
             let directions = departureRunways.flatMap { [Self.wrap($0), Self.wrap($0 + 180)] }
-            if let best = directions.min(by: { abs(Self.diff($0, measured)) < abs(Self.diff($1, measured)) }),
-               abs(Self.diff(best, measured)) <= Self.RUNWAY_SNAP {
-                used = best
+                .sorted { abs(Self.diff($0, measured)) < abs(Self.diff($1, measured)) }
+            if let best = directions.first {
+                let off = abs(Self.diff(best, measured))
+                let next = directions.dropFirst().first { abs(Self.diff($0, best)) > 5 }
+                let clear = next.map { abs(Self.diff($0, measured)) - off >= Self.RUNWAY_CLEAR } ?? true
+                if off <= Self.RUNWAY_SNAP || (off <= Self.RUNWAY_SNAP_CLEAR && clear) { used = best }
             }
             rollDirection = used
             heading = used

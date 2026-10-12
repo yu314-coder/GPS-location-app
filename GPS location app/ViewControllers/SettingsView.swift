@@ -29,7 +29,6 @@ struct SettingsView: View {
     @AppStorage("velocityBackgroundRecording") private var velocityBackgroundRecording = true
     @AppStorage("diagnosticsLoggingEnabled") private var diagnosticsLoggingEnabled = true
 
-    @StateObject private var locationManager = LocationManager()
     @ObservedObject private var healthKitManager = HealthKitManager.shared
 
     @State private var locationPermissionStatus = "Not Determined"
@@ -335,8 +334,10 @@ struct SettingsView: View {
     // MARK: - Permission Helpers
 
     private func updatePermissionStatus() {
-        // Update Location Permission Status
-        switch locationManager.authorizationStatus {
+        // Update Location Permission Status. Read from the shared manager, which follows the same
+        // system status: this screen used to create and configure a whole second LocationManager
+        // (its own CLLocationManager and delegate) only to read this value.
+        switch LocationManager.shared.authorizationStatus {
         case .notDetermined:
             locationPermissionStatus = "Not Determined"
         case .restricted:

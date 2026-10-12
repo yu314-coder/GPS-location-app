@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import CoreLocation
 
 /// FIVE TABS, NOT SIX.
 ///
@@ -231,8 +232,12 @@ struct HomeView: View {
 
     @StateObject private var analytics = WorkoutAnalyticsManager.shared
     @ObservedObject private var flightStore = FlightDataStore.shared
-    @ObservedObject private var locationManager = LocationManager.shared
     @ObservedObject private var healthKitManager = HealthKitManager.shared
+
+    /// Only the permission is read here. Observing the whole LocationManager redrew Home on every
+    /// motion sample (it publishes ~11 values per sample during a watch workout); this follows the
+    /// one published value, starting from the same current value.
+    @State private var locationAuthorization = LocationManager.shared.authorizationStatus
 
     @State private var detailFlight: Flight?
     @State private var isAnimating = false
@@ -240,12 +245,22 @@ struct HomeView: View {
     private var isIPad: Bool { horizontalSizeClass == .regular }
 
     /// Newest first, and only finished workouts — an in-progress one belongs on the live screen.
+    ///
+    /// Read once per body by `content` and passed down: it was re-run ~7 times per draw, each a
+    /// filter and full sort of every saved summary. The top few are picked in one pass instead of a
+    /// full sort; equal dates keep store order, as the stable sort did, so the list is the same.
     private var recentFlights: [Flight] {
-        flightStore.savedFlights
-            .filter { !$0.isActive }
-            .sorted { $0.startDate > $1.startDate }
-            .prefix(isIPad ? 6 : 4)
-            .map { $0 }
+        let limit = isIPad ? 6 : 4
+        var top: [Flight] = []
+        top.reserveCapacity(limit + 1)
+        for flight in flightStore.savedFlights where !flight.isActive {
+            if top.count == limit, let last = top.last, !(flight.startDate > last.startDate) { continue }
+            // After every kept workout with a date not older than this one (store order on ties).
+            let index = top.firstIndex { flight.startDate > $0.startDate } ?? top.count
+            top.insert(flight, at: index)
+            if top.count > limit { top.removeLast() }
+        }
+        return top
     }
 
     var body: some View {
@@ -262,13 +277,17 @@ struct HomeView: View {
             }
         }
         .onAppear {
-            analytics.fetchData()
+            analytics.fetchDataIfNeeded()
             isAnimating = true
+        }
+        .onReceive(LocationManager.shared.$authorizationStatus.removeDuplicates()) { status in
+            locationAuthorization = status
         }
     }
 
     private var content: some View {
-        ScrollView {
+        let recent = recentFlights
+        return ScrollView {
             VStack(spacing: AppTheme.sectionSpacing) {
                 hero
 
@@ -276,10 +295,10 @@ struct HomeView: View {
                     showLiveSession = true
                 }
 
-                monthSummary
+                monthSummary(recentCount: recent.count)
 
-                if !recentFlights.isEmpty {
-                    recentSection
+                if !recent.isEmpty {
+                    recentSection(recent)
                 } else {
                     EmptyStateCard(
                         icon: "figure.run",
@@ -335,7 +354,7 @@ struct HomeView: View {
 
     // MARK: This month
 
-    private var monthSummary: some View {
+    private func monthSummary(recentCount: Int) -> some View {
         AppCard {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(title: analytics.monthName, subtitle: "So far this month") {
@@ -353,7 +372,7 @@ struct HomeView: View {
                                value: String(format: "%.1f km", analytics.monthTotalKm),
                                label: "Distance", tint: AppTheme.distance, compact: true)
                     MetricTile(icon: "figure.run",
-                               value: "\(recentFlights.count == 0 ? analytics.allTimeWorkoutCount : flightStore.savedFlights.count)",
+                               value: "\(recentCount == 0 ? analytics.allTimeWorkoutCount : flightStore.savedFlights.count)",
                                label: "Workouts", tint: AppTheme.count, compact: true)
                     if isIPad {
                         MetricTile(icon: "calendar",
@@ -376,7 +395,7 @@ struct HomeView: View {
 
     // MARK: Recent
 
-    private var recentSection: some View {
+    private func recentSection(_ recentFlights: [Flight]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader("Recent")
             AppCard(padding: 0) {
@@ -402,8 +421,8 @@ struct HomeView: View {
     /// location denied a workout runs and records nothing, and that is only discoverable after
     /// the fact. Worth one line on the first screen.
     private var readiness: some View {
-        let locationOK = locationManager.authorizationStatus == .authorizedAlways
-            || locationManager.authorizationStatus == .authorizedWhenInUse
+        let locationOK = locationAuthorization == .authorizedAlways
+            || locationAuthorization == .authorizedWhenInUse
         let healthLabel = healthKitManager.writeAuthorizationLabel
 
         return AppCard {
@@ -412,7 +431,7 @@ struct HomeView: View {
                 HStack(spacing: 10) {
                     ReadinessPill(icon: "location.fill", title: "Location",
                                   ok: locationOK,
-                                  detail: locationManager.authorizationStatus == .authorizedAlways
+                                  detail: locationAuthorization == .authorizedAlways
                                       ? "Always" : (locationOK ? "In use" : "Off"))
                     ReadinessPill(icon: "heart.fill", title: "Health",
                                   ok: healthLabel == "Authorized",

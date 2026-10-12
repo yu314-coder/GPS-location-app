@@ -96,6 +96,21 @@ struct DeveloperView: View {
             .onAppear { tileBytes = tiles.cacheSizeBytes() }
             .onChange(of: tiles.isDownloading) { _, busy in if !busy { tileBytes = tiles.cacheSizeBytes() } }
 
+            // Build 127: a workout from another phone's logs, a flight in it drawn again with this build.
+            Section {
+                NavigationLink {
+                    WorkoutImportView()
+                } label: {
+                    SettingsRow(symbol: "square.and.arrow.down.on.square", tint: .indigo,
+                                title: "Import a workout",
+                                subtitle: "From another phone's logs or saved workout, with its type")
+                }
+            } header: {
+                Text("Workouts")
+            } footer: {
+                Text("Rebuilds a recording from its logs, re-runs a flight in it with this build's flight code, and saves it here and to Apple Health with the type you choose.")
+            }
+
             Section {
                 NavigationLink {
                     PermissionTestView()

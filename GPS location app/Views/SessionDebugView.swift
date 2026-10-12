@@ -40,6 +40,7 @@ struct SessionDebugView: View {
     private var trackMode: some View {
         VStack(spacing: 8) {
             OfflineTrackPlot(locations: locations)
+                .equatable()
                 .frame(maxWidth: .infinity)
                 .aspectRatio(1, contentMode: .fit)
                 .background(Color(.secondarySystemBackground))
@@ -63,11 +64,8 @@ struct SessionDebugView: View {
     }
 
     private var spanText: String {
-        guard locations.count > 1,
-              let minLat = locations.map(\.latitude).min(),
-              let maxLat = locations.map(\.latitude).max(),
-              let minLon = locations.map(\.longitude).min(),
-              let maxLon = locations.map(\.longitude).max() else { return "—" }
+        guard locations.count > 1, let bounds = TrackBounds(locations) else { return "—" }
+        let (minLat, maxLat, minLon, maxLon) = (bounds.minLat, bounds.maxLat, bounds.minLon, bounds.maxLon)
         let h = CLLocation(latitude: minLat, longitude: minLon)
             .distance(from: CLLocation(latitude: minLat, longitude: maxLon))
         let v = CLLocation(latitude: minLat, longitude: minLon)
@@ -159,10 +157,32 @@ struct SessionDebugView: View {
     }
 }
 
+/// The track's latitude/longitude extremes in one pass. The track view mapped and scanned every
+/// point 5-9 times per draw for these. Same comparisons as `map(...).min()` / `.max()` (a new min
+/// when `e < min`, a new max when `max < e`, first point to last), so the same values come out.
+private struct TrackBounds {
+    var minLat: Double, maxLat: Double, minLon: Double, maxLon: Double
+
+    init?(_ locations: [FlightLocation]) {
+        guard let first = locations.first else { return nil }
+        minLat = first.latitude; maxLat = first.latitude
+        minLon = first.longitude; maxLon = first.longitude
+        for loc in locations.dropFirst() {
+            if loc.latitude < minLat { minLat = loc.latitude }
+            if maxLat < loc.latitude { maxLat = loc.latitude }
+            if loc.longitude < minLon { minLon = loc.longitude }
+            if maxLon < loc.longitude { maxLon = loc.longitude }
+        }
+    }
+}
+
 /// The recorded track as a scaled polyline. Equirectangular projection about the track's own
 /// centre — over a single workout the distortion is far below the width of the drawn line, and
 /// it keeps the whole thing dependency-free and instant.
-private struct OfflineTrackPlot: View {
+///
+/// Equatable on its points, so the debug panel's other updates (status line, diagnostics) do not
+/// re-project the whole track; an unchanged route compares by pointer.
+private struct OfflineTrackPlot: View, Equatable {
     let locations: [FlightLocation]
 
     var body: some View {
@@ -202,10 +222,8 @@ private struct OfflineTrackPlot: View {
     }
 
     private func projected(in size: CGSize) -> [CGPoint] {
-        guard locations.count > 1 else { return [] }
-        let lats = locations.map(\.latitude), lons = locations.map(\.longitude)
-        guard let minLat = lats.min(), let maxLat = lats.max(),
-              let minLon = lons.min(), let maxLon = lons.max() else { return [] }
+        guard locations.count > 1, let bounds = TrackBounds(locations) else { return [] }
+        let (minLat, maxLat, minLon, maxLon) = (bounds.minLat, bounds.maxLat, bounds.minLon, bounds.maxLon)
         let midLat = (minLat + maxLat) / 2
         let lonScale = cos(midLat * .pi / 180)          // metres per degree shrink with latitude
         let w = max((maxLon - minLon) * lonScale, 1e-9)

@@ -9,7 +9,6 @@ struct WorkoutDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingShareSheet = false
     @State private var gpxFileURL: URL?
-    @State private var mapRegion: MKCoordinateRegion?
     @State private var detailedFlight: Flight?
     @State private var isLoadingDetails = false
     @State private var hasAttemptedDetailLoad = false
@@ -20,6 +19,10 @@ struct WorkoutDetailView: View {
     @State private var showRecalculateAlert = false
     @State private var recalculateMessage = ""
     @State private var healthKitRoute: (routes: Int, points: Int, maxGap: Double)?
+    /// Whether velocity logs exist for this workout. The body listed the log folder on every
+    /// evaluation; it is read on appear and when the shown workout's start time changes. The files
+    /// are created when the workout starts recording, so they already exist when this opens.
+    @State private var hasSavedLogs = false
 
     /// Composed here rather than when the HealthKit query returns, so the GPS/total counts read
     /// the flight AFTER its details have finished loading asynchronously.
@@ -105,9 +108,6 @@ struct WorkoutDetailView: View {
                     ZStack(alignment: .topTrailing) {
                         StaticMapView(locations: activeFlight.locations)
                             .frame(height: 300)
-                            .onAppear {
-                                calculateMapRegion()
-                            }
 
                         // Map stats overlay
                         VStack(alignment: .trailing, spacing: 4) {
@@ -788,7 +788,7 @@ struct WorkoutDetailView: View {
                     // The velocity-model logs, saved automatically when this workout stopped:
                     // the per-tick diagnostics and the raw 50 Hz vertical trace. Only shown when
                     // files actually exist for this workout, so it never offers nothing.
-                    if !SessionDiagnosticsRecorder.savedLogs(forWorkoutStart: activeFlight.startDate).isEmpty {
+                    if hasSavedLogs {
                         Button(action: {
                             SessionDiagnosticsRecorder.exportSavedLogs(forWorkoutStart: activeFlight.startDate)
                         }) {
@@ -868,6 +868,10 @@ struct WorkoutDetailView: View {
         .onAppear {
             loadDetailsIfNeeded()
             loadHealthKitRouteSummary()
+            refreshSavedLogs()
+        }
+        .onChange(of: activeFlight.startDate) {
+            refreshSavedLogs()
         }
         .onDisappear {
             detailedFlight = nil
@@ -880,33 +884,8 @@ struct WorkoutDetailView: View {
         }
     }
 
-    private func calculateMapRegion() {
-        guard !activeFlight.locations.isEmpty else { return }
-
-        let coordinates = activeFlight.locations.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-        let minLat = coordinates.map { $0.latitude }.min() ?? 0
-        let maxLat = coordinates.map { $0.latitude }.max() ?? 0
-        let minLon = coordinates.map { $0.longitude }.min() ?? 0
-        let maxLon = coordinates.map { $0.longitude }.max() ?? 0
-
-        let center = CLLocationCoordinate2D(
-            latitude: (minLat + maxLat) / 2,
-            longitude: (minLon + maxLon) / 2
-        )
-
-        // Ensure minimum span to avoid zero-size map issues
-        let latDelta = max((maxLat - minLat) * 1.2, 0.001)
-        let lonDelta = max((maxLon - minLon) * 1.2, 0.001)
-
-        let span = MKCoordinateSpan(
-            latitudeDelta: latDelta,
-            longitudeDelta: lonDelta
-        )
-
-        // Ensure UI update happens on main thread
-        DispatchQueue.main.async {
-            self.mapRegion = MKCoordinateRegion(center: center, span: span)
-        }
+    private func refreshSavedLogs() {
+        hasSavedLogs = !SessionDiagnosticsRecorder.savedLogs(forWorkoutStart: activeFlight.startDate).isEmpty
     }
 
     private func formatTimeRange() -> String {

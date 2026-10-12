@@ -51,9 +51,22 @@ class WorkoutSession: NSObject, ObservableObject {
         set { if screenIsAwake { objectWillChange.send() }; storedMetrics = newValue }
         _modify { if screenIsAwake { objectWillChange.send() }; yield &storedMetrics }
     }
-    @Published var lastLocationTime: Date = Date()  // Exposed for UI to monitor GPS health
-    @Published var isUsingIPhoneGPSFallback = false
-    @Published var fallbackDebugStatus = "GPS OK"   // live on-screen fallback state
+    /// When the last fix arrived. Not published (build 127): the workout screen reads it from its own 1 s timer, and
+    /// every write comes with a change to `flight`, which already tells the screen.
+    var lastLocationTime: Date = Date()
+    // The status lines the workout screen shows are told to it only while it is awake too (build 127): the
+    // pedometer, network and dead-reckoning status changed several times a second and redrew the whole list with
+    // the wrist down. The wake sends what changed; the workout screen's own timer redraws the always-on face.
+    private var storedIPhoneGPSFallback = false
+    var isUsingIPhoneGPSFallback: Bool {
+        get { storedIPhoneGPSFallback }
+        set { if screenIsAwake { objectWillChange.send() }; storedIPhoneGPSFallback = newValue }
+    }
+    private var storedFallbackDebugStatus = "GPS OK"
+    var fallbackDebugStatus: String {   // live on-screen fallback state
+        get { storedFallbackDebugStatus }
+        set { if screenIsAwake { objectWillChange.send() }; storedFallbackDebugStatus = newValue }
+    }
     /// Velocity Mode. PERSISTED across workouts, matching the iPhone: it could previously only
     /// be switched on AFTER a workout had started, so the opening seconds of every test were
     /// ordinary GPS and the track was a mixture of two sources.
@@ -70,7 +83,11 @@ class WorkoutSession: NSObject, ObservableObject {
         forceMotionFallback = value
         persistForceMotionFallback = true
     }
-    @Published var networkDebugMessage = "GPS active"
+    private var storedNetworkDebugMessage = "GPS active"
+    var networkDebugMessage: String {
+        get { storedNetworkDebugMessage }
+        set { if screenIsAwake { objectWillChange.send() }; storedNetworkDebugMessage = newValue }
+    }
     /// Both speed engines, the iPhone's relayed speed and the watch's GPS this second, and which
     /// of them set the displayed speed - for the live screens (build 79). Refreshed once a second
     /// while a workout runs, whether or not Velocity Mode is on.
@@ -87,13 +104,41 @@ class WorkoutSession: NSObject, ObservableObject {
         var developer = false
         var velocityMode = false
     }
-    @Published var engineReadout = SpeedEngineReadout()
-    @Published var networkPathStatus = "Net: pending • iPhone: disconnected"
-    @Published var nativePedometerStepCount: Int = 0
-    @Published var nativePedometerDistanceMeters: Double = 0.0
-    @Published var nativePedometerCallbackHz: Double = 0.0
-    @Published var nativePedometerCallbackAgeSeconds: TimeInterval = 0.0
-    @Published var nativePedometerQueryAgeSeconds: TimeInterval = 0.0
+    private var storedEngineReadout = SpeedEngineReadout()
+    var engineReadout: SpeedEngineReadout {
+        get { storedEngineReadout }
+        set { if screenIsAwake { objectWillChange.send() }; storedEngineReadout = newValue }
+    }
+    private var storedNetworkPathStatus = "Net: pending • iPhone: disconnected"
+    var networkPathStatus: String {
+        get { storedNetworkPathStatus }
+        set { if screenIsAwake { objectWillChange.send() }; storedNetworkPathStatus = newValue }
+    }
+    private var storedPedometerStepCount = 0
+    var nativePedometerStepCount: Int {
+        get { storedPedometerStepCount }
+        set { if screenIsAwake { objectWillChange.send() }; storedPedometerStepCount = newValue }
+    }
+    private var storedPedometerDistance = 0.0
+    var nativePedometerDistanceMeters: Double {
+        get { storedPedometerDistance }
+        set { if screenIsAwake { objectWillChange.send() }; storedPedometerDistance = newValue }
+    }
+    private var storedPedometerCallbackHz = 0.0
+    var nativePedometerCallbackHz: Double {
+        get { storedPedometerCallbackHz }
+        set { if screenIsAwake { objectWillChange.send() }; storedPedometerCallbackHz = newValue }
+    }
+    private var storedPedometerCallbackAge: TimeInterval = 0.0
+    var nativePedometerCallbackAgeSeconds: TimeInterval {
+        get { storedPedometerCallbackAge }
+        set { if screenIsAwake { objectWillChange.send() }; storedPedometerCallbackAge = newValue }
+    }
+    private var storedPedometerQueryAge: TimeInterval = 0.0
+    var nativePedometerQueryAgeSeconds: TimeInterval {
+        get { storedPedometerQueryAge }
+        set { if screenIsAwake { objectWillChange.send() }; storedPedometerQueryAge = newValue }
+    }
 
     let locationManager = LocationManager()
     let healthKitManager = HealthKitManager()
@@ -452,7 +497,7 @@ class WorkoutSession: NSObject, ObservableObject {
         guard let v = launchIntegrator.speed else { return }
         let now = Date()
         if v < 15.43 { rollCandidateAt = nil } else if rollCandidateAt == nil {
-            rollCandidateAt = now; flightHeading.beginRoll(at: now)
+            rollCandidateAt = now; flightHeading.beginRoll(at: now, cabinAirborne: flightPhase.isAirborne)
             // The runways at the airport of the watch's last fix (build 124): the roll takes the one it matches.
             if let fix = locationManager.currentLocation, fix.horizontalAccuracy >= 0, fix.horizontalAccuracy <= 3000,
                now.timeIntervalSince(fix.timestamp) < 6 * 3600 {

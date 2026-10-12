@@ -10,7 +10,7 @@ class WorkoutSession: ObservableObject {
     static let shared = WorkoutSession()
 
     private struct ActiveWorkoutSnapshot: Codable {
-        let flight: Flight
+        var flight: Flight
         var currentMetrics: FlightMetrics
         let workoutTypeRawValue: UInt
         let isPaused: Bool
@@ -22,6 +22,8 @@ class WorkoutSession: ObservableObject {
         /// say how many records of each belong to this snapshot. nil: they are inside currentMetrics (older saves).
         var motionSidecarCount: Int? = nil
         var compassSidecarCount: Int? = nil
+        /// Build 127: the route too, as lines of new points; this many belong to the snapshot. nil: inside `flight`.
+        var locationsSidecarCount: Int? = nil
     }
 
     private let healthStore = HKHealthStore()
@@ -51,6 +53,17 @@ class WorkoutSession: ObservableObject {
         get { storedMetrics }
         set { if !appIsInBackground { objectWillChange.send() }; storedMetrics = newValue }
         _modify { if !appIsInBackground { objectWillChange.send() }; yield &storedMetrics }
+    }
+    /// SENSOR-RATE CHANGES REDRAW AT MOST TEN TIMES A SECOND (build 127). The motion and compass callbacks change
+    /// the metrics 50 times a second in Velocity Mode, and with the screen on each change re-evaluated the whole
+    /// workout screen - graphs, map and all. They now change the stored metrics directly (the same values, at the
+    /// same moment: everything that reads them, the tick, the log and the save, sees exactly what it saw) and ask
+    /// for a redraw at most every 0.1 s. The 1 Hz tick and every GPS fix still redraw at once.
+    private var lastSensorRedraw = Date.distantPast
+    private func sensorChangedMetrics() {
+        guard !appIsInBackground else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastSensorRedraw) >= 0.1 { lastSensorRedraw = now; objectWillChange.send() }
     }
 
     let locationManager = LocationManager()
@@ -111,6 +124,47 @@ class WorkoutSession: ObservableObject {
     /// Records of each history already in its side file; Int.max means "rewrite it whole at the next save".
     private var motionSidecarWritten = Int.max
     private var compassSidecarWritten = Int.max
+
+    /// THE ROUTE IS NOT RE-WRITTEN EVERY FIVE SECONDS EITHER (build 127). After build 120 the recovery save still
+    /// encoded every point of the route each time - about 14,000 by hour four of a flight, some 10 MB of JSON every
+    /// five seconds. The points now go to a side file as lines of what is new. Points already written can still
+    /// change (a re-anchor slides a dead-reckoned run onto the fix that ends it, a redraw turns a stretch, a bad run is
+    /// dropped), so each save first compares what was written - id, position, height, course, kept here compactly -
+    /// with the route as it is, and when anything written has changed it writes the file whole, as before. A restore
+    /// gets exactly the route the snapshot had.
+    private var locationsSidecarURL: URL { activeWorkoutSnapshotURL.deletingLastPathComponent().appendingPathComponent("active_workout_locations.jsonl") }
+    private var locationsSidecarWritten = Int.max
+    private var writtenRoute: [(UUID, UInt64, UInt64, UInt64, UInt64)] = []
+
+    private static func appendLocationsSidecar(_ url: URL, fresh: Bool, locations: [FlightLocation]) throws {
+        guard fresh || !locations.isEmpty else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        var line = try encoder.encode(locations)
+        line.append(0x0A)
+        if fresh || !FileManager.default.fileExists(atPath: url.path) {
+            try line.write(to: url, options: .atomic)
+            return
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: line)
+    }
+
+    /// The snapshot's route; whatever the file holds of it if it holds less (never seen: side files are written first).
+    private static func readLocationsSidecar(_ url: URL, count: Int) -> [FlightLocation] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        var out: [FlightLocation] = []
+        for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            guard let chunk = try? decoder.decode([FlightLocation].self, from: Data(line)) else { break }
+            out.append(contentsOf: chunk)
+            if out.count >= count { break }
+        }
+        return Array(out.prefix(count))
+    }
 
     private static func appendSidecar(_ url: URL, fresh: Bool, values: [Double]) {
         let data = values.withUnsafeBufferPointer { Data(buffer: $0) }
@@ -2048,7 +2102,7 @@ class WorkoutSession: ObservableObject {
         }
         locationManager.onMotionAccelerationUpdate = { [weak self] acceleration, x, y, z, pitch, roll, yaw, rotationX, rotationY, rotationZ, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
-            self.currentMetrics.updateWithMotionAcceleration(
+            self.storedMetrics.updateWithMotionAcceleration(
                 acceleration,
                 x: x,
                 y: y,
@@ -2061,10 +2115,12 @@ class WorkoutSession: ObservableObject {
                 rotationRateZ: rotationZ,
                 timestamp: timestamp
             )
+            self.sensorChangedMetrics()
         }
         locationManager.onCompassHeadingUpdate = { [weak self] heading, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
-            self.currentMetrics.updateWithCompassHeading(heading, timestamp: timestamp)
+            self.storedMetrics.updateWithCompassHeading(heading, timestamp: timestamp)
+            self.sensorChangedMetrics()
         }
         locationManager.onBarometricAltitudeUpdate = { [weak self] relativeAltitude, pressure, timestamp in
             guard let self = self, self.isActive, !self.isPaused else { return }
@@ -2336,8 +2392,14 @@ class WorkoutSession: ObservableObject {
             if let n = snapshot.compassSidecarCount {
                 snapshot.currentMetrics.compassHeadingHistory = Self.readCompassSidecar(compassSidecarURL, count: n)
             }
+            if let n = snapshot.locationsSidecarCount {
+                let route = Self.readLocationsSidecar(locationsSidecarURL, count: n)
+                if route.count < n { print("⚠️ Recovery route side file holds \(route.count) of \(n) points") }
+                snapshot.flight.locations = route
+            }
             // The side files may hold records written after this snapshot; the next save rewrites them whole.
             motionSidecarWritten = Int.max; compassSidecarWritten = Int.max
+            locationsSidecarWritten = Int.max; writtenRoute.removeAll()
             return snapshot
         } catch {
             print("⚠️ Failed to decode active workout snapshot: \(error.localizedDescription)")
@@ -2377,8 +2439,26 @@ class WorkoutSession: ObservableObject {
         motionSidecarWritten = motion.count
         compassSidecarWritten = compass.count
 
+        // The route: what is new since the last save, or all of it when anything already written has changed.
+        let route = flight.locations
+        var unchanged = min(route.count, writtenRoute.count)
+        for i in 0..<unchanged {
+            let l = route[i], w = writtenRoute[i]
+            if l.id != w.0 || l.latitude.bitPattern != w.1 || l.longitude.bitPattern != w.2
+                || l.altitude.bitPattern != w.3 || l.course.bitPattern != w.4 { unchanged = i; break }
+        }
+        let routeFresh = locationsSidecarWritten == Int.max || unchanged < writtenRoute.count
+        let routeNew = Array(route[(routeFresh ? 0 : writtenRoute.count)...])
+        if routeFresh { writtenRoute.removeAll(keepingCapacity: true) }
+        for l in routeNew {
+            writtenRoute.append((l.id, l.latitude.bitPattern, l.longitude.bitPattern, l.altitude.bitPattern, l.course.bitPattern))
+        }
+        locationsSidecarWritten = route.count
+        var flightWithoutRoute = flight
+        flightWithoutRoute.locations = []
+
         var snapshot = ActiveWorkoutSnapshot(
-            flight: flight,
+            flight: flightWithoutRoute,
             currentMetrics: metrics,
             workoutTypeRawValue: workoutType.rawValue,
             isPaused: isPaused,
@@ -2389,10 +2469,11 @@ class WorkoutSession: ObservableObject {
         )
         snapshot.motionSidecarCount = motion.count
         snapshot.compassSidecarCount = compass.count
+        snapshot.locationsSidecarCount = route.count
 
         lastSnapshotSaveDate = now
         let url = activeWorkoutSnapshotURL
-        let motionURL = motionSidecarURL, compassURL = compassSidecarURL
+        let motionURL = motionSidecarURL, compassURL = compassSidecarURL, routeURL = locationsSidecarURL
 
         activeWorkoutSnapshotQueue.async {
             do {
@@ -2408,6 +2489,7 @@ class WorkoutSession: ObservableObject {
                 for c in compassNew { compassValues.append(c.timestamp.timeIntervalSince1970); compassValues.append(c.heading) }
                 Self.appendSidecar(motionURL, fresh: motionFresh, values: motionValues)
                 Self.appendSidecar(compassURL, fresh: compassFresh, values: compassValues)
+                try Self.appendLocationsSidecar(routeURL, fresh: routeFresh, locations: routeNew)
                 let encoder = JSONEncoder()
                 encoder.dateEncodingStrategy = .secondsSince1970
                 let data = try encoder.encode(snapshot)
@@ -2418,15 +2500,16 @@ class WorkoutSession: ObservableObject {
         }
 
         if shouldLog {
-            print("💾 Active workout checkpoint saved (\(reason)): locations=\(snapshot.flight.locations.count), distance=\(String(format: "%.2f", snapshot.currentMetrics.totalDistance/1000))km")
+            print("💾 Active workout checkpoint saved (\(reason)): locations=\(route.count), distance=\(String(format: "%.2f", snapshot.currentMetrics.totalDistance/1000))km")
         }
     }
 
     private func clearActiveWorkoutSnapshot(reason: String, shouldLog: Bool = false) {
         lastSnapshotSaveDate = nil
         motionSidecarWritten = Int.max; compassSidecarWritten = Int.max
+        locationsSidecarWritten = Int.max; writtenRoute.removeAll()
         let url = activeWorkoutSnapshotURL
-        let sidecars = [motionSidecarURL, compassSidecarURL]
+        let sidecars = [motionSidecarURL, compassSidecarURL, locationsSidecarURL]
 
         activeWorkoutSnapshotQueue.async {
             for side in sidecars { try? FileManager.default.removeItem(at: side) }
@@ -4115,7 +4198,7 @@ class WorkoutSession: ObservableObject {
             if let rt = rollTrack, rt.start != takeoffRollAt { rollTrack = nil }
         } else if rollCandidateAt == nil {
             rollCandidateAt = now
-            flightHeading.beginRoll(at: now)
+            flightHeading.beginRoll(at: now, cabinAirborne: flightPhase.isAirborne)
             flightHeading.departureRunways = departureRunwayAxes(at: now)
             rollTrack = (now, 0, 0)
         }

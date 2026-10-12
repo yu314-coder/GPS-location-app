@@ -96,6 +96,20 @@ private struct CachedTileMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {
+        // SwiftUI calls this on every workout-screen redraw (up to ten a second), and each call
+        // rebuilt the whole route and re-fitted the camera. Nothing is redrawn unless what is drawn
+        // changed: the route (Array == is a pointer check when untouched, and catches points moved
+        // in place), the follow switch, or the current fix while it alone places the camera.
+        let last = context.coordinator
+        let currentPlacesCamera = follows && locations.count <= 1
+        if last.follows == follows, last.locations == locations,
+           !currentPlacesCamera || last.current === current {
+            return
+        }
+        last.follows = follows
+        last.locations = locations
+        last.current = current
+
         let coords = locations.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
 
         map.removeOverlays(map.overlays.filter { $0 is MKPolyline })
@@ -125,6 +139,11 @@ private struct CachedTileMapView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
+        /// What the map was last drawn from.
+        var locations: [FlightLocation]?
+        var current: CLLocation?
+        var follows: Bool?
+
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let tile = overlay as? MKTileOverlay {
                 return MKTileOverlayRenderer(tileOverlay: tile)

@@ -10,12 +10,15 @@ import HealthKit
 struct FlightHistoryView: View {
     @ObservedObject private var store = FlightDataStore.shared
     @State private var openedFlight: Flight?
+    @State private var opening = false
 
-    private var flights: [Flight] {
+    private var sortedFlights: [Flight] {
         store.savedFlights.sorted { $0.startDate > $1.startDate }
     }
 
     var body: some View {
+        // Sorted once per drawing (build 127): each use sorted the list again, six times a drawing.
+        let flights = sortedFlights
         NavigationStack {
             Group {
                 if flights.isEmpty {
@@ -26,8 +29,18 @@ struct FlightHistoryView: View {
                             ForEach(flights) { flight in
                                 Button {
                                     // The list holds summaries without their points; the summary
-                                    // screen needs the route, so read the full workout.
-                                    openedFlight = store.loadFlightDetails(id: flight.id) ?? flight
+                                    // screen needs the route, so read the full workout - off the main
+                                    // thread (build 127), then open it.
+                                    guard !opening else { return }
+                                    opening = true
+                                    let store = self.store
+                                    DispatchQueue.global(qos: .userInitiated).async {
+                                        let full = store.loadFlightDetails(id: flight.id) ?? flight
+                                        DispatchQueue.main.async {
+                                            openedFlight = full
+                                            opening = false
+                                        }
+                                    }
                                 } label: {
                                     FlightRow(flight: flight)
                                 }
@@ -38,8 +51,8 @@ struct FlightHistoryView: View {
                             HStack(spacing: 8) {
                                 StatisticItem(title: flights.count == 1 ? "Workout" : "Workouts",
                                               value: "\(flights.count)")
-                                StatisticItem(title: "km", value: String(format: "%.0f", totalDistance))
-                                StatisticItem(title: "Time", value: formatTotalDuration(totalDuration))
+                                StatisticItem(title: "km", value: String(format: "%.0f", totalDistance(flights)))
+                                StatisticItem(title: "Time", value: formatTotalDuration(totalDuration(flights)))
                             }
                             .frame(maxWidth: .infinity)
                         }
@@ -53,16 +66,16 @@ struct FlightHistoryView: View {
         }
     }
 
-    private var totalDistance: Double {
+    private func totalDistance(_ flights: [Flight]) -> Double {
         flights.reduce(0) { $0 + ($1.metrics?.totalDistance ?? 0) } / 1000.0
     }
 
-    private var totalDuration: TimeInterval {
+    private func totalDuration(_ flights: [Flight]) -> TimeInterval {
         flights.reduce(0) { $0 + $1.duration }
     }
 
     private func deleteFlights(at offsets: IndexSet) {
-        let shown = flights
+        let shown = sortedFlights
         for index in offsets where shown.indices.contains(index) {
             store.deleteFlight(shown[index])
         }

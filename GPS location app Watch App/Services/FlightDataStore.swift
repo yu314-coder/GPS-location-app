@@ -28,6 +28,16 @@ class FlightDataStore: ObservableObject {
         documentsDirectory.appendingPathComponent("\(detailsFilePrefix)\(id.uuidString).json")
     }
 
+    /// EVERY READ AND WRITE OF flights.json AND THE DETAIL FILES, IN ORDER, OFF THE MAIN THREAD (build 127). A
+    /// checkpoint's merge decoded the growing workout, re-encoded it and rewrote flights.json on the main thread,
+    /// every 10 s to 2 min of every workout. The writes go in the order they were made, reads wait for them, and
+    /// each call first waits for merges still on the queue and puts their summaries in, so whatever it does lands
+    /// after them as before.
+    private let diskQueue = DispatchQueue(label: "com.gpsapp.watch.flightstore", qos: .utility)
+    /// Summaries of merged checkpoints not yet in savedFlights.
+    private var mergedSummaries: [Flight] = []
+    private let mergedSummariesLock = NSLock()
+
     private init() {
         loadFlights()
         loadSyncMetadata()
@@ -36,6 +46,7 @@ class FlightDataStore: ObservableObject {
     // MARK: - Public Methods
 
     func saveFlight(_ flight: Flight) {
+        finishPendingMerges()
         print("💾 Saving flight to local storage...")
         print("   Flight ID: \(flight.id)")
         print("   Locations: \(flight.locations.count)")
@@ -66,6 +77,7 @@ class FlightDataStore: ObservableObject {
     // CRITICAL: Incremental save to prevent memory overflow on Apple Watch
     // This saves the flight progressively without waiting until the end
     func saveFlightIncremental(_ flight: Flight, metrics: FlightMetrics) {
+        finishPendingMerges()
         // Update the flight with current metrics
         var updatedFlight = flight
         updatedFlight.metrics = metrics
@@ -94,32 +106,71 @@ class FlightDataStore: ObservableObject {
     }
 
     func mergeFlightCheckpoint(_ checkpoint: FlightCheckpointPayload) {
-        var mergedFlight = loadFlightDetails(id: checkpoint.flightID) ?? Flight(
-            id: checkpoint.flightID,
-            startDate: checkpoint.startDate
-        )
+        finishPendingMerges()
+        diskQueue.async { [self] in
+            var mergedFlight = readFlightDetails(id: checkpoint.flightID) ?? Flight(
+                id: checkpoint.flightID,
+                startDate: checkpoint.startDate
+            )
 
-        mergedFlight.startDate = checkpoint.startDate
-        mergedFlight.endDate = checkpoint.endDate
-        mergedFlight.metrics = checkpoint.metrics
-        mergedFlight.effort = checkpoint.effort
-        mergedFlight.workoutType = checkpoint.workoutType
+            mergedFlight.startDate = checkpoint.startDate
+            mergedFlight.endDate = checkpoint.endDate
+            mergedFlight.metrics = checkpoint.metrics
+            mergedFlight.effort = checkpoint.effort
+            mergedFlight.workoutType = checkpoint.workoutType
 
-        if checkpoint.locationStartIndex <= mergedFlight.locations.count {
-            if checkpoint.locationStartIndex < mergedFlight.locations.count {
-                mergedFlight.locations.removeSubrange(checkpoint.locationStartIndex..<mergedFlight.locations.count)
+            if checkpoint.locationStartIndex <= mergedFlight.locations.count {
+                if checkpoint.locationStartIndex < mergedFlight.locations.count {
+                    mergedFlight.locations.removeSubrange(checkpoint.locationStartIndex..<mergedFlight.locations.count)
+                }
+                mergedFlight.locations.append(contentsOf: checkpoint.locations)
+            } else {
+                print("⌚ ⚠️ Local checkpoint gap: local=\(mergedFlight.locations.count), incomingStart=\(checkpoint.locationStartIndex)")
+                mergedFlight.locations.append(contentsOf: checkpoint.locations)
+                mergedFlight.locations.sort { $0.timestamp < $1.timestamp }
             }
-            mergedFlight.locations.append(contentsOf: checkpoint.locations)
-        } else {
-            print("⌚ ⚠️ Local checkpoint gap: local=\(mergedFlight.locations.count), incomingStart=\(checkpoint.locationStartIndex)")
-            mergedFlight.locations.append(contentsOf: checkpoint.locations)
-            mergedFlight.locations.sort { $0.timestamp < $1.timestamp }
-        }
 
-        saveFlightIncremental(mergedFlight, metrics: checkpoint.metrics)
+            // What saveFlightIncremental did: the details written here, the summary and flights.json on the main thread.
+            mergedFlight.metrics = checkpoint.metrics
+            guard !mergedFlight.id.uuidString.isEmpty else {
+                print("❌ Cannot save flight - invalid ID")
+                return
+            }
+            writeFlightDetails(mergedFlight)
+            let summary = summarizedFlight(from: mergedFlight)
+            mergedSummariesLock.lock()
+            mergedSummaries.append(summary)
+            mergedSummariesLock.unlock()
+            print("✅ Incremental save completed successfully - \(mergedFlight.locations.count) locations")
+            DispatchQueue.main.async { self.applyMergedSummaries() }
+        }
+    }
+
+    /// Waits for merges still on the queue and puts their summaries in.
+    private func finishPendingMerges() {
+        diskQueue.sync {}
+        // savedFlights is the screen's; a caller on another thread (a HealthKit completion) has them put in on main.
+        if Thread.isMainThread { applyMergedSummaries() } else { DispatchQueue.main.sync { self.applyMergedSummaries() } }
+    }
+
+    /// The merged summaries into savedFlights in the order merged, flights.json written after each as the merge did.
+    private func applyMergedSummaries() {
+        mergedSummariesLock.lock()
+        let summaries = mergedSummaries
+        mergedSummaries = []
+        mergedSummariesLock.unlock()
+        for summary in summaries {
+            if let index = savedFlights.firstIndex(where: { $0.id == summary.id }) {
+                savedFlights[index] = summary
+            } else {
+                savedFlights.insert(summary, at: 0)
+            }
+            persistFlights()
+        }
     }
 
     func deleteFlight(_ flight: Flight) {
+        finishPendingMerges()
         print("🗑️ Deleting flight: \(flight.id)")
         savedFlights.removeAll { $0.id == flight.id }
         deleteFlightDetails(for: flight.id)
@@ -127,6 +178,7 @@ class FlightDataStore: ObservableObject {
     }
 
     func deleteFlight(at index: Int) {
+        finishPendingMerges()
         guard index >= 0 && index < savedFlights.count else { return }
         let flight = savedFlights[index]
         print("🗑️ Deleting flight at index \(index): \(flight.id)")
@@ -136,20 +188,26 @@ class FlightDataStore: ObservableObject {
     }
 
     func getFlight(by id: UUID) -> Flight? {
+        finishPendingMerges()
         return savedFlights.first { $0.id == id }
     }
 
     func loadFlights() {
+        finishPendingMerges()
         print("📂 Loading flights from local storage...")
 
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+        let read: Result<Data, Error>? = diskQueue.sync {
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+            return Result { try Data(contentsOf: fileURL, options: .mappedIfSafe) }
+        }
+        guard let read else {
             print("   No saved flights file found")
             savedFlights = []
             return
         }
 
         do {
-            let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+            let data = try read.get()
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             var decodedFlights = try decoder.decode([Flight].self, from: data)
@@ -216,19 +274,27 @@ class FlightDataStore: ObservableObject {
     // MARK: - Private Methods
 
     private func persistFlights() {
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = .prettyPrinted
-            let data = try encoder.encode(savedFlights)
-            try data.write(to: fileURL, options: .atomic)
-            print("✅ Saved \(savedFlights.count) flights to storage")
-        } catch {
-            print("❌ Failed to save flights: \(error.localizedDescription)")
+        let flights = savedFlights
+        diskQueue.async { [self] in
+            do {
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                encoder.outputFormatting = .prettyPrinted
+                let data = try encoder.encode(flights)
+                try data.write(to: fileURL, options: .atomic)
+                print("✅ Saved \(flights.count) flights to storage")
+            } catch {
+                print("❌ Failed to save flights: \(error.localizedDescription)")
+            }
         }
     }
 
     private func persistFlightDetails(_ flight: Flight) {
+        diskQueue.async { [self] in writeFlightDetails(flight) }
+    }
+
+    /// On diskQueue.
+    private func writeFlightDetails(_ flight: Flight) {
         let detailsURL = flightDetailsURL(for: flight.id)
 
         // SAFETY: Validate data before attempting to encode
@@ -266,7 +332,13 @@ class FlightDataStore: ObservableObject {
         }
     }
 
+    /// Waits for the writes before it. Not on diskQueue itself (readFlightDetails there).
     func loadFlightDetails(id: UUID) -> Flight? {
+        diskQueue.sync { readFlightDetails(id: id) }
+    }
+
+    /// On diskQueue.
+    private func readFlightDetails(id: UUID) -> Flight? {
         let detailsURL = flightDetailsURL(for: id)
         guard FileManager.default.fileExists(atPath: detailsURL.path) else { return nil }
 
@@ -283,13 +355,15 @@ class FlightDataStore: ObservableObject {
 
     private func deleteFlightDetails(for id: UUID) {
         let detailsURL = flightDetailsURL(for: id)
-        guard FileManager.default.fileExists(atPath: detailsURL.path) else { return }
+        diskQueue.async {
+            guard FileManager.default.fileExists(atPath: detailsURL.path) else { return }
 
-        do {
-            try FileManager.default.removeItem(at: detailsURL)
-            print("✅ Deleted flight details for \(id)")
-        } catch {
-            print("❌ Failed to delete flight details: \(error.localizedDescription)")
+            do {
+                try FileManager.default.removeItem(at: detailsURL)
+                print("✅ Deleted flight details for \(id)")
+            } catch {
+                print("❌ Failed to delete flight details: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -362,6 +436,11 @@ class FlightDataStore: ObservableObject {
     // MARK: - Storage Info
 
     var storageSize: String {
+        finishPendingMerges()
+        return diskQueue.sync { storageSizeOnQueue() }
+    }
+
+    private func storageSizeOnQueue() -> String {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return "0 KB"
         }
@@ -385,25 +464,28 @@ class FlightDataStore: ObservableObject {
     }
 
     func clearAllFlights() {
+        finishPendingMerges()
         print("🗑️ Clearing all saved flights...")
         savedFlights = []
 
-        do {
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                try FileManager.default.removeItem(at: fileURL)
-                print("✅ Deleted flights storage file")
-            }
+        diskQueue.async { [self] in
+            do {
+                if FileManager.default.fileExists(atPath: fileURL.path) {
+                    try FileManager.default.removeItem(at: fileURL)
+                    print("✅ Deleted flights storage file")
+                }
 
-            let files = try FileManager.default.contentsOfDirectory(
-                at: documentsDirectory,
-                includingPropertiesForKeys: nil
-            )
-            for file in files where file.lastPathComponent.hasPrefix(detailsFilePrefix) {
-                try? FileManager.default.removeItem(at: file)
+                let files = try FileManager.default.contentsOfDirectory(
+                    at: documentsDirectory,
+                    includingPropertiesForKeys: nil
+                )
+                for file in files where file.lastPathComponent.hasPrefix(detailsFilePrefix) {
+                    try? FileManager.default.removeItem(at: file)
+                }
+                print("✅ Deleted all flight detail files")
+            } catch {
+                print("❌ Failed to delete storage file: \(error.localizedDescription)")
             }
-            print("✅ Deleted all flight detail files")
-        } catch {
-            print("❌ Failed to delete storage file: \(error.localizedDescription)")
         }
     }
 }

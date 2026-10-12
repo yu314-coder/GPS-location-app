@@ -232,9 +232,11 @@ struct LiveSessionView: View {
 
                             if let motionHistory = workoutSession.currentMetrics.motionAccelerationHistory,
                                !motionHistory.isEmpty {
+                                // Only the 120 samples it draws. Handing over the whole history let the kept
+                                // view value share its buffer, so the next 50 Hz append copied all of it.
                                 LiveMotionAccelerationGraph(
                                     title: "a",
-                                    samples: motionHistory,
+                                    samples: Array(motionHistory.suffix(120)),
                                     color: .pink
                                 )
                                 .frame(height: 150)
@@ -545,15 +547,17 @@ struct LiveSessionView: View {
                                 )
                             }
 
-                            // Speed Graph
-                            SpeedGraphView(speedHistory: workoutSession.currentMetrics.speedHistory)
+                            // Speed Graph. The graphs get only the last minute they draw, cut with the same
+                            // `>= now - 60 s` test they apply themselves, so the drawn window is unchanged; a
+                            // whole history kept in the view value made the next append copy all of it.
+                            SpeedGraphView(speedHistory: Self.lastMinute(of: workoutSession.currentMetrics.speedHistory, at: \.timestamp))
 
                             // Altitude Graph
-                            AltitudeGraphView(altitudeHistory: workoutSession.currentMetrics.altitudeHistory)
+                            AltitudeGraphView(altitudeHistory: Self.lastMinute(of: workoutSession.currentMetrics.altitudeHistory, at: \.timestamp))
 
                             // Pressure Graph
                             if !workoutSession.currentMetrics.pressureHistory.isEmpty {
-                                PressureGraphView(pressureHistory: workoutSession.currentMetrics.pressureHistory)
+                                PressureGraphView(pressureHistory: Self.lastMinute(of: workoutSession.currentMetrics.pressureHistory, at: \.timestamp))
                             }
                         }
                         .padding()
@@ -851,10 +855,21 @@ struct LiveSessionView: View {
         }
     }
 
+    /// The samples the 60 s graphs draw, in their order. Same cut as the graphs' own (`timestamp >= now - 60`);
+    /// they re-apply it, so a later redraw of a graph shows exactly what it showed before.
+    private static func lastMinute<Sample>(of history: [Sample], at timestamp: KeyPath<Sample, Date>) -> [Sample] {
+        guard !history.isEmpty else { return [] }
+        let sixtySecondsAgo = Date().addingTimeInterval(-60.0)
+        return history.filter { $0[keyPath: timestamp] >= sixtySecondsAgo }
+    }
+
+    /// One formatter, not one per log row per render. DateFormatter construction is expensive.
+    private static let logTimeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
+
     private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let timeString = formatter.string(from: date)
+        let timeString = Self.logTimeFormatter.string(from: date)
 
         // Add milliseconds for 0.1s precision
         let milliseconds = Int((date.timeIntervalSince1970.truncatingRemainder(dividingBy: 1.0)) * 1000)
@@ -926,15 +941,11 @@ private struct LiveMotionAccelerationGraph: View {
     let samples: [MotionAccelerationSample]
     let color: Color
 
-    private var visibleSamples: [MotionAccelerationSample] {
-        Array(samples.suffix(120))
-    }
-
-    private var latestAcceleration: Double? {
-        visibleSamples.last?.acceleration
-    }
-
     var body: some View {
+        // Taken once per draw: the path read a computed `suffix(120)` copy ~240 times per frame.
+        let visibleSamples = Array(samples.suffix(120))
+        let latestAcceleration = visibleSamples.last?.acceleration
+
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label(title, systemImage: "waveform.path.ecg")

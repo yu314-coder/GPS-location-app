@@ -5,6 +5,7 @@ import HealthKit
 struct LiveSessionView: View {
     @StateObject private var workoutSession = WorkoutSession()
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showStopConfirmation = false
     @State private var showWorkoutTypeSelector = false
@@ -105,10 +106,15 @@ struct LiveSessionView: View {
                 // while the counter climbed). The tick is debounced so it runs at most
                 // once per second no matter how many timers call it.
                 workoutSession.runGpsGapFallbacksTick(source: "view")
-                displayMetrics = workoutSession.currentMetrics
                 // CRITICAL: Calculate time since last GPS update to detect when GPS breaks
-                timeSinceLastGPS = Date().timeIntervalSince(workoutSession.lastLocationTime)
-                if timeSinceLastGPS > 5 {
+                let gpsGap = Date().timeIntervalSince(workoutSession.lastLocationTime)
+                // With the screen off nothing shows these, and each write redrew the list (build 127); the
+                // always-on face is .inactive and keeps them. Refreshed on the way back (below).
+                if scenePhase != .background {
+                    displayMetrics = workoutSession.currentMetrics
+                    timeSinceLastGPS = gpsGap
+                }
+                if gpsGap > 5 {
                     let source: String
                     if workoutSession.isUsingIPhoneGPSFallback {
                         source = "iPhone fallback"
@@ -117,9 +123,14 @@ struct LiveSessionView: View {
                     } else {
                         source = "watch GPS"
                     }
-                    workoutSession.networkDebugMessage = "Waiting for fresh fix from \(source): \(Int(timeSinceLastGPS))s"
+                    workoutSession.networkDebugMessage = "Waiting for fresh fix from \(source): \(Int(gpsGap))s"
                 }
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .background, workoutSession.isActive else { return }
+            displayMetrics = workoutSession.currentMetrics
+            timeSinceLastGPS = Date().timeIntervalSince(workoutSession.lastLocationTime)
         }
         // The clock stops while paused and carries on from there, rather than jumping by the length of the
         // pause when the workout resumes (the clock itself is WatchWorkoutClock).

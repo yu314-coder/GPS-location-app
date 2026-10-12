@@ -233,7 +233,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
 
     func reset(workoutStart: Date, sessionDetail: String) {
         closeStreams()
-        try? rawFileHandle?.close()
+        let oldHandle = rawFileHandle
+        rawWriteQueue.sync { try? oldHandle?.close() }
         rawFileHandle = nil
         rawFileURL = nil
         rawSamplesWritten = 0
@@ -265,7 +266,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// background or is about to be terminated.
     func flushAll() {
         flushRawToDisk()
-        try? rawFileHandle?.synchronize()
+        let handle = rawFileHandle
+        rawWriteQueue.sync { try? handle?.synchronize() }
         debugStream?.flush()
         eventStream?.flush()
     }
@@ -421,6 +423,11 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// and nothing is thrown away.
     private let rawFlushThreshold = 2_000        // ~40 s at 50 Hz
     private var rawFileHandle: FileHandle?
+    /// THE RAW ROWS ARE FORMATTED OFF THE MAIN THREAD (build 127). Every ~40 s the 2,000 buffered samples became
+    /// 12,000 String(format:) calls on the main thread - a 30-60 ms stall of the workout, the motion callbacks and the
+    /// screen. The file is still opened (and its raw_start event recorded) on the main thread, so the events keep
+    /// their order; the formatting and the write go to this serial queue, in order, with the same text.
+    private let rawWriteQueue = DispatchQueue(label: "com.exmstc.gps.rawlog", qos: .utility)
     private var rawFileURL: URL?
     private var rawSamplesWritten = 0
     private var rawStart: Date?
@@ -516,29 +523,32 @@ final class SessionDiagnosticsRecorder: ObservableObject {
                 return
             }
         }
-        var chunk = ""
-        chunk.reserveCapacity(raw.count * 160)
-        for s in raw {
-            chunk += String(format: "%.3f,%.6f,%.3f,%.6f,%.6f", s.t, s.verticalAccel, s.gpsSpeed,
-                            s.northAccel, s.eastAccel)
-            chunk += String(format: ",%.6f,%.6f,%.6f", s.deviceAccelX, s.deviceAccelY, s.deviceAccelZ)
-            chunk += String(format: ",%.6f,%.6f,%.6f", s.gravityX, s.gravityY, s.gravityZ)
-            chunk += String(format: ",%.6f,%.6f,%.6f", s.rotationX, s.rotationY, s.rotationZ)
-            chunk += String(format: ",%.6f,%.6f,%.6f,%.2f", s.roll, s.pitch, s.yaw, s.motionHeading)
-            chunk += String(format: ",%.3f,%.3f,%.3f,%d\n", s.magX, s.magY, s.magZ, s.magAccuracy)
-        }
-        if let data = chunk.data(using: .utf8) {
-            rawFileHandle?.write(data)
-            rawSamplesWritten += raw.count
-        }
+        let batch = raw
         raw.removeAll(keepingCapacity: true)
+        rawSamplesWritten += batch.count
+        guard let handle = rawFileHandle else { return }
+        rawWriteQueue.async {
+            var chunk = ""
+            chunk.reserveCapacity(batch.count * 160)
+            for s in batch {
+                chunk += String(format: "%.3f,%.6f,%.3f,%.6f,%.6f", s.t, s.verticalAccel, s.gpsSpeed,
+                                s.northAccel, s.eastAccel)
+                chunk += String(format: ",%.6f,%.6f,%.6f", s.deviceAccelX, s.deviceAccelY, s.deviceAccelZ)
+                chunk += String(format: ",%.6f,%.6f,%.6f", s.gravityX, s.gravityY, s.gravityZ)
+                chunk += String(format: ",%.6f,%.6f,%.6f", s.rotationX, s.rotationY, s.rotationZ)
+                chunk += String(format: ",%.6f,%.6f,%.6f,%.2f", s.roll, s.pitch, s.yaw, s.motionHeading)
+                chunk += String(format: ",%.3f,%.3f,%.3f,%d\n", s.magX, s.magY, s.magZ, s.magAccuracy)
+            }
+            if let data = chunk.data(using: .utf8) { handle.write(data) }
+        }
     }
 
     /// Close the stream and return where it landed.
     @discardableResult
     func finishRawStream() -> URL? {
         flushRawToDisk()
-        try? rawFileHandle?.close()
+        let handle = rawFileHandle
+        rawWriteQueue.sync { try? handle?.close() }      // everything queued is written before it closes
         rawFileHandle = nil
         return rawFileURL
     }

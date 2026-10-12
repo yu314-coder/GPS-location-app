@@ -12,6 +12,9 @@ struct AltitudeGraphView: View {
     }
 
     var body: some View {
+        // Filtered once per draw (it was filtered three times); same samples, same order.
+        let recentSamples = self.recentSamples
+
         VStack(alignment: .leading, spacing: 8) {
             Text("Altitude")
                 .font(.caption)

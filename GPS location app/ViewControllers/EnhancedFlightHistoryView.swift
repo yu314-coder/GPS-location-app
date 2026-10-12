@@ -87,7 +87,9 @@ struct EnhancedFlightHistoryView: View {
     }
 
     private var visibleWorkouts: [WorkoutSummary] {
-        workouts.filter { !linkedWorkoutIDs.contains($0.id) }
+        // Built once, not once per workout: the computed set walks every saved flight.
+        let linked = linkedWorkoutIDs
+        return workouts.filter { !linked.contains($0.id) }
     }
 
     var body: some View {
@@ -607,14 +609,19 @@ struct EnhancedFlightHistoryView: View {
         }
     }
 
+    /// One formatter per pattern, not two per item per keystroke. DateFormatter construction is expensive.
+    private static let searchLongDateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEEE MMMM d yyyy"; return f
+    }()
+    private static let searchShortDateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "M/d/yyyy"; return f
+    }()
+
     private func matchesSearch(query: String, date: Date, typeName: String, distanceKm: String) -> Bool {
         if typeName.lowercased().contains(query) { return true }
         if distanceKm.contains(query) { return true }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEEE MMMM d yyyy"
-        if formatter.string(from: date).lowercased().contains(query) { return true }
-        formatter.dateFormat = "M/d/yyyy"
-        if formatter.string(from: date).lowercased().contains(query) { return true }
+        if Self.searchLongDateFormatter.string(from: date).lowercased().contains(query) { return true }
+        if Self.searchShortDateFormatter.string(from: date).lowercased().contains(query) { return true }
         return false
     }
 
@@ -682,9 +689,12 @@ struct EnhancedFlightHistoryView: View {
         return combined.sorted { $0.date > $1.date }
     }
 
+    private static let monthIndexFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy MMM"; return f
+    }()
+
     private var monthIndex: [(label: String, id: String)] {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy MMM"
+        let formatter = Self.monthIndexFormatter
 
         var seen: Set<String> = []
         var entries: [(label: String, id: String)] = []
@@ -700,6 +710,8 @@ struct EnhancedFlightHistoryView: View {
     }
 
     private func nearestActivityID(to date: Date) -> String? {
+        // Built once: each read re-filtered and re-sorted every saved workout.
+        let allActivitiesForJump = self.allActivitiesForJump
         guard !allActivitiesForJump.isEmpty else { return nil }
         if let sameDay = allActivitiesForJump.first(where: { Calendar.current.isDate($0.date, inSameDayAs: date) }) {
             return sameDay.id

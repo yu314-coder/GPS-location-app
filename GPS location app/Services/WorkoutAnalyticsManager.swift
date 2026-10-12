@@ -8,6 +8,7 @@
 import Foundation
 import HealthKit
 import Combine
+import UIKit
 
 // MARK: - Data Models (duplicated from widget target for cross-target access)
 
@@ -188,13 +189,113 @@ class WorkoutAnalyticsManager: ObservableObject {
         let now = Date()
         self.selectedMonth = calendar.component(.month, from: now)
         self.selectedYear = calendar.component(.year, from: now)
+
+        // Health's workouts may have changed: a permission answer (the observer is restarted
+        // under it), a return to the foreground (changes made while suspended, or permissions
+        // changed in Settings), or a workout stopped here. The observer covers every workout
+        // saved or deleted while the app runs, from any source.
+        HealthKitManager.shared.$isAuthorized
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.healthWorkoutsMayHaveChanged()
+                self?.observeHealthWorkouts()
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
+            .merge(with: NotificationCenter.default.publisher(for: .workoutDidStop))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.healthWorkoutsMayHaveChanged() }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - Fetching only when something changed
+
+    /// The selection a fetch reads, as one value: a chip that sets two of these (all time and its
+    /// year, or a year and leaving all time) fetched once per changed value, twice per tap.
+    struct FetchInputs: Equatable {
+        let isAllTimeSelected: Bool
+        let selectedMonth: Int
+        let selectedYear: Int
+        let allTimeYearFilter: Int?
+        let activityFilter: AnalyticsActivityFilter
+    }
+
+    var fetchInputs: FetchInputs {
+        FetchInputs(isAllTimeSelected: isAllTimeSelected, selectedMonth: selectedMonth,
+                    selectedYear: selectedYear, allTimeYearFilter: allTimeYearFilter,
+                    activityFilter: activityFilter)
+    }
+
+    /// Everything a fetch's result depends on besides Health's workouts themselves: the selection,
+    /// and the day, time zone and calendar (the current month and year run to today). Health's
+    /// workouts are represented by how many times they may have changed.
+    private struct FetchKey: Equatable {
+        let inputs: FetchInputs
+        let day: Date
+        let timeZone: String
+        let calendar: Calendar.Identifier
+        let healthChanges: Int
+    }
+
+    private var currentFetchKey: FetchKey {
+        let calendar = Calendar.current
+        return FetchKey(inputs: fetchInputs, day: calendar.startOfDay(for: Date()),
+                        timeZone: TimeZone.current.identifier, calendar: calendar.identifier,
+                        healthChanges: healthChanges)
+    }
+
+    /// The key of the fetch whose results are on screen, if it finished without a query error.
+    private var lastCompletedFetch: FetchKey?
+    private var healthChanges = 0
+    private var workoutObserver: HKObserverQuery?
+    private var cancellables = Set<AnyCancellable>()
+    private let queryFailureLock = NSLock()
+    private var queryFailures = 0
+
+    /// fetchData for a screen appearing. Every appearance of Home and Analysis re-ran every
+    /// HealthKit query; when nothing the result depends on changed since the fetch now on screen,
+    /// that fetch's result is what a new one would return.
+    func fetchDataIfNeeded() {
+        if !isLoading, let last = lastCompletedFetch, last == currentFetchKey { return }
+        fetchData()
+    }
+
+    private func healthWorkoutsMayHaveChanged() {
+        healthChanges += 1
+    }
+
+    private func observeHealthWorkouts() {
+        guard HKHealthStore.isHealthDataAvailable() else { return }
+        if let workoutObserver { healthStore.stop(workoutObserver) }
+        let query = HKObserverQuery(sampleType: HKObjectType.workoutType(), predicate: nil) { [weak self] _, completionHandler, _ in
+            DispatchQueue.main.async { self?.healthWorkoutsMayHaveChanged() }
+            completionHandler()
+        }
+        workoutObserver = query
+        healthStore.execute(query)
+    }
+
+    /// Counted from HealthKit's callback queues; a fetch is only remembered when none failed during it.
+    private func noteQueryFailure() {
+        queryFailureLock.lock(); queryFailures += 1; queryFailureLock.unlock()
+    }
+
+    private func queryFailureCount() -> Int {
+        queryFailureLock.lock(); defer { queryFailureLock.unlock() }
+        return queryFailures
+    }
+
+    private func fetchCompleted(_ key: FetchKey, failuresAtStart: Int) {
+        if queryFailureCount() == failuresAtStart { lastCompletedFetch = key }
     }
 
     func fetchData() {
         isLoading = true
+        let key = currentFetchKey
+        let failuresAtStart = queryFailureCount()
 
         if isAllTimeSelected {
-            fetchAllTimeData()
+            fetchAllTimeData(key: key, failuresAtStart: failuresAtStart)
             return
         }
 
@@ -275,12 +376,13 @@ class WorkoutAnalyticsManager: ObservableObject {
             self?.twoYearsAgoTotal = fetchedTwoYearsAgo
             self?.lastYearSameMonthTotal = fetchedLastYearSameMonth
             self?.isLoading = false
+            self?.fetchCompleted(key, failuresAtStart: failuresAtStart)
         }
     }
 
     // MARK: - HealthKit Queries
 
-    private func fetchAllTimeData() {
+    private func fetchAllTimeData(key: FetchKey, failuresAtStart: Int) {
         guard HKHealthStore.isHealthDataAvailable() else {
             DispatchQueue.main.async {
                 self.allTimeYearlyDistances = []
@@ -313,6 +415,7 @@ class WorkoutAnalyticsManager: ObservableObject {
             sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
         ) { _, samples, error in
             guard let workouts = samples as? [HKWorkout], error == nil else {
+                self.noteQueryFailure()
                 DispatchQueue.main.async {
                     self.allTimeYearlyDistances = []
                     self.allTimeMonthlyDistances = []
@@ -453,6 +556,7 @@ class WorkoutAnalyticsManager: ObservableObject {
                 self.allTimeTotal = totalDistance
                 self.allTimeWorkoutCount = matchingWorkouts.count
                 self.isLoading = false
+                self.fetchCompleted(key, failuresAtStart: failuresAtStart)
             }
         }
 
@@ -471,6 +575,7 @@ class WorkoutAnalyticsManager: ObservableObject {
             sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
         ) { _, samples, error in
             guard let workouts = samples as? [HKWorkout], error == nil else {
+                self.noteQueryFailure()
                 completion([])
                 return
             }
@@ -517,6 +622,7 @@ class WorkoutAnalyticsManager: ObservableObject {
             sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
         ) { _, samples, error in
             guard let workouts = samples as? [HKWorkout], error == nil else {
+                self.noteQueryFailure()
                 completion([])
                 return
             }
@@ -555,6 +661,7 @@ class WorkoutAnalyticsManager: ObservableObject {
             sortDescriptors: nil
         ) { _, samples, error in
             guard let workouts = samples as? [HKWorkout], error == nil else {
+                self.noteQueryFailure()
                 completion(0)
                 return
             }

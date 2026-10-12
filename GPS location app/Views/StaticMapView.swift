@@ -4,11 +4,15 @@ import CoreLocation
 
 struct StaticMapView: View {
     let locations: [FlightLocation]
+    /// The route as drawn, one per location, converted once here. The body converted every point
+    /// (a CLLocation each) on every evaluation, and moving the camera re-evaluates it.
+    private let routeCoordinates: [CLLocationCoordinate2D]
 
     @State private var position: MapCameraPosition
 
     init(locations: [FlightLocation]) {
         self.locations = locations
+        self.routeCoordinates = locations.map { $0.toCLLocation().coordinate.forAppleBasemap }
 
         // Calculate initial region to fit all locations
         if let first = locations.first {
@@ -28,14 +32,14 @@ struct StaticMapView: View {
         GeometryReader { geometry in
             Map(position: $position) {
                 // Draw route polyline
-                if locations.count > 1 {
-                    MapPolyline(coordinates: locations.map { $0.toCLLocation().coordinate.forAppleBasemap })
+                if routeCoordinates.count > 1 {
+                    MapPolyline(coordinates: routeCoordinates)
                         .stroke(.blue, lineWidth: 3)
                 }
 
                 // Start marker (green)
-                if let first = locations.first {
-                    Annotation("Start", coordinate: first.toCLLocation().coordinate.forAppleBasemap) {
+                if let first = routeCoordinates.first {
+                    Annotation("Start", coordinate: first) {
                         ZStack {
                             Circle()
                                 .fill(.green)
@@ -48,8 +52,8 @@ struct StaticMapView: View {
                 }
 
                 // End marker (red)
-                if let last = locations.last, locations.count > 1 {
-                    Annotation("End", coordinate: last.toCLLocation().coordinate.forAppleBasemap) {
+                if let last = routeCoordinates.last, routeCoordinates.count > 1 {
+                    Annotation("End", coordinate: last) {
                         ZStack {
                             Circle()
                                 .fill(.red)
@@ -75,7 +79,7 @@ struct StaticMapView: View {
     private func fitRegionToRoute() {
         guard !locations.isEmpty else { return }
 
-        let coordinates = locations.map { $0.toCLLocation().coordinate.forAppleBasemap }
+        let coordinates = routeCoordinates
 
         let minLat = coordinates.map { $0.latitude }.min() ?? 0
         let maxLat = coordinates.map { $0.latitude }.max() ?? 0

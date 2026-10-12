@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import HealthKit
+import Combine
 
 private enum WorkoutMapPeriod: String, CaseIterable, Identifiable {
     case all = "All"
@@ -26,6 +27,31 @@ private struct WorkoutMapTrack: Identifiable {
     let dateLabel: String
 
     var coordinateCount: Int { coordinates.count }
+}
+
+/// Health workouts whose route query answered "no route" (no route series, or one with fewer than
+/// two points) and that ended more than a day ago, so no route is still on its way from the watch.
+/// Every appearance of the Map tab fetched each of them from Health again, converted nothing and
+/// saved nothing. Kept in memory only, and forgotten whenever Health permissions may have changed
+/// (any answer to a permission request, or a return from the background, where Settings could have
+/// changed them), since "no route" can also mean "not allowed to read it". Main thread only.
+private final class HealthWorkoutsWithoutRoute {
+    static let shared = HealthWorkoutsWithoutRoute()
+    private(set) var ids: Set<UUID> = []
+    private var cancellables = Set<AnyCancellable>()
+
+    private init() {
+        HealthKitManager.shared.$isAuthorized.dropFirst().map { _ in () }
+            .merge(with: NotificationCenter.default
+                .publisher(for: UIApplication.willEnterForegroundNotification).map { _ in () })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.ids.removeAll() }
+            .store(in: &cancellables)
+    }
+
+    func insert(_ newIDs: [UUID]) {
+        ids.formUnion(newIDs)
+    }
 }
 
 private struct RoadAlignmentSegment {
@@ -328,6 +354,16 @@ struct WorkoutMapView: View {
     @State private var mapStyleSelection: MapStyleOption = .standard
     @State private var allTracksBounds: MapBounds?
     @State private var allRoutesMultiPolyline: MKMultiPolyline?
+    /// What the shown tracks were built from. See loadTracksIfChanged().
+    @State private var tracksSource: TracksSource?
+
+    /// The saved summaries a load read and which of them the period selected, in order. The same
+    /// two give the same tracks: the tracks are built from those summaries and their route files,
+    /// and a route file is rewritten only together with its summary.
+    private struct TracksSource {
+        let savedFlights: [Flight]
+        let summaryIDs: [UUID]
+    }
 
     private struct MapBounds {
         let minLat: Double, maxLat: Double, minLon: Double, maxLon: Double
@@ -456,7 +492,7 @@ struct WorkoutMapView: View {
             .navigationDestination(item: $detailFlight) { flight in
                 WorkoutDetailView(flight: flight)
             }
-            .onAppear(perform: loadTracks)
+            .onAppear(perform: loadTracksIfChanged)
             .onChange(of: selectedPeriod) { loadTracks() }
             .onChange(of: customStartDate) {
                 if selectedPeriod == .custom {
@@ -815,22 +851,44 @@ struct WorkoutMapView: View {
         tracks.map(\.distance).reduce(0, +)
     }
 
-    private func loadTracks() {
-        isLoading = true
+    /// Every appearance of the tab (a tab switch, or back from a workout) re-read every route file
+    /// and rebuilt every polyline. When the saved summaries and the period's selection of them are
+    /// what the shown tracks were built from, that load would build the same tracks, so only the rest
+    /// of what a load does is repeated: the original routes back in place of any road alignment, the
+    /// fit to all tracks, and the check for Health workouts still to sync.
+    private func loadTracksIfChanged() {
         let summaries = filteredSummaries().sorted { $0.startDate > $1.startDate }
+        guard !isLoading, let source = tracksSource,
+              source.savedFlights == flightDataStore.savedFlights,   // O(1) while the store is untouched
+              source.summaryIDs == summaries.map(\.id) else {
+            loadTracks(summaries: summaries)
+            return
+        }
+        if !roadAlignedCoordinates.isEmpty {
+            roadAlignedCoordinates = [:]
+            rebuildMultiPolylineFromDisplay()
+        }
+        roadAlignMessage = nil
+        fitAllTracks()
+        syncPendingHealthWorkouts(interval: selectedInterval())
+    }
+
+    private func loadTracks() {
+        loadTracks(summaries: filteredSummaries().sorted { $0.startDate > $1.startDate })
+    }
+
+    private func loadTracks(summaries: [Flight]) {
+        isLoading = true
+        let source = TracksSource(savedFlights: flightDataStore.savedFlights, summaryIDs: summaries.map(\.id))
         let interval = selectedInterval()
-        let savedIDs = Set(flightDataStore.savedFlights.map(\.id))
-            .union(Set(flightDataStore.savedFlights.compactMap(\.workoutUUID)))
+        let savedIDs = savedWorkoutIDs()
+        let knownWithoutRoute = HealthWorkoutsWithoutRoute.shared.ids
 
         DispatchQueue.global(qos: .userInitiated).async {
             // Decode the HealthKit summary cache OFF the main thread (it was a
             // freeze source when opening the Map tab).
-            let cachedHKWorkouts = WorkoutCacheStore.shared.loadWorkouts()
-            let pendingHKWorkouts = cachedHKWorkouts.filter { workout in
-                guard !savedIDs.contains(workout.id) else { return false }
-                if let interval, !interval.contains(workout.startDate) { return false }
-                return true
-            }
+            let pendingHKWorkouts = Self.pendingHealthWorkouts(in: interval, savedIDs: savedIDs,
+                                                               knownWithoutRoute: knownWithoutRoute)
 
             // Adaptive per-track detail: fewer vertices per route when there are
             // many, keeping the total vertex count (and GPU load) bounded even
@@ -890,6 +948,7 @@ struct WorkoutMapView: View {
 
             DispatchQueue.main.async {
                 tracks = loaded
+                tracksSource = source
                 allRoutesMultiPolyline = loaded.isEmpty ? nil : multi
                 allTracksBounds = globalBounds
                 dataVersion += 1
@@ -900,18 +959,49 @@ struct WorkoutMapView: View {
                 }
                 isLoading = false
                 fitAllTracks()
-
-                // Auto-fetch routes for any HealthKit workouts in this period that
-                // haven't been downloaded yet, so the Map tab matches the Workouts
-                // tab. Skip auto-starting when the device is already warm — don't
-                // surprise the user with heat just for opening the tab. They can
-                // still trigger it manually with "Download All".
-                let thermalOK = ProcessInfo.processInfo.thermalState == .nominal
-                    || ProcessInfo.processInfo.thermalState == .fair
-                if !pendingHKWorkouts.isEmpty && !isDownloadingWorkouts && thermalOK {
-                    autoDownloadPendingWorkouts(pendingHKWorkouts)
-                }
+                autoDownloadIfCool(pendingHKWorkouts)
             }
+        }
+    }
+
+    private func savedWorkoutIDs() -> Set<UUID> {
+        Set(flightDataStore.savedFlights.map(\.id))
+            .union(Set(flightDataStore.savedFlights.compactMap(\.workoutUUID)))
+    }
+
+    /// The Health workouts in the period that are not saved here yet, from the Health summary cache.
+    /// File I/O and decoding: call off the main thread.
+    private static func pendingHealthWorkouts(in interval: DateInterval?, savedIDs: Set<UUID>,
+                                              knownWithoutRoute: Set<UUID>) -> [WorkoutSummary] {
+        WorkoutCacheStore.shared.loadWorkouts().filter { workout in
+            guard !savedIDs.contains(workout.id) else { return false }
+            guard !knownWithoutRoute.contains(workout.id) else { return false }
+            if let interval, !interval.contains(workout.startDate) { return false }
+            return true
+        }
+    }
+
+    /// The Health sync check at the end of a load, for an appearance that needed no load.
+    private func syncPendingHealthWorkouts(interval: DateInterval?) {
+        let savedIDs = savedWorkoutIDs()
+        let knownWithoutRoute = HealthWorkoutsWithoutRoute.shared.ids
+        DispatchQueue.global(qos: .userInitiated).async {
+            let pending = Self.pendingHealthWorkouts(in: interval, savedIDs: savedIDs,
+                                                     knownWithoutRoute: knownWithoutRoute)
+            DispatchQueue.main.async { autoDownloadIfCool(pending) }
+        }
+    }
+
+    private func autoDownloadIfCool(_ pendingHKWorkouts: [WorkoutSummary]) {
+        // Auto-fetch routes for any HealthKit workouts in this period that
+        // haven't been downloaded yet, so the Map tab matches the Workouts
+        // tab. Skip auto-starting when the device is already warm — don't
+        // surprise the user with heat just for opening the tab. They can
+        // still trigger it manually with "Download All".
+        let thermalOK = ProcessInfo.processInfo.thermalState == .nominal
+            || ProcessInfo.processInfo.thermalState == .fair
+        if !pendingHKWorkouts.isEmpty && !isDownloadingWorkouts && thermalOK {
+            autoDownloadPendingWorkouts(pendingHKWorkouts)
         }
     }
 
@@ -966,20 +1056,24 @@ struct WorkoutMapView: View {
                     return collected
                 }
 
-                let flights: [Flight?] = await withTaskGroup(of: Flight?.self, returning: [Flight?].self) { group in
+                let results: [(flight: Flight?, noRouteID: UUID?)] = await withTaskGroup(
+                    of: (flight: Flight?, noRouteID: UUID?).self,
+                    returning: [(flight: Flight?, noRouteID: UUID?)].self
+                ) { group in
                     for workout in workouts.compactMap({ $0 }) {
                         group.addTask {
-                            await self.fetchAndConvertWorkout(workout)
+                            await self.fetchAndConvertWorkoutNotingNoRoute(workout)
                         }
                     }
-                    var collected: [Flight?] = []
+                    var collected: [(flight: Flight?, noRouteID: UUID?)] = []
                     for await result in group {
                         collected.append(result)
                     }
                     return collected
                 }
 
-                let valid = flights.compactMap { $0 }
+                let valid = results.compactMap { $0.flight }
+                let withoutRoute = results.compactMap { $0.noRouteID }
                 skipped += batch.count - valid.count
                 imported += valid.count
 
@@ -987,6 +1081,7 @@ struct WorkoutMapView: View {
 
                 index = batchEnd
                 await MainActor.run {
+                    HealthWorkoutsWithoutRoute.shared.insert(withoutRoute)
                     downloadProgress = index
                     if #available(iOS 16.1, *) {
                         DownloadLiveActivityManager.shared.update(
@@ -1468,6 +1563,26 @@ struct WorkoutMapView: View {
         }
 
         return convertWorkoutToMapFlight(workout, locations: routeLocations)
+    }
+
+    /// fetchAndConvertWorkout for the automatic sync, which also says when Health answered "no route"
+    /// (no route series, or one with fewer than two points) rather than failing, for a workout that
+    /// ended more than a day ago. A failed query (locked device, Health unavailable) is not noted.
+    private func fetchAndConvertWorkoutNotingNoRoute(_ workout: HKWorkout) async -> (flight: Flight?, noRouteID: UUID?) {
+        let (locations, error): ([FlightLocation]?, Error?) = await withCheckedContinuation { continuation in
+            healthKitManager.fetchRoute(for: workout) { locs, error in
+                continuation.resume(returning: (locs, error))
+            }
+        }
+
+        guard let routeLocations = locations, routeLocations.count > 1 else {
+            // fetchRoute's own error for a route series with no points.
+            let emptyRoute = (error as NSError?).map { $0.domain == "HealthKit" && $0.code == -1 } ?? false
+            let settled = workout.endDate < Date().addingTimeInterval(-86_400)
+            return (nil, (error == nil || emptyRoute) && settled ? workout.uuid : nil)
+        }
+
+        return (convertWorkoutToMapFlight(workout, locations: routeLocations), nil)
     }
 
     private func shouldDownloadWorkout(_ workout: HKWorkout) -> Bool {

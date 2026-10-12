@@ -23,10 +23,49 @@ final class WatchLogsModel: ObservableObject {
         let files = (try? FileManager.default.contentsOfDirectory(
             at: WatchDiagnosticsRecorder.logDirectory, includingPropertiesForKeys: [.fileSizeKey])) ?? []
         let logs = files.filter { $0.pathExtension == "csv" }
-        onWatch = logs.count
-        bytes = logs.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
-        inFlight = WatchConnectivityManager.shared.outstandingDiagnosticsTransfers()
+        let count = logs.count
+        let size = logs.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        let transfers = WatchConnectivityManager.shared.outstandingDiagnosticsTransfers()
+        // Assigned only when changed (build 127): each assignment redrew the section.
+        if count != onWatch { onWatch = count }
+        if size != bytes { bytes = size }
+        if !transfers.elementsEqual(inFlight, by: { $0.name == $1.name && $0.fraction == $1.fraction }) {
+            inFlight = transfers
+        }
     }
+
+    // THE 2 s REFRESH RUNS ONLY WHILE THE SECTION IS ON SCREEN AND THE APP IS ACTIVE (build 127). It listed the
+    // logs folder and asked WatchConnectivity on the main thread for as long as the Settings page existed, through
+    // every workout. Rows are counted: on a Section the appear and disappear calls can come for each row.
+    private var visibleRows = 0
+    private var appActive = true
+    private var ticker: Timer?
+
+    func rowAppeared(appActive active: Bool) {
+        visibleRows += 1; appActive = active
+        if ticker == nil { refresh() }
+        updateTicker()
+    }
+    func rowDisappeared() { visibleRows = max(0, visibleRows - 1); updateTicker() }
+    func setAppActive(_ active: Bool) {
+        appActive = active
+        if active, visibleRows > 0, ticker == nil { refresh() }
+        updateTicker()
+    }
+
+    private func updateTicker() {
+        let run = visibleRows > 0 && appActive
+        if run, ticker == nil {
+            let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+            RunLoop.main.add(timer, forMode: .common)
+            ticker = timer
+        } else if !run, let timer = ticker {
+            timer.invalidate()
+            ticker = nil
+        }
+    }
+
+    deinit { ticker?.invalidate() }
 
     /// Every log not already on its way. One written to in the last minute belongs to a workout
     /// still running and goes when that workout ends.
@@ -54,7 +93,7 @@ final class WatchLogsModel: ObservableObject {
 
 struct WatchLogsSection: View {
     @StateObject private var logs = WatchLogsModel()
-    private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Section(header: Text("Workout logs"),
@@ -82,7 +121,8 @@ struct WatchLogsSection: View {
                 Text(note).font(.footnote).foregroundColor(.secondary)
             }
         }
-        .onAppear { logs.refresh() }
-        .onReceive(tick) { _ in logs.refresh() }
+        .onAppear { logs.rowAppeared(appActive: scenePhase == .active) }
+        .onDisappear { logs.rowDisappeared() }
+        .onChange(of: scenePhase) { _, phase in logs.setAppActive(phase == .active) }
     }
 }

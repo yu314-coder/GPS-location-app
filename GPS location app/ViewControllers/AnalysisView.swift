@@ -45,21 +45,11 @@ struct AnalysisView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Analysis")
             .onAppear {
-                analytics.fetchData()
+                // Skipped when nothing the data depends on changed since the fetch on screen.
+                analytics.fetchDataIfNeeded()
             }
-            .onChange(of: analytics.selectedMonth) {
-                analytics.fetchData()
-            }
-            .onChange(of: analytics.selectedYear) {
-                analytics.fetchData()
-            }
-            .onChange(of: analytics.isAllTimeSelected) {
-                analytics.fetchData()
-            }
-            .onChange(of: analytics.allTimeYearFilter) {
-                analytics.fetchData()
-            }
-            .onChange(of: analytics.activityFilter) {
+            // One fetch per selection change: a chip that sets two of these fetched twice.
+            .onChange(of: analytics.fetchInputs) {
                 analytics.fetchData()
             }
         }

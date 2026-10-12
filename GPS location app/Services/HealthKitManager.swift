@@ -7,6 +7,10 @@ class HealthKitManager: ObservableObject {
 
     private var healthStore = HKHealthStore()
     private let saveQueue = DispatchQueue(label: "com.flightgps.healthkit.save", qos: .userInitiated)
+    /// Workouts saved with exactly the type chosen for them (build 127: Developer → Import a workout), past the
+    /// "Save as" setting and its Other → Walking mapping.
+    private var exactTypeFlights = Set<UUID>()
+    private let exactTypeLock = NSLock()
     private let debugWorkoutMetadataKey = "com.exmstc.gps.debugWorkout"
     private let debugStepOnlyMetadataKey = "com.exmstc.gps.debugStepOnly"
     @Published var isAuthorized = false
@@ -458,8 +462,10 @@ class HealthKitManager: ObservableObject {
         flight: Flight,
         locations: [FlightLocation],
         metrics: FlightMetrics,
+        exactType: Bool = false,
         completion: @escaping (Bool, Error?, HKWorkout?) -> Void
     ) {
+        if exactType { exactTypeLock.lock(); exactTypeFlights.insert(flight.id); exactTypeLock.unlock() }
         print("🏥 [HealthKit] Save requested: flight=\(flight.id), locations=\(locations.count), distance=\(String(format: "%.2f", metrics.totalDistance/1000))km")
         let nativeStepsText = metrics.stepsCount.map { String(format: "%.0f", $0) } ?? "nil"
         let nativeDistanceText = metrics.nativeStepDistance.map { String(format: "%.2f", $0) } ?? "nil"
@@ -511,7 +517,7 @@ class HealthKitManager: ObservableObject {
         let configuration = HKWorkoutConfiguration()
         if let rawValue = flight.workoutType,
            let activityType = HKWorkoutActivityType(rawValue: rawValue) {
-            configuration.activityType = exportActivityType(activityType)
+            configuration.activityType = exportActivityType(activityType, for: flight.id)
         } else {
             configuration.activityType = .walking // Fallback for older data
         }
@@ -782,7 +788,7 @@ class HealthKitManager: ObservableObject {
             : nil
 
         let workout = HKWorkout(
-            activityType: exportActivityType(activityType),
+            activityType: exportActivityType(activityType, for: flight.id),
             start: flight.startDate,
             end: endDate,
             workoutEvents: nil,
@@ -796,7 +802,7 @@ class HealthKitManager: ObservableObject {
             if success {
                 print("✅ Direct workout saved: \(workout.uuid)")
 
-                let exportType = self.exportActivityType(activityType)
+                let exportType = self.exportActivityType(activityType, for: flight.id)
                 let supplementalSamples = self.buildDirectSaveSupplementalSamples(
                     metrics: metrics,
                     activityType: exportType,
@@ -896,7 +902,9 @@ class HealthKitManager: ObservableObject {
         }
     }
 
-    private func exportActivityType(_ activityType: HKWorkoutActivityType) -> HKWorkoutActivityType {
+    private func exportActivityType(_ activityType: HKWorkoutActivityType, for flightID: UUID) -> HKWorkoutActivityType {
+        exactTypeLock.lock(); let exact = exactTypeFlights.contains(flightID); exactTypeLock.unlock()
+        if exact { return activityType }
         let preference = UserDefaults.standard.string(forKey: "healthKitExportType") ?? "auto"
         switch preference {
         case "cycling":
