@@ -599,6 +599,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// This phone's log folder and a workout's stamp in it, for Developer → Import a workout (build 128).
     static var velocityLogDirectory: URL { logDirectory }
     static func logStamp(for workoutStart: Date) -> String { stamp(for: workoutStart) }
+    /// The moment a recording began, read back from its stamp (local time, as it was written).
+    static func date(fromLogStamp stamp: String) -> Date? {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd_HHmmss"
+        return df.date(from: stamp)
+    }
 
     private static func stamp(for workoutStart: Date) -> String {
         let df = DateFormatter()
@@ -637,8 +643,27 @@ final class SessionDiagnosticsRecorder: ObservableObject {
 
     /// Files already saved for a given workout: its raw trace and any parts, the debug rows and the
     /// events. Empty if none.
-    static func savedLogs(forWorkoutStart start: Date) -> [URL] {
-        let s = stamp(for: start)
+    /// The stamp of a workout's recording: its own start's, or else the recording that began within the workout's
+    /// time (build 129) - a workout saved with a slightly different start, such as a re-run that took a cached fix
+    /// as its start, still finds its logs.
+    static func recordingStamp(forWorkoutStart start: Date, end: Date?) -> String? {
+        let own = stamp(for: start)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: logDirectory.path) else { return nil }
+        var stamps = Set<String>()
+        for name in names {
+            for prefix in ["velocity_raw50hz_", "velocity_debug_", "velocity_events_"] where name.hasPrefix(prefix) {
+                stamps.insert(String(name.dropFirst(prefix.count).prefix(17)))   // yyyy-MM-dd_HHmmss
+            }
+        }
+        if stamps.contains(own) { return own }
+        let last = max(end ?? start, start)
+        return stamps.compactMap { s in date(fromLogStamp: s).map { (s, $0) } }
+            .filter { $0.1 >= start.addingTimeInterval(-60) && $0.1 <= last }
+            .min { abs($0.1.timeIntervalSince(start)) < abs($1.1.timeIntervalSince(start)) }?.0
+    }
+
+    static func savedLogs(forWorkoutStart start: Date, end: Date? = nil) -> [URL] {
+        let s = end == nil ? stamp(for: start) : (recordingStamp(forWorkoutStart: start, end: end) ?? stamp(for: start))
         let dir = logDirectory
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
         return names
@@ -651,8 +676,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     }
 
     /// Share previously saved logs for a workout, from anywhere in the app.
-    static func exportSavedLogs(forWorkoutStart start: Date, from presenter: UIViewController? = nil) {
-        let files = savedLogs(forWorkoutStart: start)
+    static func exportSavedLogs(forWorkoutStart start: Date, end: Date? = nil, from presenter: UIViewController? = nil) {
+        let files = savedLogs(forWorkoutStart: start, end: end)
         guard !files.isEmpty else { return }
         DispatchQueue.main.async {
             let vc = UIActivityViewController(activityItems: files, applicationActivities: nil)

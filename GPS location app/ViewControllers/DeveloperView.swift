@@ -102,13 +102,13 @@ struct DeveloperView: View {
                     WorkoutImportView()
                 } label: {
                     SettingsRow(symbol: "square.and.arrow.down.on.square", tint: .indigo,
-                                title: "Import a workout",
-                                subtitle: "From another phone's logs or saved workout, with its type")
+                                title: "Import or re-run a workout",
+                                subtitle: "This phone's recordings, or another phone's logs")
                 }
             } header: {
                 Text("Workouts")
             } footer: {
-                Text("Rebuilds a recording from its logs, re-runs a flight in it with this build's flight code, and saves it here and to Apple Health with the type you choose.")
+                Text("Rebuilds a recording from its logs, re-runs a flight in it with this build's flight code, and saves it here and to Apple Health with the type you choose. A re-run of this phone's own recording replaces the workouts it overlaps.")
             }
 
             Section {

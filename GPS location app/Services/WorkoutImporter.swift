@@ -8,7 +8,8 @@ import HealthKit
 ///     WorkoutLogReplay - a flight in them drawn again with this build's flight code;
 ///   - a saved workout (flight_details_<id>.json from its Documents), taken as that phone saved it.
 /// Either becomes a new workout here, with the type chosen for it, and optionally goes to Apple Health with exactly
-/// that type. It never deletes anything unless asked to replace this phone's own workout from the same moment.
+/// that type. Another phone's workout deletes nothing unless asked to replace this phone's workouts it overlaps;
+/// this phone's own recording always replaces them (build 129), so a re-run never sits beside its original.
 @MainActor
 final class WorkoutImporter: ObservableObject {
 
@@ -28,10 +29,21 @@ final class WorkoutImporter: ObservableObject {
         var flight: Flight
         var lines: [(String, String)]
         var notes: [String]
-        /// This phone's own workout from the same moment, if there is one.
-        var sameMoment: Flight?
-        /// Rebuilt from this phone's own logs (build 128): the workout it replaces is its own.
+        /// This phone's saved workouts whose time overlaps the rebuilt one (build 129; was: started within 3 min).
+        var overlapping: [Flight]
+        /// Rebuilt from this phone's own logs (build 128): the workouts it overlaps are replaced, always.
         var ownRecording = false
+    }
+
+    /// What a recording covers, for its row: distance and time, so its average speed (build 129).
+    struct Summary: Equatable {
+        /// nil: no route could be drawn from the logs.
+        var km: Double?
+        var start: Date
+        var seconds: TimeInterval
+        /// Taken from the workout saved on this phone, not drawn from the logs.
+        var saved: Bool
+        var kmh: Double? { km.flatMap { seconds > 0 ? $0 / (seconds / 3600) : nil } }
     }
 
     @Published private(set) var sources: [Source] = []
@@ -41,6 +53,10 @@ final class WorkoutImporter: ObservableObject {
     @Published private(set) var savedStamps: Set<String> = []
     /// The folder has been listed at least once.
     @Published private(set) var ownLoaded = false
+    /// Row summaries by source id, drawn one recording at a time as rows appear.
+    @Published private(set) var summaries: [String: Summary] = [:]
+    private var summaryQueue: [Source] = []
+    private var summarizing = false
     @Published private(set) var busy = false
     @Published private(set) var progress = 0.0
     @Published private(set) var status: String?
@@ -106,13 +122,78 @@ final class WorkoutImporter: ObservableObject {
             let logs = WorkoutLogReplay.scan(files).logs
             await MainActor.run {
                 self.ownSources = logs.map { .logs($0) }
-                self.savedStamps = Set(FlightDataStore.shared.savedFlights.map { SessionDiagnosticsRecorder.logStamp(for: $0.startDate) })
+                self.savedStamps = Set(logs.compactMap { self.savedWorkout(forStamp: $0.stamp) != nil ? $0.stamp : nil })
+                // A saved workout may have changed (replaced by a re-run): its row is summed again.
+                self.summaries = self.summaries.filter { !$0.value.saved }
                 self.ownLoaded = true
             }
         }
     }
 
     func isOwn(_ source: Source) -> Bool { ownSources.contains(source) }
+
+    /// The workout saved on this phone for one of its own recordings: the one it was recorded as (same stamp), or
+    /// one whose time holds the moment it began (a re-run saved by build 127-128 could start minutes early).
+    private func savedWorkout(forStamp stamp: String) -> Flight? {
+        let saved = FlightDataStore.shared.savedFlights
+        if let same = saved.first(where: { SessionDiagnosticsRecorder.logStamp(for: $0.startDate) == stamp }) { return same }
+        guard let began = SessionDiagnosticsRecorder.date(fromLogStamp: stamp) else { return nil }
+        return saved.first { $0.startDate <= began.addingTimeInterval(60) && Self.end(of: $0) > began }
+    }
+
+    private static func end(of f: Flight) -> Date {
+        f.endDate ?? f.startDate.addingTimeInterval(max(f.metrics?.duration ?? 0, 0))
+    }
+
+    /// This phone's saved workouts that overlap a stretch of time.
+    private static func overlapping(_ start: Date, _ end: Date) -> [Flight] {
+        FlightDataStore.shared.savedFlights
+            .filter { $0.startDate < end && Self.end(of: $0) > start }
+            .sorted { $0.startDate < $1.startDate }
+    }
+
+    /// How many saved workouts share time with a recording whose row has been summed (0 until then).
+    func overlapCount(_ source: Source) -> Int {
+        guard let s = summaries[source.id], s.seconds > 0 else { return 0 }
+        return Self.overlapping(s.start, s.start.addingTimeInterval(s.seconds)).count
+    }
+
+    // MARK: - Row summaries
+
+    /// A row's distance, time and average speed: the saved workout's own figures when this phone has it, otherwise
+    /// the route drawn from the logs as recorded (no flight re-run, so it costs a second or two, not a minute).
+    func summarize(_ source: Source) {
+        guard summaries[source.id] == nil, !summaryQueue.contains(source) else { return }
+        if isOwn(source), case .logs(let set) = source, let saved = savedWorkout(forStamp: set.stamp) {
+            summaries[source.id] = Summary(km: saved.totalDistance / 1000, start: saved.startDate,
+                                           seconds: Self.end(of: saved).timeIntervalSince(saved.startDate), saved: true)
+            return
+        }
+        guard case .logs = source else { return }
+        summaryQueue.append(source)
+        nextSummary()
+    }
+
+    private func nextSummary() {
+        guard !summarizing, !summaryQueue.isEmpty else { return }
+        summarizing = true
+        let source = summaryQueue.removeFirst()
+        Task.detached(priority: .utility) { [weak self] in
+            var summary = Summary(km: nil, start: .distantPast, seconds: 0, saved: false)
+            if case .logs(let set) = source,
+               let r = try? WorkoutLogReplay.rebuild(set, rerunFlight: false, runways: { _, _ in [] }) {
+                let f = Self.makeFlight(r, own: false)
+                summary = Summary(km: (f.metrics?.totalDistance ?? 0) / 1000, start: r.start,
+                                  seconds: max(r.end.timeIntervalSince(r.start), 0), saved: false)
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.summaries[source.id] = summary
+                self.summarizing = false
+                self.nextSummary()
+            }
+        }
+    }
 
     // MARK: - Reading
 
@@ -128,20 +209,24 @@ final class WorkoutImporter: ObservableObject {
                     cancelled: { flag.value })
                 await MainActor.run {
                     guard let self else { return }
-                    // This phone's own recording replaces the workout it was recorded as (same stamp); otherwise one that
-                    // started within three minutes.
-                    var same: Flight?
-                    if own, case .logs(let set) = source {
-                        same = FlightDataStore.shared.savedFlights.first { SessionDiagnosticsRecorder.logStamp(for: $0.startDate) == set.stamp }
-                    }
-                    same = same ?? FlightDataStore.shared.savedFlights.first { abs($0.startDate.timeIntervalSince(flight.startDate)) < 180 }
                     var rebuilt = flight
-                    if own, let same {
-                        // Keep what the owner set on the original: its name, places and effort, and the moment it began.
-                        rebuilt.startDate = min(rebuilt.startDate, same.startDate)
-                        rebuilt.origin = same.origin; rebuilt.destination = same.destination; rebuilt.effort = same.effort
+                    // This phone's own recording: the workout it was recorded as, whatever its times now.
+                    var original: Flight?
+                    if own, case .logs(let set) = source { original = self.savedWorkout(forStamp: set.stamp) }
+                    if let original {
+                        // Keep what the owner set on the original: its name, places and effort. Its start too, when it
+                        // is the same moment (so its logs still match it); never an earlier one, which a re-run from
+                        // build 127-128 could carry from a cached fix.
+                        if abs(original.startDate.timeIntervalSince(rebuilt.startDate)) < 60 { rebuilt.startDate = original.startDate }
+                        rebuilt.origin = original.origin; rebuilt.destination = original.destination; rebuilt.effort = original.effort
                     }
-                    self.preview = Preview(flight: rebuilt, lines: lines, notes: notes, sameMoment: same, ownRecording: own)
+                    // Everything saved here that shares any of its time: two workouts over the same stretch would count
+                    // it twice, here and in Apple Health.
+                    var overlapping = Self.overlapping(rebuilt.startDate, Self.end(of: rebuilt))
+                    if let original, !overlapping.contains(where: { $0.id == original.id }) {
+                        overlapping.insert(original, at: 0)
+                    }
+                    self.preview = Preview(flight: rebuilt, lines: lines, notes: notes, overlapping: overlapping, ownRecording: own)
                     self.busy = false; self.status = nil
                 }
             } catch {
@@ -166,7 +251,8 @@ final class WorkoutImporter: ObservableObject {
             f.notes = ([theirs.notes].compactMap { $0 } + ["Imported from another phone's saved workout"]).joined(separator: "\n")
             let km = (theirs.metrics?.totalDistance ?? 0) / 1000
             return (f, [("Source", "A saved workout"), ("Points", "\(theirs.locations.count)"),
-                        ("Distance", String(format: "%.1f km", km))], [])
+                        ("Distance", String(format: "%.1f km", km)),
+                        ("Average speed", String(format: "%.1f km/h", (theirs.metrics?.averageSpeed ?? 0) * 3.6))], [])
         case .logs(let set):
             let r = try WorkoutLogReplay.rebuild(set, rerunFlight: rerunFlight, useLoggedGPS: useLoggedGPS,
                                                  runways: { DepartureRunways.axes(nearLatitude: $0, longitude: $1) },
@@ -179,6 +265,7 @@ final class WorkoutImporter: ObservableObject {
                 ("Started", fmt.string(from: r.start)),
                 ("Duration", Self.duration(r.end.timeIntervalSince(r.start))),
                 ("Distance", String(format: "%.1f km", (flight.metrics?.totalDistance ?? 0) / 1000)),
+                ("Average speed", String(format: "%.1f km/h", (flight.metrics?.averageSpeed ?? 0) * 3.6)),
                 ("As the phone drew it", String(format: "%.1f km dead-reckoned", r.recordedDeadReckonedKm)),
                 ("Points", "\(r.points.count) (\(r.points.filter { !$0.estimated }.count) from GPS)")]
             if let f = r.flight {
@@ -225,6 +312,9 @@ final class WorkoutImporter: ObservableObject {
                 metrics.currentSpeed = p.speed; metrics.smoothedSpeed = p.speed
                 metrics.maxSpeed = max(maxBefore, p.speed)
             }
+            // Kilometre splits as the live workout adds them (WorkoutSession, after each point): without this a
+            // re-run had one "split" the length of the whole workout.
+            metrics.updateSplits(startDate: r.start)
             locations.append(loc); previous = loc; previousInFlight = p.inFlight
         }
         let duration = max(r.end.timeIntervalSince(r.start), 0)
@@ -244,31 +334,46 @@ final class WorkoutImporter: ObservableObject {
 
     // MARK: - Saving
 
-    func save(type: HKWorkoutActivityType, toHealth: Bool, replaceSameMoment: Bool, done: @escaping (String) -> Void) {
-        guard var flight = preview?.flight else { return }
+    /// Saves the preview. `replace` is ignored for this phone's own recording, which always replaces what it overlaps.
+    func save(type: HKWorkoutActivityType, toHealth: Bool, replace: Bool, done: @escaping (String) -> Void) {
+        guard let p = preview else { return }
+        var flight = p.flight
         flight.workoutType = type.rawValue
-        busy = true; status = "Saving…"
-        if replaceSameMoment, let old = preview?.sameMoment {
-            FlightDataStore.shared.deleteFlight(old)
-            if let uuid = old.workoutUUID {
-                HealthKitManager.shared.fetchWorkout(uuid: uuid) { workout, _ in
-                    if let workout { HealthKitManager.shared.deleteWorkout(workout) { _, _ in } }
+        let replaced = (p.ownRecording || replace) ? p.overlapping : []
+        busy = true; status = replaced.isEmpty ? "Saving…" : "Replacing \(replaced.count == 1 ? "the original" : "\(replaced.count) workouts")…"
+        for old in replaced { FlightDataStore.shared.deleteFlight(old) }
+        FlightDataStore.shared.saveFlight(flight)
+        let saved = flight
+        let here = replaced.isEmpty ? "Saved on this phone" : "Saved on this phone in place of \(replaced.count == 1 ? "the original" : "\(replaced.count) workouts")"
+
+        func toHealthNow(_ leftover: String) {
+            // The list now has a different saved workout behind some rows: summed again.
+            summaries = [:]
+            loadOwnRecordings()
+            guard toHealth else {
+                busy = false; status = nil; preview = nil
+                done(here + "." + leftover); return
+            }
+            HealthKitManager.shared.saveWorkout(flight: saved, locations: saved.locations, metrics: saved.metrics ?? FlightMetrics(),
+                                                exactType: true) { [weak self] ok, error, workout in
+                DispatchQueue.main.async {
+                    if let workout { FlightDataStore.shared.updateWorkoutUUID(for: saved.id, workoutUUID: workout.uuid) }
+                    self?.busy = false; self?.status = nil; self?.preview = nil
+                    done(ok ? here + " and in Apple Health." + leftover
+                            : here + ". Apple Health: \(error?.localizedDescription ?? "not saved")." + leftover)
                 }
             }
         }
-        FlightDataStore.shared.saveFlight(flight)
-        guard toHealth else {
-            busy = false; status = nil; preview = nil
-            done("Saved on this phone."); return
-        }
-        let saved = flight
-        HealthKitManager.shared.saveWorkout(flight: saved, locations: saved.locations, metrics: saved.metrics ?? FlightMetrics(),
-                                            exactType: true) { [weak self] ok, error, workout in
-            DispatchQueue.main.async {
-                if let workout { FlightDataStore.shared.updateWorkoutUUID(for: saved.id, workoutUUID: workout.uuid) }
-                self?.busy = false; self?.status = nil; self?.preview = nil
-                done(ok ? "Saved on this phone and in Apple Health." : "Saved on this phone. Apple Health: \(error?.localizedDescription ?? "not saved").")
-            }
+
+        // This phone's own recording clears its time in Health even with nothing to replace here: an old copy deleted
+        // from the app but not from Health would overlap it too.
+        guard !replaced.isEmpty || (p.ownRecording && toHealth) else { toHealthNow(""); return }
+        // The old workouts leave Apple Health first - with their distance and steps - even when the re-run is not going
+        // there; when it is, so does anything else this app saved during its time. Only then does the re-run go in.
+        HealthKitManager.shared.removeOwnData(from: saved.startDate, to: toHealth ? Self.end(of: saved) : saved.startDate,
+                                              uuids: replaced.compactMap(\.workoutUUID)) { _, stillThere in
+            toHealthNow(stillThere.isEmpty ? ""
+                        : " \(stillThere.count == 1 ? "One old workout" : "\(stillThere.count) old workouts") could not be removed from Apple Health (saved by another app or the watch): delete it there.")
         }
     }
 }

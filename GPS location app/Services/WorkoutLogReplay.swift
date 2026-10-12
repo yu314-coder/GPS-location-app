@@ -168,6 +168,8 @@ enum WorkoutLogReplay {
         var baro: [Baro] = []
         var rawStart: [String: TimeInterval] = [:]
         var first: TimeInterval?
+        /// The moment the workout began: its "session" line, the first written.
+        var session: TimeInterval?
         var last: TimeInterval?
         var stop: TimeInterval?
         var device: String?
@@ -206,6 +208,7 @@ enum WorkoutLogReplay {
             case "velocity_mode": ev.velocityMode.append((t, detail == "on"))
             case "flight_forced": ev.forcedFlight = true
             case "session":
+                if ev.session == nil { ev.session = t }
                 for part in detail.split(separator: ";").map({ $0.trimmingCharacters(in: .whitespaces) }) {
                     if part.hasPrefix("app ") { ev.build = String(part.dropFirst(4)) }
                     else if part.hasPrefix("device ") { ev.device = String(part.dropFirst(7)) }
@@ -217,6 +220,19 @@ enum WorkoutLogReplay {
             return true
         }
         ev.fixes.sort { $0.t < $1.t }; ev.baro.sort { $0.t < $1.t }; ev.velocityMode.sort { $0.0 < $1.0 }
+        // A CACHED FIX IS NOT THE START (build 129). Core Location's first answer is often its last known position,
+        // logged with the time it was taken - in BR226 eleven minutes before the workout began. Taken as the start,
+        // it moved the re-run's start back and made it overlap whatever came before. The workout begins at its
+        // session line; the newest fix from before then stands at that moment, as the place it began.
+        if let s = ev.session {
+            let stale = ev.fixes.prefix { $0.t < s }
+            if var last = stale.last {
+                last.t = s
+                ev.fixes.removeFirst(stale.count)
+                ev.fixes.insert(last, at: 0)
+            }
+            ev.first = s
+        }
         return ev
     }
 

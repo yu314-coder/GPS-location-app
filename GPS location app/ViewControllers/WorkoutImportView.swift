@@ -19,7 +19,8 @@ struct WorkoutImportView: View {
     @State private var useLoggedGPS = false
     @State private var type: HKWorkoutActivityType = .other
     @State private var toHealth = true
-    @State private var replaceSameMoment = false
+    /// Another phone's workout only: replace this phone's workouts it overlaps. Its own recording always does.
+    @State private var replace = false
     @State private var done: String?
 
     // The same list the workout screen offers (LiveSessionView.workoutTypes).
@@ -144,20 +145,31 @@ struct WorkoutImportView: View {
                         ForEach(types, id: \.0.rawValue) { t in Label(t.1, systemImage: t.2).tag(t.0) }
                     }
                     Toggle("Save to Apple Health", isOn: $toHealth)
-                    if let same = p.sameMoment {
-                        Toggle(isOn: $replaceSameMoment) {
+                    if !p.overlapping.isEmpty {
+                        if p.ownRecording {
+                            // Never optional for the same phone: a re-run beside its original counts that time twice.
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(p.ownRecording ? "Replace the original workout" : "Replace this phone's workout")
-                                Text(String(format: "Started at the same time, %.1f km. It is deleted here%@.",
-                                            (same.metrics?.totalDistance ?? 0) / 1000,
-                                            same.workoutUUID != nil ? " and in Apple Health" : ""))
+                                Text(p.overlapping.count == 1 ? "Replaces the original" : "Replaces \(p.overlapping.count) workouts it overlaps")
+                                Text(p.overlapping.count == 1
+                                     ? "Deleted here and in Apple Health, with its distance and steps, before the re-run is saved, so the two never overlap."
+                                     : "Deleted here and in Apple Health, with their distance and steps, before the re-run is saved, so nothing overlaps it.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
+                        } else {
+                            Toggle(isOn: $replace) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(p.overlapping.count == 1 ? "Replace this phone's workout" : "Replace this phone's \(p.overlapping.count) workouts")
+                                    Text(replace ? "Deleted here and in Apple Health, with their distance and steps."
+                                                 : "Off: both are kept, overlapping in time.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
                         }
+                        ForEach(p.overlapping) { old in replacedRow(old) }
                     }
                     Button {
-                        let replacing = replaceSameMoment && p.sameMoment != nil
-                        importer.save(type: type, toHealth: toHealth, replaceSameMoment: replaceSameMoment) { message in
+                        let replacing = !p.overlapping.isEmpty && (p.ownRecording || replace)
+                        importer.save(type: type, toHealth: toHealth, replace: replace) { message in
                             done = message
                             // The detail screen underneath shows the original, which is gone now: back to the list.
                             if replacing, let onReplaced { onReplaced(); dismiss() }
@@ -175,7 +187,7 @@ struct WorkoutImportView: View {
                 Section { Label(done, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
             }
         }
-        .navigationTitle(focused ? "Re-run this workout" : "Import a workout")
+        .navigationTitle(focused ? "Re-run this workout" : "Import or re-run")
         .navigationBarTitleDisplayMode(.inline)
         .fileImporter(isPresented: $picking, allowedContentTypes: [.commaSeparatedText, .json, .folder, .plainText, .data],
                       allowsMultipleSelection: true) { result in
@@ -203,8 +215,8 @@ struct WorkoutImportView: View {
                types.contains(where: { $0.0 == t }) { type = t } else { type = .other }
             // A flight goes to Health as Other unless chosen otherwise: no estimated steps for 3,000 km.
             if importer.preview?.flight.notes?.contains("flight re-run") == true { type = .other }
-            // The same phone's re-run replaces its original by default; another phone's never does unless asked.
-            replaceSameMoment = importer.preview?.ownRecording == true && importer.preview?.sameMoment != nil
+            // Another phone's workout replaces nothing here unless asked (this phone's own always does).
+            replace = false
         }
     }
 
@@ -213,6 +225,9 @@ struct WorkoutImportView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title(source)).font(.body)
+                    if case .logs = source {
+                        Text(summaryLine(source)).font(.subheadline).monospacedDigit()
+                    }
                     Text(detail(source)).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -221,6 +236,41 @@ struct WorkoutImportView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onAppear { importer.summarize(source) }
+    }
+
+    /// Route distance, average speed and time of a recording: the saved workout's, or as recorded.
+    private func summaryLine(_ source: WorkoutImporter.Source) -> String {
+        guard let s = importer.summaries[source.id] else { return "Adding up the route…" }
+        guard let km = s.km else { return "No route in these logs" }
+        return [Self.km(km), s.kmh.map { Self.kmh($0) + " avg" }, Self.duration(s.seconds)]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// A workout the save will replace (or, switched off, overlap).
+    private func replacedRow(_ old: Flight) -> some View {
+        let km = old.totalDistance / 1000
+        let seconds = (old.endDate ?? old.startDate.addingTimeInterval(old.metrics?.duration ?? 0)).timeIntervalSince(old.startDate)
+        return HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Self.shownFormat.string(from: old.startDate)).font(.callout)
+                Text([Self.duration(seconds), old.workoutUUID != nil ? "in Apple Health" : nil,
+                      old.notes?.components(separatedBy: "\n").first].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(Self.km(km)).font(.callout)
+                Text(seconds > 0 ? Self.kmh(km / (seconds / 3600)) + " avg" : "–").font(.caption).foregroundStyle(.secondary)
+            }
+            .monospacedDigit()
+        }
+    }
+
+    private static func km(_ km: Double) -> String { km.formatted(.number.precision(.fractionLength(km < 100 ? 2 : 1))) + " km" }
+    private static func kmh(_ v: Double) -> String { v.formatted(.number.precision(.fractionLength(1))) + " km/h" }
+    private static func duration(_ s: TimeInterval) -> String {
+        let m = Int((s / 60).rounded()); return m >= 60 ? "\(m / 60) h \(m % 60) min" : "\(m) min"
     }
 
     private func title(_ s: WorkoutImporter.Source) -> String {
@@ -237,8 +287,16 @@ struct WorkoutImportView: View {
         case .logs(let set):
             let parts = [set.events != nil ? "events" : nil, set.debug != nil ? "debug" : nil,
                          set.raw.isEmpty ? nil : (set.raw.count == 1 ? "raw motion" : "raw motion ×\(set.raw.count)")].compactMap { $0 }
-            let saved = importer.isOwn(s) ? (importer.savedStamps.contains(set.stamp) ? " · workout saved" : " · no saved workout") : ""
-            return parts.joined(separator: " · ") + " · " + sizeFormatter.string(fromByteCount: set.bytes) + saved
+            var saved = ""
+            if importer.isOwn(s) {
+                let overlaps = importer.overlapCount(s)
+                saved = importer.savedStamps.contains(set.stamp) ? " · workout saved"
+                    : overlaps > 0 ? " · overlaps \(overlaps == 1 ? "a saved workout" : "\(overlaps) saved workouts")"
+                    : " · no saved workout"
+            }
+            // Not from a saved workout: the distance is the route as the phone drew it then.
+            let recorded = importer.summaries[s.id].map { $0.km != nil && !$0.saved } == true ? "as recorded · " : ""
+            return recorded + parts.joined(separator: " · ") + " · " + sizeFormatter.string(fromByteCount: set.bytes) + saved
         case .saved: return "A saved workout, as that phone saved it"
         }
     }

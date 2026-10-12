@@ -27,6 +27,8 @@ struct WorkoutDetailView: View {
     /// evaluation; it is read on appear and when the shown workout's start time changes. The files
     /// are created when the workout starts recording, so they already exist when this opens.
     @State private var hasSavedLogs = false
+    /// Its recording's stamp, found with the logs (build 129: by time when the start differs).
+    @State private var recordingStamp: String?
     /// Replaced by its re-run (build 128): this screen shows a workout that no longer exists, so it closes when it is back.
     @State private var replacedByRerun = false
 
@@ -801,7 +803,7 @@ struct WorkoutDetailView: View {
                     // files actually exist for this workout, so it never offers nothing.
                     if hasSavedLogs {
                         Button(action: {
-                            SessionDiagnosticsRecorder.exportSavedLogs(forWorkoutStart: activeFlight.startDate)
+                            SessionDiagnosticsRecorder.exportSavedLogs(forWorkoutStart: activeFlight.startDate, end: activeFlight.endDate)
                         }) {
                             HStack {
                                 Image(systemName: "waveform.path.ecg")
@@ -816,10 +818,9 @@ struct WorkoutDetailView: View {
                     }
 
                     // Developer (build 128): this workout's own logs, re-run with this build, replacing it when saved.
-                    if hasSavedLogs, developerUnlocked {
+                    if hasSavedLogs, developerUnlocked, let recordingStamp {
                         NavigationLink {
-                            WorkoutImportView(preselectStamp: SessionDiagnosticsRecorder.logStamp(for: activeFlight.startDate),
-                                              onReplaced: { replacedByRerun = true })
+                            WorkoutImportView(preselectStamp: recordingStamp, onReplaced: { replacedByRerun = true })
                         } label: {
                             HStack {
                                 Image(systemName: "arrow.triangle.2.circlepath")
@@ -915,7 +916,10 @@ struct WorkoutDetailView: View {
     }
 
     private func refreshSavedLogs() {
-        hasSavedLogs = !SessionDiagnosticsRecorder.savedLogs(forWorkoutStart: activeFlight.startDate).isEmpty
+        hasSavedLogs = !SessionDiagnosticsRecorder.savedLogs(forWorkoutStart: activeFlight.startDate, end: activeFlight.endDate).isEmpty
+        recordingStamp = hasSavedLogs
+            ? SessionDiagnosticsRecorder.recordingStamp(forWorkoutStart: activeFlight.startDate, end: activeFlight.endDate)
+            : nil
     }
 
     private func formatTimeRange() -> String {
