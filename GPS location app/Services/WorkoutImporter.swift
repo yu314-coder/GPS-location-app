@@ -8,8 +8,8 @@ import HealthKit
 ///     WorkoutLogReplay - a flight in them drawn again with this build's flight code;
 ///   - a saved workout (flight_details_<id>.json from its Documents), taken as that phone saved it.
 /// Either becomes a new workout here, with the type chosen for it, and optionally goes to Apple Health with exactly
-/// that type. Nothing is deleted unless asked to replace the saved workouts it overlaps - for this phone's own
-/// recording too (build 130: the original is kept; build 129 always replaced it).
+/// that type. Another phone's workout deletes nothing unless asked to replace this phone's workouts it overlaps; a
+/// re-run of this phone's own recording never replaces its original (build 131; build 129 always did).
 @MainActor
 final class WorkoutImporter: ObservableObject {
 
@@ -114,7 +114,7 @@ final class WorkoutImporter: ObservableObject {
 
     /// THE SAME PHONE (build 128). A workout recorded here already has its logs in Documents/VelocityLogs and its
     /// saved workout beside them, so re-running it needs no AirDrop and no Files: list the recordings, newest
-    /// first, and mark those whose workout is still saved, so it can be replaced by the re-run.
+    /// first, and mark those whose workout is still saved.
     func loadOwnRecordings() {
         Task.detached(priority: .userInitiated) {
             let dir = SessionDiagnosticsRecorder.velocityLogDirectory
@@ -336,12 +336,13 @@ final class WorkoutImporter: ObservableObject {
 
     // MARK: - Saving
 
-    /// Saves the preview beside the workouts it overlaps, or in their place when `replace` is on.
+    /// Saves the preview beside the workouts it overlaps, or - another phone's workout only - in their place when
+    /// `replace` is on. A re-run of this phone's own recording never deletes its original.
     func save(type: HKWorkoutActivityType, toHealth: Bool, replace: Bool, done: @escaping (String) -> Void) {
         guard let p = preview else { return }
         var flight = p.flight
         flight.workoutType = type.rawValue
-        let replaced = replace ? p.overlapping : []
+        let replaced = replace && !p.ownRecording ? p.overlapping : []
         busy = true; status = replaced.isEmpty ? "Saving…" : "Replacing \(replaced.count == 1 ? "the original" : "\(replaced.count) workouts")…"
         for old in replaced { FlightDataStore.shared.deleteFlight(old) }
         FlightDataStore.shared.saveFlight(flight)

@@ -29,8 +29,6 @@ struct WorkoutDetailView: View {
     @State private var hasSavedLogs = false
     /// Its recording's stamp, found with the logs (build 129: by time when the start differs).
     @State private var recordingStamp: String?
-    /// Replaced by its re-run (build 128): this screen shows a workout that no longer exists, so it closes when it is back.
-    @State private var replacedByRerun = false
 
     /// Composed here rather than when the HealthKit query returns, so the GPS/total counts read
     /// the flight AFTER its details have finished loading asynchronously.
@@ -817,10 +815,10 @@ struct WorkoutDetailView: View {
                         }
                     }
 
-                    // Developer (build 128): this workout's own logs, re-run with this build; saved beside it, or in its place if asked (build 130).
+                    // Developer (build 128): this workout's own logs, re-run with this build and saved beside it; the original is never replaced (build 131).
                     if hasSavedLogs, developerUnlocked, let recordingStamp {
                         NavigationLink {
-                            WorkoutImportView(preselectStamp: recordingStamp, onReplaced: { replacedByRerun = true })
+                            WorkoutImportView(preselectStamp: recordingStamp)
                         } label: {
                             HStack {
                                 Image(systemName: "arrow.triangle.2.circlepath")
@@ -896,7 +894,6 @@ struct WorkoutDetailView: View {
             }
         }
         .onAppear {
-            if replacedByRerun { dismiss(); return }
             loadDetailsIfNeeded()
             loadHealthKitRouteSummary()
             refreshSavedLogs()
