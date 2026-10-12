@@ -8,8 +8,7 @@ import HealthKit
 ///     WorkoutLogReplay - a flight in them drawn again with this build's flight code;
 ///   - a saved workout (flight_details_<id>.json from its Documents), taken as that phone saved it.
 /// Either becomes a new workout here, with the type chosen for it, and optionally goes to Apple Health with exactly
-/// that type. Another phone's workout deletes nothing unless asked to replace this phone's workouts it overlaps; a
-/// re-run of this phone's own recording never replaces its original (build 131; build 129 always did).
+/// that type. It never deletes or replaces anything (build 132): it is saved beside the workouts it overlaps.
 @MainActor
 final class WorkoutImporter: ObservableObject {
 
@@ -123,7 +122,7 @@ final class WorkoutImporter: ObservableObject {
             await MainActor.run {
                 self.ownSources = logs.map { .logs($0) }
                 self.savedStamps = Set(logs.compactMap { self.savedWorkout(forStamp: $0.stamp) != nil ? $0.stamp : nil })
-                // A saved workout may have changed (replaced by a re-run): its row is summed again.
+                // A saved workout may have changed: its row is summed again.
                 self.summaries = self.summaries.filter { !$0.value.saved }
                 self.ownLoaded = true
             }
@@ -336,46 +335,27 @@ final class WorkoutImporter: ObservableObject {
 
     // MARK: - Saving
 
-    /// Saves the preview beside the workouts it overlaps, or - another phone's workout only - in their place when
-    /// `replace` is on. A re-run of this phone's own recording never deletes its original.
-    func save(type: HKWorkoutActivityType, toHealth: Bool, replace: Bool, done: @escaping (String) -> Void) {
-        guard let p = preview else { return }
-        var flight = p.flight
+    /// Saves the preview as a new workout, beside the workouts it overlaps: nothing is deleted (build 132).
+    func save(type: HKWorkoutActivityType, toHealth: Bool, done: @escaping (String) -> Void) {
+        guard var flight = preview?.flight else { return }
         flight.workoutType = type.rawValue
-        let replaced = replace && !p.ownRecording ? p.overlapping : []
-        busy = true; status = replaced.isEmpty ? "Saving…" : "Replacing \(replaced.count == 1 ? "the original" : "\(replaced.count) workouts")…"
-        for old in replaced { FlightDataStore.shared.deleteFlight(old) }
+        busy = true; status = "Saving…"
         FlightDataStore.shared.saveFlight(flight)
-        let saved = flight
-        let here = replaced.isEmpty ? "Saved on this phone" : "Saved on this phone in place of \(replaced.count == 1 ? "the original" : "\(replaced.count) workouts")"
-
-        func toHealthNow(_ leftover: String) {
-            // The list now has a different saved workout behind some rows: summed again.
-            summaries = [:]
-            loadOwnRecordings()
-            guard toHealth else {
-                busy = false; status = nil; preview = nil
-                done(here + "." + leftover); return
-            }
-            HealthKitManager.shared.saveWorkout(flight: saved, locations: saved.locations, metrics: saved.metrics ?? FlightMetrics(),
-                                                exactType: true) { [weak self] ok, error, workout in
-                DispatchQueue.main.async {
-                    if let workout { FlightDataStore.shared.updateWorkoutUUID(for: saved.id, workoutUUID: workout.uuid) }
-                    self?.busy = false; self?.status = nil; self?.preview = nil
-                    done(ok ? here + " and in Apple Health." + leftover
-                            : here + ". Apple Health: \(error?.localizedDescription ?? "not saved")." + leftover)
-                }
-            }
+        // The list now has another saved workout behind some rows: summed again.
+        summaries = [:]
+        loadOwnRecordings()
+        guard toHealth else {
+            busy = false; status = nil; preview = nil
+            done("Saved on this phone."); return
         }
-
-        // Kept: nothing is deleted, here or in Health.
-        guard !replaced.isEmpty else { toHealthNow(""); return }
-        // Replaced: the old workouts leave Apple Health first - with their distance and steps - even when the new one is
-        // not going there; when it is, so does anything else this app saved during its time. Only then does it go in.
-        HealthKitManager.shared.removeOwnData(from: saved.startDate, to: toHealth ? Self.end(of: saved) : saved.startDate,
-                                              uuids: replaced.compactMap(\.workoutUUID)) { _, stillThere in
-            toHealthNow(stillThere.isEmpty ? ""
-                        : " \(stillThere.count == 1 ? "One old workout" : "\(stillThere.count) old workouts") could not be removed from Apple Health (saved by another app or the watch): delete it there.")
+        let saved = flight
+        HealthKitManager.shared.saveWorkout(flight: saved, locations: saved.locations, metrics: saved.metrics ?? FlightMetrics(),
+                                            exactType: true) { [weak self] ok, error, workout in
+            DispatchQueue.main.async {
+                if let workout { FlightDataStore.shared.updateWorkoutUUID(for: saved.id, workoutUUID: workout.uuid) }
+                self?.busy = false; self?.status = nil; self?.preview = nil
+                done(ok ? "Saved on this phone and in Apple Health." : "Saved on this phone. Apple Health: \(error?.localizedDescription ?? "not saved").")
+            }
         }
     }
 }

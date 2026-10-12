@@ -4,8 +4,8 @@ import UniformTypeIdentifiers
 
 /// DEVELOPER MODE: Import a workout (build 127). See WorkoutImporter and WorkoutLogReplay.
 /// Build 128: this phone's own recordings are listed directly, and a workout's detail screen opens this with its
-/// own recording chosen (`preselectStamp`) and read at once, showing only that recording. Build 131: a re-run of this
-/// phone's own recording never replaces the original - it is always saved beside it, here and in Apple Health.
+/// own recording chosen (`preselectStamp`) and read at once, showing only that recording. Build 132: nothing saved
+/// here ever replaces a workout - a re-run or another phone's workout is always saved beside what is already here.
 struct WorkoutImportView: View {
     var preselectStamp: String? = nil
     @StateObject private var importer = WorkoutImporter()
@@ -17,9 +17,6 @@ struct WorkoutImportView: View {
     @State private var useLoggedGPS = false
     @State private var type: HKWorkoutActivityType = .other
     @State private var toHealth = true
-    /// Another phone's workout only: replace this phone's workouts it overlaps (off: they are kept). A re-run of this
-    /// phone's own recording has no such switch (build 131): its original is always kept.
-    @State private var replace = false
     @State private var done: String?
 
     // The same list the workout screen offers (LiveSessionView.workoutTypes).
@@ -145,32 +142,22 @@ struct WorkoutImportView: View {
                     }
                     Toggle("Save to Apple Health", isOn: $toHealth)
                     if !p.overlapping.isEmpty {
-                        if p.ownRecording {
-                            // The original is never replaced by its own re-run (build 131).
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(p.overlapping.count == 1 ? "The original is kept" : "The \(p.overlapping.count) workouts here are kept")
-                                Text("This is saved as a new workout beside \(p.overlapping.count == 1 ? "it" : "them"). Nothing is deleted, here or in Apple Health.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        } else {
-                            Toggle(isOn: $replace) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(p.overlapping.count == 1 ? "Replace this phone's workout" : "Replace this phone's \(p.overlapping.count) workouts")
-                                    Text(replace ? "Deleted here and in Apple Health, with their distance and steps, before this is saved."
-                                                 : "Off: kept, and this is saved beside them.")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
+                        // Nothing is ever replaced (build 132): what is here stays, and this is saved beside it.
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(p.overlapping.count == 1 ? (p.ownRecording ? "The original is kept" : "This phone's workout is kept")
+                                                          : "The \(p.overlapping.count) workouts here are kept")
+                            Text("This is saved as a new workout beside \(p.overlapping.count == 1 ? "it" : "them"). Nothing is deleted, here or in Apple Health.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
-                        ForEach(p.overlapping) { old in replacedRow(old) }
-                        if !replace, toHealth, p.overlapping.contains(where: { $0.workoutUUID != nil }) {
+                        ForEach(p.overlapping) { old in keptRow(old) }
+                        if toHealth, p.overlapping.contains(where: { $0.workoutUUID != nil }) {
                             Label("The original is in Apple Health too, so Health would count this time twice.",
                                   systemImage: "exclamationmark.triangle")
                                 .font(.caption).foregroundStyle(.orange)
                         }
                     }
                     Button {
-                        importer.save(type: type, toHealth: toHealth, replace: replace && !p.ownRecording) { done = $0 }
+                        importer.save(type: type, toHealth: toHealth) { done = $0 }
                     } label: {
                         Label("Save workout", systemImage: "tray.and.arrow.down.fill")
                     }
@@ -212,14 +199,9 @@ struct WorkoutImportView: View {
                types.contains(where: { $0.0 == t }) { type = t } else { type = .other }
             // A flight goes to Health as Other unless chosen otherwise: no estimated steps for 3,000 km.
             if importer.preview?.flight.notes?.contains("flight re-run") == true { type = .other }
-            // Nothing is replaced unless asked, and a re-run never replaces its original (build 131). A copy beside a
-            // workout already in Health stays out of Health unless switched on, so Health does not count the time twice.
-            replace = false
+            // A copy beside a workout already in Health stays out of Health unless switched on, so Health does not
+            // count the same time twice.
             toHealth = !(importer.preview?.overlapping.contains { $0.workoutUUID != nil } ?? false)
-        }
-        .onChange(of: replace) { _, on in
-            // Replacing takes the old copies out of Health, so the new one can go in; kept, it stays out by default.
-            toHealth = on || !(importer.preview?.overlapping.contains { $0.workoutUUID != nil } ?? false)
         }
     }
 
@@ -250,8 +232,8 @@ struct WorkoutImportView: View {
             .compactMap { $0 }.joined(separator: " · ")
     }
 
-    /// A workout the new one overlaps: kept beside it (or, for another phone's workout, replaced when switched on).
-    private func replacedRow(_ old: Flight) -> some View {
+    /// A workout the new one overlaps, kept beside it.
+    private func keptRow(_ old: Flight) -> some View {
         let km = old.totalDistance / 1000
         let seconds = (old.endDate ?? old.startDate.addingTimeInterval(old.metrics?.duration ?? 0)).timeIntervalSince(old.startDate)
         return HStack(alignment: .firstTextBaseline) {

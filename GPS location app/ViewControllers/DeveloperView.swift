@@ -108,7 +108,7 @@ struct DeveloperView: View {
             } header: {
                 Text("Workouts")
             } footer: {
-                Text("Rebuilds a recording from its logs, re-runs a flight in it with this build's flight code, and saves it here and to Apple Health with the type you choose. A re-run is saved as a new workout; the original is always kept.")
+                Text("Rebuilds a recording from its logs, re-runs a flight in it with this build's flight code, and saves it here and to Apple Health with the type you choose. Everything is saved as a new workout; nothing already here is replaced.")
             }
 
             Section {
