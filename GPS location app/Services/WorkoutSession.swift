@@ -1460,6 +1460,24 @@ class WorkoutSession: ObservableObject {
     /// turns (typically 0.04), a trouser pocket on a motorcycle turns a little all the time
     /// (typically 0.15, 0.3 one tick in ten). The last 120 moving vehicle ticks.
     private var movingHandlingLevels: [Double] = []
+    /// A PHONE IN A MOTORCYCLE RIDER'S POCKET (build 134), told from this trip's own riding: rotation, pitch and
+    /// |roll| on unhandled vehicle ticks above 20 km/h, the last 900. Across 106 labelled journeys a median rotation of
+    /// at least 0.09 rad/s with the phone NOT upright facing its user (pitch > 0 and |roll| < 30) called 53 of 58
+    /// motorcycle rides and none of 48 car drives - a passenger's or a mounted phone sits upright, a pocket does not.
+    private var pocketRideRotation: [Double] = []
+    private var pocketRidePitch: [Double] = []
+    private var pocketRideAbsRoll: [Double] = []
+    private var isPocketMotorcycle: Bool {
+        guard pocketRideRotation.count >= 60, Self.median(pocketRideRotation) >= 0.09 else { return false }
+        let upright = Self.median(pocketRidePitch) > 0 && Self.median(pocketRideAbsRoll) < 30
+        return !upright
+    }
+    /// When the phone was taken in hand while the vehicle branch held a speed, and that speed.
+    private var handHoldStart: Date?
+    private var handHoldStartSpeed = 0.0
+    private var handHoldLastTick: Date?
+    /// The held speed fades with this time constant while a pocket motorcycle's phone is in hand.
+    private let POCKET_HAND_HOLD_FADE: TimeInterval = 10
     /// Rotation well above this phone's usual level on this trip: a hand is starting to move it,
     /// even before the level reaches HANDLING_ROTATION_THRESHOLD.
     private var handlingIsAboveUsual: Bool {
@@ -5020,14 +5038,46 @@ class WorkoutSession: ObservableObject {
             // a motorcycle turns more than a mount ever does.
             let handlingRaised = handlingIsAboveUsual
             let target = handlingRaised ? min(learned, estimatedFallbackSpeed) : learned
+            // A POCKET MOTORCYCLE'S PHONE COMES OUT OF THE POCKET AT A STOP (build 134).
+            //
+            // The held speed below is right for a car, where a passenger holds the phone at speed, and
+            // wrong for a rider, who takes the phone out at a light or on arrival: the hold kept the last
+            // riding speed while the bike stood. Across 68 recordings the in-hand seconds read 8.3 km
+            // against GPS 4.5 km, 5.4 km against 1.8 km on motorcycles. When this trip is a pocket
+            // motorcycle (above) the held speed fades with a 10 s time constant: motorcycle error 4.0 ->
+            // 2.0 km, cars unchanged (4 of 98 in-hand stretches misjudged). Owner's choice, 2026-10-13:
+            // motorcycles only.
+            let now = Date()
+            var fading = false
+            if deviceIsBeingHandled, !stoppedOnGround {
+                if handHoldStart == nil || handHoldLastTick.map({ now.timeIntervalSince($0) > 5 }) == true {
+                    handHoldStart = now; handHoldStartSpeed = estimatedFallbackSpeed
+                }
+                handHoldLastTick = now
+                fading = isPocketMotorcycle
+            } else {
+                handHoldStart = nil
+            }
             if stoppedOnGround {
                 estimatedFallbackSpeed = 0
             } else {
                 let blend = min(dt / (1.5 + dt), 1.0)
                 estimatedFallbackSpeed += (target - estimatedFallbackSpeed) * blend
+                if fading, let since = handHoldStart {
+                    estimatedFallbackSpeed = min(estimatedFallbackSpeed,
+                                                 handHoldStartSpeed * exp(-now.timeIntervalSince(since) / POCKET_HAND_HOLD_FADE))
+                }
                 if estimatedFallbackSpeed > 3.0 {
                     movingHandlingLevels.append(handlingRotationLevel)
                     if movingHandlingLevels.count > 120 { movingHandlingLevels.removeFirst() }
+                }
+                if !deviceIsBeingHandled, !isAirborneForEstimation, estimatedFallbackSpeed > 20 / 3.6,
+                   let rot = locationManager.currentRotationRate,
+                   let pitch = locationManager.currentPitch, let roll = locationManager.currentRoll {
+                    pocketRideRotation.append(rot); pocketRidePitch.append(pitch); pocketRideAbsRoll.append(abs(roll))
+                    if pocketRideRotation.count > 900 {
+                        pocketRideRotation.removeFirst(); pocketRidePitch.removeFirst(); pocketRideAbsRoll.removeFirst()
+                    }
                 }
             }
             distance = estimatedFallbackSpeed * dt
@@ -5053,7 +5103,7 @@ class WorkoutSession: ObservableObject {
             }
             sourceTag = stoppedOnGround ? "LEARN(stopped)"
                 : (modelAnswered ? (fromNetwork ? "LEARN(net)" : "LEARN")
-                   : (deviceIsBeingHandled ? "LEARN(held in hand)" : "LEARN(held)"))
+                   : (deviceIsBeingHandled ? (fading ? "LEARN(held in hand, fading)" : "LEARN(held in hand)") : "LEARN(held)"))
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
@@ -5601,6 +5651,8 @@ class WorkoutSession: ObservableObject {
         lastFallbackPedometerDistanceForStride = nil
         heldSpeedCorrection = 0
         movingHandlingLevels = []
+        pocketRideRotation = []; pocketRidePitch = []; pocketRideAbsRoll = []
+        handHoldStart = nil; handHoldLastTick = nil
         takeoffSpeedGain = 0
         takeoffQuietFor = 0
         takeoffDetected = false
@@ -5879,6 +5931,8 @@ class WorkoutSession: ObservableObject {
         lastFallbackPedometerDistanceForStride = nil
         heldSpeedCorrection = 0
         movingHandlingLevels = []
+        pocketRideRotation = []; pocketRidePitch = []; pocketRideAbsRoll = []
+        handHoldStart = nil; handHoldLastTick = nil
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
     }
