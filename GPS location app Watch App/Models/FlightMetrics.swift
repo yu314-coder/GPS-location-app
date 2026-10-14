@@ -290,7 +290,10 @@ struct FlightMetrics: Codable {
         return metadata
     }
 
-    mutating func updateWithLocation(_ location: FlightLocation, previousLocation: FlightLocation?, elapsedTime: TimeInterval = 0) {
+    /// `distance`, when given, is what the pair adds to the total (build 135: the GPS step follows the satellite
+    /// speed); the straight line between the fixes still drives everything else here.
+    mutating func updateWithLocation(_ location: FlightLocation, previousLocation: FlightLocation?, elapsedTime: TimeInterval = 0,
+                                     distance distanceOverride: Double? = nil) {
         totalPoints += 1
         if location.isValid {
             validPoints += 1
@@ -303,7 +306,7 @@ struct FlightMetrics: Codable {
         if let previous = previousLocation {
             let distance = location.distance(to: previous)
             let previousSpeed = currentSpeed
-            totalDistance += distance
+            totalDistance += distanceOverride ?? distance
 
             // Performance: Reduce distance logging to every 50 points (matches summary logging)
             if totalPoints % 50 == 0 {

@@ -1002,6 +1002,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // Initialize flight
             flight = Flight(startDate: startDate)
             flight.workoutType = workoutType.rawValue
+            gpsDistanceAnchor = nil; speedlessFixes.removeAll()
             isActive = true
 
             // Reset location filtering statistics
@@ -3585,6 +3586,57 @@ class WorkoutSession: NSObject, ObservableObject {
     /// A genuinely fast fix is unaffected because its own reported speed rises with it: a car at
     /// 30 m/s reports about 30 m/s and its displacement agrees. Only the self-contradiction is
     /// refused.
+    // GPS DISTANCE FOLLOWS THE SATELLITE SPEED (build 135).
+    //
+    // Distance was the straight line between consecutive fixes, so every wobble of a fix at a stop or
+    // a crawl counted, and fixes WITHOUT a satellite speed (Wi-Fi/cell positions, speed < 0) jumped
+    // hundreds of metres while claiming 20-40 m of accuracy - fixContradictsItself cannot judge those,
+    // having no speed to compare. 2026-10-14 12:36, a 5.74 km road (measured on a clean ride of it):
+    // watch 6.44 km, 1.42 km of it added under 15 km/h where its own Doppler speed said 0.44 km.
+    //
+    // Now a fix with a speed adds at most 1.25 x its speed x the time + 1 m (Doppler does not care how
+    // vague the position is), and a fix without one is smoothed - the median of the last three such
+    // fixes - and refused if it implies more than 30 m/s. Tested on every phone recording's full fix
+    // stream (the watch logs one fix a second, too few to replay): 19 clean-GPS recordings, typical
+    // error 6.3% -> 3.7%, worst 36% -> 14%; the two poor-GPS rides with a known route 153% -> 96%
+    // and 123% -> 97%. The route keeps the raw fixes; only the distance follows this anchor.
+    private var gpsDistanceAnchor: (time: Date, lat: Double, lon: Double, speed: Double)?
+    private var speedlessFixes: [(lat: Double, lon: Double)] = []
+    private let SPEEDLESS_MAX_SPEED = 30.0
+
+    private func setGPSDistanceAnchor(_ location: FlightLocation) {
+        gpsDistanceAnchor = (location.timestamp, location.latitude, location.longitude, location.speed)
+        speedlessFixes.removeAll()
+    }
+
+    /// The distance this fix adds, or nil when a fix without a satellite speed implies an impossible one.
+    private func gpsDistanceStep(for location: FlightLocation) -> Double? {
+        var lat = location.latitude, lon = location.longitude
+        if location.speed >= 0 {
+            speedlessFixes.removeAll()
+        } else {
+            speedlessFixes.append((location.latitude, location.longitude))
+            if speedlessFixes.count > 3 { speedlessFixes.removeFirst() }
+            let lats = speedlessFixes.map(\.lat).sorted(), lons = speedlessFixes.map(\.lon).sorted()
+            lat = lats[lats.count / 2]; lon = lons[lons.count / 2]
+        }
+        guard let anchor = gpsDistanceAnchor else {
+            gpsDistanceAnchor = (location.timestamp, lat, lon, location.speed)
+            return 0
+        }
+        let d = CLLocation(latitude: anchor.lat, longitude: anchor.lon).distance(from: CLLocation(latitude: lat, longitude: lon))
+        let dt = max(location.timestamp.timeIntervalSince(anchor.time), 0)
+        var add = d
+        if location.speed >= 0 {
+            let v = anchor.speed >= 0 ? (location.speed + anchor.speed) / 2 : location.speed
+            add = min(d, v * dt * 1.25 + 1.0)
+        } else if dt > 0, d / dt > SPEEDLESS_MAX_SPEED {
+            return nil
+        }
+        gpsDistanceAnchor = (location.timestamp, lat, lon, location.speed)
+        return add
+    }
+
     private func fixContradictsItself(_ location: FlightLocation, previous: FlightLocation,
                                       seconds: TimeInterval) -> Bool {
         guard seconds > 0.5, location.speed >= 0 else { return false }
@@ -3698,6 +3750,7 @@ class WorkoutSession: NSObject, ObservableObject {
         func reanchorLocation(_ reason: String) {
             print("⌚ ⚠️ [\(sourceLabel)] \(reason) - reanchoring to new fix")
             flight.locations.append(location)
+            setGPSDistanceAnchor(location)
             currentMetrics.currentAltitude = location.altitude
             if location.altitude > currentMetrics.maxAltitude {
                 currentMetrics.maxAltitude = location.altitude
@@ -3816,6 +3869,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // GPS at both ends rather than left drifted.
             rubberSheetEstimatedGap(onto: location)
             flight.locations.append(location)
+            setGPSDistanceAnchor(location)
             lastLocationTime = Date()
             // Real fix is back → clear the dead-reckoning status so the UI shows GPS OK.
             switch source {
@@ -3956,6 +4010,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
             // Add location but don't calculate distance
             flight.locations.append(location)
+            setGPSDistanceAnchor(location)
             lastLocationTime = Date()  // Track location received
 
             // Update current altitude and other non-distance metrics
@@ -3964,6 +4019,14 @@ class WorkoutSession: NSObject, ObservableObject {
                 currentMetrics.maxAltitude = location.altitude
             }
 
+            return
+        }
+
+        // The distance this fix adds, following its satellite speed (build 135); a fix without one that
+        // implies an impossible speed is refused here, before it can bend the route.
+        guard let gpsStep = gpsDistanceStep(for: location) else {
+            print("⌚ 🚫 [\(sourceLabel)] Fix without satellite speed implies over \(Int(SPEEDLESS_MAX_SPEED * 3.6)) km/h - REJECTED")
+            skippedLocationCount += 1
             return
         }
 
@@ -4007,7 +4070,8 @@ class WorkoutSession: NSObject, ObservableObject {
         let elapsedTime = Date().timeIntervalSince(flight.startDate)
 
         // Update metrics with elapsed time for accurate speed calculation
-        currentMetrics.updateWithLocation(location, previousLocation: previousLocation, elapsedTime: elapsedTime)
+        currentMetrics.updateWithLocation(location, previousLocation: previousLocation, elapsedTime: elapsedTime,
+                                          distance: previousLocation == nil ? nil : gpsStep)
 
         // Update pressure from LocationManager
         currentMetrics.currentPressure = locationManager.currentPressure
@@ -4300,6 +4364,7 @@ class WorkoutSession: NSObject, ObservableObject {
         workoutBuilder = nil
         flight = Flight()
         currentMetrics = FlightMetrics()
+        gpsDistanceAnchor = nil; speedlessFixes.removeAll()
         locationManager.reset()
         pedometerManager.reset()
         isActive = false
