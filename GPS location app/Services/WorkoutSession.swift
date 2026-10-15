@@ -1459,6 +1459,8 @@ class WorkoutSession: ObservableObject {
     /// Steps may end a current vehicle only while the phone swings at least this much: a pocket on a walking leg
     /// (0.8-3.9 rad/s), not a leg shifting on a moving bike (up to ~0.5). See the pedometer handler (build 136).
     private let STEPS_CARRIED_ROTATION = 0.60
+    /// The distance real GPS fixes add, following their satellite speed (build 137; see GPSDistance.swift).
+    private var gpsDistance = GPSDistanceStepper()
     /// The rotation level this phone normally shows while the vehicle is moving: a mount barely
     /// turns (typically 0.04), a trouser pocket on a motorcycle turns a little all the time
     /// (typically 0.15, 0.3 one tick in ten). The last 120 moving vehicle ticks.
@@ -2746,6 +2748,7 @@ class WorkoutSession: ObservableObject {
         let startDate = Date()
         flight = Flight(startDate: startDate)
         flight.workoutType = workoutType.rawValue
+        gpsDistance.reset()
         isActive = true
         lastRealLocationTime = startDate
         lastGoodAccuracyFixTime = .distantPast
@@ -6077,6 +6080,7 @@ class WorkoutSession: ObservableObject {
         // biggest accuracy win when GPS is available intermittently.
         rubberSheetEstimatedGap(onto: location)
         flight.locations.append(location); gpsFixesInRoute += 1
+        gpsDistance.reset(to: location)
         lastRealLocationTime = Date()
         NotificationCenter.default.post(
             name: .workoutLocationUpdated,
@@ -6581,6 +6585,7 @@ class WorkoutSession: ObservableObject {
 
             // Add location but don't calculate distance
             flight.locations.append(location); gpsFixesInRoute += 1
+            gpsDistance.reset(to: location)
             lastRealLocationTime = Date()
             NotificationCenter.default.post(
                 name: .workoutLocationUpdated,
@@ -6594,6 +6599,13 @@ class WorkoutSession: ObservableObject {
                 currentMetrics.maxAltitude = location.altitude
             }
 
+            return
+        }
+
+        // The distance this fix adds, following its satellite speed (build 137); a fix without one that implies an
+        // impossible speed is refused here, before it can bend the route.
+        guard let gpsStep = gpsDistance.step(location) else {
+            print("🚫 Fix without satellite speed implies over \(Int(GPSDistanceStepper.speedlessMaxSpeed * 3.6)) km/h - REJECTED")
             return
         }
 
@@ -6630,7 +6642,8 @@ class WorkoutSession: ObservableObject {
         let activeTime = activeDuration
 
         // Update metrics with active time for accurate speed calculation
-        currentMetrics.updateWithLocation(location, previousLocation: previousLocation, elapsedTime: activeTime)
+        currentMetrics.updateWithLocation(location, previousLocation: previousLocation, elapsedTime: activeTime,
+                                          distance: previousLocation == nil ? nil : gpsStep)
 
         // Update pressure from LocationManager
         currentMetrics.currentPressure = locationManager.currentPressure
@@ -6859,6 +6872,7 @@ class WorkoutSession: ObservableObject {
         workoutBuilder = nil
         flight = Flight()
         currentMetrics = FlightMetrics()
+        gpsDistance.reset()
         locationManager.reset()
         endTransitionBackgroundTaskIfNeeded()
         clearActiveWorkoutSnapshot(reason: "reset")

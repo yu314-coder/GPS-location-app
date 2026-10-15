@@ -1055,6 +1055,10 @@ struct WorkoutDetailView: View {
                 }
             }
 
+            // The distance itself by the rule the workout recorded it with (build 137): real GPS fixes follow their
+            // satellite speed, dead-reckoned points keep their steps. The loop above still counts the segments.
+            recalculatedDistance = GPSDistanceStepper.total(self.activeFlight.locations)
+
             print("🧮 Recalculation complete:")
             print("   Valid segments: \(validSegments)")
             print("   Invalid/glitch segments: \(invalidSegments)")

@@ -306,7 +306,10 @@ struct FlightMetrics: Codable, Hashable {
 
     /// `countElevation`: false for a point whose height is a flight's typical height (build 115), which must
     /// not reach the elevation totals (and Apple Health's elevation ascended).
-    mutating func updateWithLocation(_ location: FlightLocation, previousLocation: FlightLocation?, elapsedTime: TimeInterval = 0, countElevation: Bool = true) {
+    /// `distance`, when given, is what the pair adds to the total (build 137: a GPS fix's step follows its satellite
+    /// speed, GPSDistanceStepper); the straight line between the points still drives everything else here.
+    mutating func updateWithLocation(_ location: FlightLocation, previousLocation: FlightLocation?, elapsedTime: TimeInterval = 0, countElevation: Bool = true,
+                                     distance distanceOverride: Double? = nil) {
         totalPoints += 1
         if location.isValid {
             validPoints += 1
@@ -320,7 +323,7 @@ struct FlightMetrics: Codable, Hashable {
             let distance = location.distance(to: previous)
             let previousSpeed = currentSpeed
 
-            totalDistance += distance
+            totalDistance += distanceOverride ?? distance
 
             // Performance: Reduce distance logging to every 50 points (matches summary logging)
             if totalPoints % 50 == 0 {

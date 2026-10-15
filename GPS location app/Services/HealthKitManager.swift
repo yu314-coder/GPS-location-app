@@ -1906,31 +1906,12 @@ class HealthKitManager: ObservableObject {
 
     /// Calculate total distance from GPS location array
     /// Used to fix corrupted distance data by recalculating from raw GPS points
+    /// A saved route's distance, by the rule the workout recorded it with (build 137): real GPS fixes follow their
+    /// satellite speed, dead-reckoned points keep their steps, invalid points and jumps over 1 km are skipped. A plain
+    /// sum of position steps here undid that rule on every resend - it differs from the recorded distance by more than
+    /// the 100 m below on most GPS workouts, so the resend replaced it.
     private func calculateTotalDistance(from locations: [FlightLocation]) -> Double {
-        guard locations.count > 1 else { return 0 }
-
-        var totalDistance: Double = 0
-        for i in 1..<locations.count {
-            let currentLocation = locations[i]
-            let previousLocation = locations[i - 1]
-
-            // Only count valid GPS points
-            guard currentLocation.isValid && previousLocation.isValid else {
-                continue
-            }
-
-            // Calculate distance between consecutive points
-            let distance = currentLocation.distance(to: previousLocation)
-
-            // Sanity check: ignore impossible jumps (GPS glitches)
-            if distance < 1000.0 { // Less than 1km jump (reasonable for 1Hz GPS)
-                totalDistance += distance
-            } else {
-                print("      ⚠️ Skipping GPS glitch: \(String(format: "%.0f", distance))m jump")
-            }
-        }
-
-        return totalDistance
+        GPSDistanceStepper.total(locations)
     }
 
     /// Resend flight data to HealthKit with correct distance
