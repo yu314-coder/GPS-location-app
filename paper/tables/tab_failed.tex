@@ -1,4 +1,4 @@
-\begin{tabular}{p{0.28\textwidth}p{0.36\textwidth}p{0.24\textwidth}}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.28\textwidth}>{\raggedright\arraybackslash}p{0.36\textwidth}>{\raggedright\arraybackslash}p{0.24\textwidth}}
 \toprule
 Approach & Idea & Measured against GPS\\
 \midrule
@@ -18,11 +18,15 @@ Core Motion's pulls undone & In a disturbed field, turn back whatever north the 
 \multicolumn{3}{l}{\emph{Walking, riding and the air}}\\
 Thigh swing for walking direction & Swing is sharper forwards than backwards & wrong more often than right\\
 Other riding-or-walking tests & A steady push; speed overruling steps & blocked $5\%$ of real walking\\
+Speed vetoing bump steps & The model's or the recent riding speed overrules steps on a motorcycle & blocked real walks: the held speed is still high after getting off\\
+Fading the held speed in a car too & A phone taken in hand means a stop & cars in the hand $+21\% \to -37\%$ of GPS: a passenger holds it at speed\\
 Speed from turns in the air & Sideways push over turn rate & phone's turning hid the aircraft's\\
 Integrating the whole climb & Carry the takeoff integration on & worked for one setting only\\
 Cabin shaking as a fifth input & Shaking changes with height and speed & $68\% \to 69\%$ of NASA flights within $10\%$\\
 \midrule
 \multicolumn{3}{l}{\emph{Speed}}\\
 Last ten seconds into the network & More context for each answer & better per second, not per journey\\
+Traffic around slow riding & Share of the last minutes stopped, recent speed & no signal: $82$--$112\%$ of GPS in every band\\
+Magnetic flicker for crawling & The field flickers more at a crawl than at idle & idle and crawl told apart, but fixed at most $340$~m on $8$ rides and shrank fast riding\\
 \bottomrule
 \end{tabular}

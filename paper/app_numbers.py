@@ -16,6 +16,11 @@ BEGIN, END = '    // BEGIN GENERATED (paper/app_numbers.py)\n', '    // END GENE
 
 J = json.load(open(os.path.join(HERE, 'tables', 'numbers.json')))
 M, C, W, P = (J['categories'][k] for k in ('motorcycle', 'car', 'walking', 'plane'))
+# The plane since build 118: three flights, two graded by their ADS-B tracks (tables/numbers_flight.tex).
+import re as _re0
+F = {k: v.replace('{,}', ',') for k, v in
+     _re0.findall(r"\\newcommand\{\\n(\w+)\}\{((?:[^{}]|\{[^{}]*\})*)\}", open(os.path.join(HERE, 'tables', 'numbers_flight.tex')).read())}
+_short_pct = (float(F['AirShortPooledKm']) / float(F['AirShortKm']) - 1) * 100
 
 
 def signed(x, digits=1):
@@ -44,9 +49,9 @@ add(f'              direction: {q(f"{C["dir_within30"]}%")}),')
 add(f'        .init(name: "Walking", recorded: {q(f"{W["stretches"]} straight stretches and {W["walks"]} walks; phone in a pocket, distance counted by steps")},')
 add(f'              distance: {q(signed(W["total_pct"]))}, speed: {q(f"{W["speed_app"]:.1f} km/h")}, speedLabel: {q(f"where GPS measured {W["speed_gps"]:.1f}")},')
 add(f'              direction: {q(f"{W["dir_within30"]}%")}),')
-add(f'        .init(name: "Plane", recorded: {q(f"{P["flights"]} flight, {P["gps_km"]:.0f} km; the takeoff measured, then the flight network")},')
-add(f'              distance: {q(signed(P["total_pct"]))}, speed: {q(f"{P["air_error"]} km/h")}, speedLabel: "speed error in the air",')
-add(f'              direction: {q(f"{P["dir_within30"]}%")})')
+add(f'        .init(name: "Plane", recorded: {q(f"3 flights: two of four hours graded by their ADS-B tracks ({F["AirLongKm"]} and {F["AirRetKm"]} km), one short one by GPS; the takeoff measured, then the typical flight")},')
+add(f'              distance: {q(signed(int(F["AirLongShare"]) - 100, 0) + " / " + signed(int(F["AirRetShare"]) - 100, 0))}, speed: {q(F["AirLongCruise"] + " km/h")}, speedLabel: "typical error in the cruise",')
+add(f'              direction: {q(F["AirDirAllW"] + "%")})')
 add('    ]')
 add('')
 add('    static let distance: [Distance] = [')
@@ -56,8 +61,8 @@ add(f'        .init(name: "Car", detail: {q(f"{C["recordings"]} journeys, {C["wi
 add(f'              appKm: {C["app_km"]}, gpsKm: {C["gps_km"]}, errorPercent: {C["total_pct"]}),')
 add(f'        .init(name: "Walking", detail: {q(f"{W["stretches"]} straight stretches, counted by steps")},')
 add(f'              appKm: {W["app_km"]}, gpsKm: {W["gps_km"]}, errorPercent: {W["total_pct"]}),')
-add(f'        .init(name: "Plane", detail: "1 flight: takeoff, then the flight network",')
-add(f'              appKm: {P["app_km"]}, gpsKm: {P["gps_km"]}, errorPercent: {P["total_pct"]})')
+add(f'        .init(name: "Plane", detail: "the short flight with GPS: takeoff, then the typical flight",')
+add(f'              appKm: {F["AirShortPooledKm"]}, gpsKm: {F["AirShortKm"]}, errorPercent: {_short_pct:.1f})')
 add('    ]')
 add('')
 add('    static let speedBands: [SpeedBand] = [')
@@ -74,7 +79,7 @@ add('    static let direction: [Direction] = [')
 add(f'        .init(name: "Motorcycle", graded: "{M["dir_recordings"]} recordings", medianDegrees: {M["dir_median"]}, within30: {M["dir_within30"]}),')
 add(f'        .init(name: "Car", graded: "{C["dir_recordings"]} recordings", medianDegrees: {C["dir_median"]}, within30: {C["dir_within30"]}),')
 add(f'        .init(name: "Walking", graded: "{W["walks"]} walks", medianDegrees: {W["dir_median"]}, within30: {W["dir_within30"]}),')
-add(f'        .init(name: "Plane", graded: "1 flight", medianDegrees: {P["dir_median"]}, within30: {P["dir_within30"]})')
+add(f'        .init(name: "Plane", graded: "6 recordings, 3 flights", medianDegrees: {F["AirDirAll"]}, within30: {F["AirDirAllW"]})')
 add('    ]')
 add('')
 add('    /// The recorded flight replayed with no GPS through the app\'s own code.')

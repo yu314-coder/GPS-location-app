@@ -20,7 +20,7 @@
 \usepackage{float}
 \usepackage[colorlinks=true,linkcolor={blue!45!black},citecolor={blue!45!black},urlcolor={blue!45!black}]{hyperref}
 % The app shows the newest copy it has by this number (no dates): the app build the paper was made for.
-\hypersetup{pdfkeywords={velocity-mode-paper revision 126}}
+\hypersetup{pdfkeywords={velocity-mode-paper revision 139}}
 \captionsetup{font=small,labelfont=bf,labelsep=period}
 \setlist{itemsep=2pt,topsep=4pt}
 \setlength{\parskip}{3pt}
@@ -204,7 +204,11 @@ trained on.
 \paragraph{Stops and hands.} A stopped vehicle is recognised from the absence of shaking, not from
 the speed model, which would read an idling engine as a crawl. A hand on the phone shakes it, and
 shaking reads as speed, so while the phone is being handled the speed may fall but not rise, and a
-phone held in the hand keeps the last speed measured before it was picked up.
+phone held in the hand keeps the last speed measured before it was picked up. That suits a car, where a
+passenger holds the phone at speed, but not a motorcycle, whose rider takes the phone out at a stop or on
+arrival. So when the trip so far looks like a phone in a rider's pocket --- not held, turning at a median of
+at least $0.09$~rad/s over at least a minute above $20$~km/h, and not sitting upright facing its user --- the
+held speed fades instead, to a third in $10$~s.
 
 \paragraph{In the air.} A smooth cabin reads as standing still. In the air the phone instead measures
 the takeoff: from the last moment it was still, it follows its own turning with the gyroscope and
@@ -315,6 +319,11 @@ total. In some pockets each footfall rings twice, with an echo about a quarter o
 so the rhythm of the last four seconds is found from the signal's autocorrelation and, while it is
 clear, a peak sooner than $0.65$ of its step period is refused as an echo.
 
+Steps are also what ends a ride, and on a moving motorcycle the pedometer counts road bumps as steps: on
+one ride it counted $52$ in $28$~s at $41$ to $56$~km/h and handed the ride to walking. A pocket on a walking
+leg swings and one on a moving bike holds still, so while a vehicle is current, steps end it only once the
+phone's smoothed rotation reaches $0.60$~rad/s; walking swings it at $0.8$ to $3.9$.
+
 \subsection{The route}
 
 After the first point, each second's step is laid from the previous point along the current
@@ -324,7 +333,7 @@ declination is taken once, at the first point. Appendix~\ref{app:params} lists e
 
 \subsection{Recordings}\label{sec:data}
 
-All recordings were made by the author with one iPhone, mostly in one city, with the phone's raw
+All ground recordings were made by the author with one iPhone, mostly in one city, with the phone's raw
 sensor readings saved --- acceleration, rotation, orientation and, in the most recent ones, the
 magnetic field, $50$ times a second --- and GPS recorded alongside. Table~\ref{tab:dataset} summarises
 them. A motorcycle and a car were told apart from the sensors themselves: in a turn a motorcycle
@@ -360,7 +369,7 @@ method from its raw sensor data:
 \begin{itemize}
 \item \textbf{Speed:} the same fingerprint, the same $12$-neighbour average and correction, refusals
 answered by a starting network trained without that recording, and the same rules for stops and a
-phone in the hand. The store holds
+phone in the hand, the fade on a pocket motorcycle included. The store holds
 $4{,}000$ examples drawn at random from every \emph{other} journey, so no journey is measured with its
 own GPS in the store. Each example keeps the same chance of being drawn whatever recordings are added,
 so a new recording changes the other journeys' stores only by its own examples. On $\nRecN$ recent
@@ -370,7 +379,8 @@ magnetic field was recorded), the angle learned from turns and the redrawing, wi
 \item \textbf{Starting network:} each recording measured by a network trained without it (the
 recordings split into eight groups), and the store tested holding only $60$ to $4{,}000$ examples.
 \item \textbf{Walking:} the step detector replayed on the recorded acceleration with the stride the
-phone had learned.
+phone had learned, and Apple's pedometer as logged where it was logged, modelled from the step count
+before that.
 \item \textbf{The flights:} the app's own code for the takeoff integration and test, the typical
 flight and the direction in the air, compiled and run on the flights' raw samples and the cabin's
 recorded pressure, against the short flight's GPS and the long flights' ADS-B tracks.
@@ -378,8 +388,10 @@ recorded pressure, against the short flight's GPS and the long flights' ADS-B tr
 its aircraft (the aircraft split into five groups), from the roll to landing.
 \end{itemize}
 Three inputs are taken from the recordings as they were: whether each second was walking or riding,
-Apple's motion classifier, and the car-park ramp flag. Cabin pressure was not recorded, so on the
-flight the moment the app would call it airborne was taken from the same integration's climb rate.
+Apple's motion classifier, and the car-park ramp flag. The exception is a ride that bump steps ended with
+the phone not swinging, which the newest version refuses: $\nGuardSwitches$ such switches on $\nGuardN$ journeys,
+$\nGuardMin$ minutes in all, are replayed as riding. Cabin pressure was not recorded on the short
+flight, so there the moment the app would call it airborne was taken from the same integration's climb rate.
 
 In a pocket GPS is itself accurate only to $10$--$40$~m, so it is used over stretches long enough for
 that not to matter.
@@ -474,14 +486,14 @@ the median error is $\nWalkDirMed\dg$ and $\nWalkWthirty\%$ of seconds are withi
 On $\nEchoOver$ of the $\nEchoN$ stretches the steps counted ran more than $15\%$ faster than the walking rhythm itself;
 on the walk after one motorcycle ride the count was $2.5$ to $2.75$ steps a second against a
 rhythm of $1.85$, and those stretches came out close to twice what GPS saw. Refusing the echo removes
-most of the extra steps. What that does to distance cannot be re-run: the app takes the larger of its
-own count and Apple's pedometer, which was not recorded until the newest version, so the re-run models
-the pedometer from what each version logged, and its walking figures above do not move. Scaled by the
-change in the count alone, the walking total would go from $\nEchoNow\%$ to about $\nEchoScaled\%$ and the stretches within
-$20\%$ from $\nEchoWtwentyNow\%$ to $\nEchoWtwentyScaled\%$; $\nEchoBetter$ stretches come closer to GPS and $\nEchoWorse$ move away, \nEchoWorseTxt{}. That is an estimate until walks recorded with the pedometer arrive. The first three had
-no echo: the app's count matched the pedometer's and the walking rhythm, and the check refused almost
-nothing. On the one with usable GPS the distance still came out long, by the stride rather than the
-count: the stride the pedometer had learned was longer than the steps of that slow walk uphill.
+most of the extra steps. The app takes the larger of its own count and Apple's pedometer, and the
+pedometer was not recorded before the check, so on the older walks the re-run models it from what each
+version logged and its walking figures there do not move with the check. Scaled by the change in the count
+alone, those $\nEchoOldN$ stretches would go from $\nEchoNow\%$ to about $\nEchoScaled\%$ and the ones within $20\%$ from
+$\nEchoWtwentyNow\%$ to $\nEchoWtwentyScaled\%$; $\nEchoBetter$ stretches come closer to GPS and $\nEchoWorse$ move away, \nEchoWorseTxt{}. The walks
+recorded since, with the check and the pedometer both live, need no estimate: the re-run reads their
+pedometer as logged, and as the app drew them on the day, over $\nEchoPedN$ stretches on $\nEchoPedRec$ journeys, it
+counted \nEchoPedLiveTxt{} distance than GPS, $\nEchoPedWtwenty\%$ of the stretches within $20\%$.
 
 \begin{figure}[H]
 \centering
@@ -699,7 +711,8 @@ same pooled flights. It is computed every second in the air and logged, not used
 \centering
 \includegraphics[width=0.8\textwidth]{figures/fig6_network.pdf}
 \caption{The built-in network (blue) next to the main model with a full store (grey), on the same
-journeys, the network only on recordings it had never seen. (a)~Share of the GPS distance counted.
+journeys, the network only on recordings it had never seen. (a)~Share of the GPS distance counted on the
+ground; in the air neither is used.
 (b)~Average speed error. (c)~Journeys within $20\%$. (d)~A store still filling up; the dotted line is
 where the app hands over.}
 \label{fig:network}
@@ -731,8 +744,9 @@ is used.
 
 Table~\ref{tab:summary} and Figure~\ref{fig:all} set the four kinds of travel side by side. Direction is the
 stronger half everywhere: within $30\dg$ of GPS $\nMotoWthirty\%$ of the time on a motorcycle, $\nCarWthirty\%$ in a car, $\nWalkWthirty\%$ on
-foot and $\nPlaneWthirty\%$ on the plane. Distance is close in a car ($\nCarDist\%$), on foot ($\nWalkDist\%$) and on the plane
-($\nPlaneDist\%$), and short on a motorcycle ($\nMotoDist\%$), where the speed model squeezes the range. Motorcycle and
+foot and $\nAirDirAllW\%$ of the aircraft's track on the plane. Distance is close in a car ($\nCarDist\%$), on foot ($\nWalkDist\%$) and on the
+plane ($\nAirLongShare\%$ and $\nAirRetShare\%$ of the two four-hour flights' tracks), and short on a motorcycle ($\nMotoDist\%$), where
+the speed model squeezes the range. Motorcycle and
 car together, the app added $\nBothAppKm$~km where GPS measured $\nBothGpsKm$~km, $\nBothShort\%$ short.
 
 \begin{table}[H]
@@ -746,8 +760,9 @@ car together, the app added $\nBothAppKm$~km where GPS measured $\nBothGpsKm$~km
 \begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{figures/fig_all.pdf}
-\caption{Every kind of travel side by side. (a)~Distance counted, as a share of GPS's. (b)~How often the
-direction is within a given angle of GPS.}
+\caption{Every kind of travel side by side. (a)~Distance counted, as a share of GPS's; for the plane, the two
+four-hour flights against their ADS-B tracks. (b)~How often the direction is within a given angle of GPS, or of
+the aircraft's track over the six recordings on the three flights.}
 \label{fig:all}
 \end{figure}
 
@@ -762,7 +777,7 @@ within $30\dg$ go from $\nAblCarRtA\%$ to $\nAblCarRtG\%$, and routes of either
 vehicle turned more than $45\dg$ from $\nAblBigA$ to $\nAblBigG$. Drift measured at stops helps a drive where the phone sat
 in an Earth-like field and harms one where the field was disturbed (Section~\ref{sec:discussion}); counting
 only stops in Earth's field keeps the first and removes the second. For motorcycles every version is within
-$\nAblMotoSpan$ points of the others. The flight, replayed with the speed the app has in the air, is within
+$\nAblMotoSpan$ points of the others. The short flight, replayed with the speed the app has in the air, is within
 $30\dg$ $\nAblFlA\%$ of the time with the first version and $\nAblFlB\%$ once drift is measured at stops.
 
 \begin{table}[t]
@@ -802,7 +817,8 @@ other journeys, a different handful of turns sets the angle each time that model
 \nSlowReplayTxt{} of those seconds were within $30\dg$.
 \item \textbf{A phone that moves.} A hand shakes the phone and shaking reads as speed. A hand can no
 longer raise the speed, but a phone picked up while slowing keeps the speed it had when it was picked
-up. A phone that shifts in the pocket turns the drawn route by about as much as it moved, until enough
+up, unless the trip is a pocket motorcycle; in the re-run the test for one called $\nPocketMoto$ of the
+$\nPocketMotoN$ motorcycle journeys and $\nPocketCar$ of the $\nPocketCarN$ car journeys a pocket motorcycle. A phone that shifts in the pocket turns the drawn route by about as much as it moved, until enough
 new turns have been learned.
 \item \textbf{A store full of another vehicle.} The store keeps $4{,}000$ examples and each new one
 replaces a random old one, so a run of car drives leaves it mostly car. On the next two motorcycle
@@ -816,6 +832,12 @@ further off every minute: with every still second counted, $\nLongDriftEvery\%$ 
 at all, $\nLongDriftNone\%$; counting only stops in Earth's field, $\nLongDriftEarth\%$. The bound matters: allowing up to $65~\mu$T let
 the bad stops, at $62$ to $65$, back in. Only the recordings with the magnetometer logged, $\nMagRecs$ so far, can show
 this at all, and the gain rests on that one drive.
+\item \textbf{A fast drive with nowhere to measure drift.} The drive home from an airport, $\nFastDriveKm$~km and
+$\nFastDriveFast\%$ of it above $80$~km/h, stood still for only $\nFastDriveStopped$~seconds, and the field there and on the move
+was far from Earth's ($42$ to $278~\mu$T). With no stop to measure the gyroscope's drift and no field to correct
+north, the heading turned by a steady $\nFastDriveDrift\dg$ a minute for half an hour: $\nFastDriveW\%$ of its seconds were
+within $30\dg$, the same live as in the re-run, and its fast stretches read low, so it counted $\nFastDriveDist\%$ of the
+distance. Without it the cars' seconds within $30\dg$ would be $\nFastDriveCarWithout\%$.
 \item \textbf{A field that looks like Earth's but is not.} On the same drive the steady-field test found
 seconds of Earth-like strength, steady for a minute, and took the correction from them; GPS shows it was
 about $30\dg$ wrong, and those seconds dipped $14$--$28\dg$ where Earth's field here dips about $35\dg$. A
@@ -837,8 +859,9 @@ one at $40$~km/h, so distance is withheld while climbing and turning together; o
 an ordinary road and dropped $9$~seconds at $48$~km/h, about $115$~m. On $\nStepRideN$ journeys
 the step counter took the engine for footsteps: as recorded, $\nStepRideGps$~km that GPS measured at
 $10$~km/h or more were counted by steps as $\nStepRideLive$~km. On $\nStepRideBig$ of them that was a fifth of the
-ride or more, at worst $\nStepRideWorst\%$. Stretches counted by steps while GPS showed riding speed are
-left out of the comparisons (Section~\ref{sec:eval}), so this loss is not in the distances reported above.
+ride or more, at worst $\nStepRideWorst\%$. Replayed with steps ending a ride only while the phone swings,
+$\nStepRideNowN$ journeys still have such stretches ($\nStepRideNowGps$~km by GPS). Those are left out of the
+comparisons (Section~\ref{sec:eval}), so their loss is not in the distances reported above.
 \item \textbf{In the air, a typical speed.} After the takeoff the speed is what real airliners typically
 did at that point of a flight, not a measurement of this one. A headwind or tailwind, a faster or slower
 aircraft, a long hold or a short hop will make it read high or low: a twin-aisle jet reads several percent
@@ -859,7 +882,7 @@ instead of cancelling them. And weighting turns by the square root of their push
 very differently, better on one and worse on another, yet over the $66$ rides then recorded the learned
 angle was the same ($9.5\dg$ against $9.2\dg$ median error): single drives are a poor guide to a method.
 
-\begin{table}[t]
+\begin{table}[!tp]
 \centering\small
 \caption{Approaches that were measured and did not do better, each on the recordings available when
 it was tried.}
@@ -895,11 +918,11 @@ examples --- which, small as they are, still move single journeys (Section~\ref{
 
 \section{Limitations}\label{sec:limits}
 
-All recordings come from one person and one iPhone, mostly in one city, with a single flight; other
-people, phones and vehicles may behave differently, the starting network most of all. The flight
-engines learned from one aircraft of one regional jet type and were checked on the phone on a single
-flight of another; the phone measures tilt from gravity, which a steady push can bend, while the
-recorder measured the aircraft's attitude. Most results replay the newest method on earlier recordings
+All ground recordings come from one person and one iPhone, mostly in one city; the three flights were
+recorded on that phone and, on the two long ones, on a second phone and a tablet. Other people, phones and
+vehicles may behave differently, the starting network most of all. The typical flight is learned from
+other aircraft on other days and checked on only three flights, two of them out and back on one route in
+one aircraft type. Most results replay the newest method on earlier recordings
 rather than coming from live use, with a speed store drawn from the same person's other journeys; on a
 short drive the replayed and the live speeds can teach different angles (Section~\ref{sec:wrong}).
 Single journeys depend on the store's exact contents: adding one eight-minute car drive changed
@@ -913,7 +936,7 @@ $\nHandDist\%$ of the distance GPS measured and missed the speed by $\nHandMae$~
 it read $\nHandFastApp$~km/h where GPS said $\nHandFastGps$. The rule for a phone in the hand applies only
 while it is being moved: the stretches it marked read $\nHandFlagged\%$ of GPS, and those held steadily,
 which it did not mark, $\nHandSteady\%$. The magnetic field was
-recorded on $\nMagCars$ car drives and $\nMagMotos$ motorcycle rides so far, and everything said here about it rests on
+recorded on $\nMagCars$ car drives and $\nMagMotos$ motorcycle rides\nMagOtherTxt{} so far, and everything said here about it rests on
 those $\nMagRecs$. On the first drive a MagSafe charger sat near the phone for part of the time and the
 correction worked: $\nFirstMagF\%$ of seconds within $30\dg$ with the steady-field test, $\nFirstMagG\%$ with the turn check. On
 the second it sat there throughout; the field was steady at an Earth-like strength for only $\nMagSafeClean$
@@ -954,8 +977,8 @@ phone, which so far only a clean magnetic field has been able to reduce.
 
 \paragraph{Code and data.} The app, including the method described here, is open source at
 \url{https://github.com/yu314-coder/GPS-location-app}. The recordings contain the author's locations and
-are not published; the airline flight data is public~\cite{dashlink}, and the two flight engines ship
-with the app.
+are not published; the airline flight data is public~\cite{dashlink,opensky}, and the typical flight and
+both built-in networks ship with the app.
 
 \begin{thebibliography}{10}
 \small\setlength{\itemsep}{1pt}
@@ -1017,7 +1040,7 @@ are the whole-route comparison. A dash means too little GPS to grade.
 
 \section{Settings}\label{app:params}
 
-\begin{table}[h]
+\begin{table}[H]
 \centering\small
 \caption{Every setting of the method as evaluated.}
 \label{tab:params}

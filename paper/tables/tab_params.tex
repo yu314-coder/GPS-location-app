@@ -1,4 +1,4 @@
-\begin{tabular}{p{0.40\textwidth}p{0.52\textwidth}}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.40\textwidth}>{\raggedright\arraybackslash}p{0.52\textwidth}}
 \toprule
 Setting & Value\\
 \midrule
@@ -8,6 +8,8 @@ Store of the phone's own examples & up to $4{,}000$\\
 Neighbours averaged & $12$\\
 Built-in network & $11 \to 32 \to 32 \to 1$; used until the store holds $3{,}000$, and after that whenever the store declines\\
 Network refuses a fingerprint & farther from all training clusters than $99.5\%$ of training data\\
+A phone in the hand & smoothed rotation ($3$~s) above $0.40$~rad/s: the speed may fall, not rise, and is held\\
+Held speed fades & on a pocket motorcycle, $\min(v, v_0 e^{-t/10\,\mathrm{s}})$; a pocket motorcycle when the unhandled seconds above $20$~km/h (at least $60$, the last $900$) turn at a median $\geq 0.09$~rad/s and the phone is not upright (pitch $> 0\dg$ with $|$roll$| < 30\dg$)\\
 Takeoff integration in the air & from the last still moment, up to $120$~s\\
 Takeoff test & $30$~kt, then $200$~km/h within $30$~s\\
 Typical flight & median of $1{,}496$ flights each minute since the roll, then $831$~km/h; by minute since the descent\\
@@ -15,6 +17,7 @@ Takeoff carried & $86$, $58$, $29$, $32$, $15$, $6$, $2\%$ at $\frac12$, $1$, $2
 Cabin as a clock & climb $400$~m in $10$~min; descent $300$~m below the peak; landed within $60$~m or $3\%$, not falling for $30$~s\\
 Direction in the air & roll push over $35$~s, a runway's within $40\dg$; turns felt (load over $1.2\%$) or steady ($0.12\dg$/s for $15$~s); unfelt over $2$~min is drift; field steady within $30\%$\\
 Walking: a step's echo refused & while the last $4$~s show a clear rhythm (autocorrelation $\geq 0.3$ at $0.3$--$0.8$~s), a peak inside $0.65$ of its step period\\
+Steps end a ride & while a vehicle is current, only with the smoothed rotation at $0.60$~rad/s or more\\
 \midrule
 \multicolumn{2}{l}{\emph{Direction}}\\
 Riding begins & $9$~km/h ($2.5$~m/s)\\
