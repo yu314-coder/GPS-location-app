@@ -3594,12 +3594,15 @@ class WorkoutSession: NSObject, ObservableObject {
     // having no speed to compare. 2026-10-14 12:36, a 5.74 km road (measured on a clean ride of it):
     // watch 6.44 km, 1.42 km of it added under 15 km/h where its own Doppler speed said 0.44 km.
     //
-    // Now a fix with a speed adds at most 1.25 x its speed x the time + 1 m (Doppler does not care how
+    // Now a fix with a speed adds at most 1.05 x its speed x the time + 0.3 m (Doppler does not care how
     // vague the position is), and a fix without one is smoothed - the median of the last three such
     // fixes - and refused if it implies more than 30 m/s. Tested on every phone recording's full fix
     // stream (the watch logs one fix a second, too few to replay): 19 clean-GPS recordings, typical
     // error 6.3% -> 3.7%, worst 36% -> 14%; the two poor-GPS rides with a known route 153% -> 96%
     // and 123% -> 97%. The route keeps the raw fixes; only the distance follows this anchor.
+    // Build 136: the margin was 1.25 x + 1 m; the first watch ride on it (2026-10-15 08:10, phone GPS clean)
+    // still read 1,985 m at 14-29 km/h against 1,700 m by Doppler - jitter filled the margin. 1.05 x + 0.3 m
+    // on the same fix streams: clean recordings 3.7% -> 3.1% typical, worst 15% -> 9%; 2026-10-14 12:36 99%.
     private var gpsDistanceAnchor: (time: Date, lat: Double, lon: Double, speed: Double)?
     private var speedlessFixes: [(lat: Double, lon: Double)] = []
     private let SPEEDLESS_MAX_SPEED = 30.0
@@ -3629,7 +3632,7 @@ class WorkoutSession: NSObject, ObservableObject {
         var add = d
         if location.speed >= 0 {
             let v = anchor.speed >= 0 ? (location.speed + anchor.speed) / 2 : location.speed
-            add = min(d, v * dt * 1.25 + 1.0)
+            add = min(d, v * dt * 1.05 + 0.3)
         } else if dt > 0, d / dt > SPEEDLESS_MAX_SPEED {
             return nil
         }

@@ -1456,6 +1456,9 @@ class WorkoutSession: ObservableObject {
     /// through a turn and only briefly; an aircraft banks far more slowly than that. A phone
     /// held or fidgeted with sits well above it continuously.
     private let HANDLING_ROTATION_THRESHOLD = 0.40
+    /// Steps may end a current vehicle only while the phone swings at least this much: a pocket on a walking leg
+    /// (0.8-3.9 rad/s), not a leg shifting on a moving bike (up to ~0.5). See the pedometer handler (build 136).
+    private let STEPS_CARRIED_ROTATION = 0.60
     /// The rotation level this phone normally shows while the vehicle is moving: a mount barely
     /// turns (typically 0.04), a trouser pocket on a motorcycle turns a little all the time
     /// (typically 0.15, 0.3 one tick in ten). The last 120 moving vehicle ticks.
@@ -5811,7 +5814,13 @@ class WorkoutSession: ObservableObject {
                                 // veto (build 48) and a recent-riding-speed veto were both tried: the app's held speed
                                 // is often still high when the rider has already got off, so each blocked real walks.
                                 // Only a vehicle is protected: with none current, steps behave as before.
-                                let stepsLookCarried = !self.vehicleContextIsCurrent || self.deviceIsBeingHandled
+                                // Build 136: the bar is STEPS_CARRIED_ROTATION, not the 0.40 handling level. On 2026-10-15
+                                // 08:10 a leg shifting on the bike lifted the level to 0.45-0.48 for three seconds at 20 km/h;
+                                // phantom steps then switched the ride to walking for a minute (~300 m). Across 25 recordings
+                                // the level at a phantom batch never reached 0.5 (131 of 131 under it); real walking swings
+                                // the phone at 0.8-3.9, and at 0.6 eight real walks are recognised at most 10 s later.
+                                let stepsLookCarried = !self.vehicleContextIsCurrent
+                                    || self.handlingRotationLevel >= self.STEPS_CARRIED_ROTATION
                                 if self.stepCadence >= 1.0, !self.activityIsAutomotive,
                                    !gpsVetoesSteps, stepsLookCarried,
                                    !automotiveRecently || self.handlingShowsDismount {
