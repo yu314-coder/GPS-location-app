@@ -1,17 +1,17 @@
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrrrrr}
 \toprule
- & \multicolumn{3}{c}{Average speed error (km/h)} & & Journeys\\
-\cmidrule(lr){2-4}
-Speed model & All & Motorcycle & Car & Distance & within 20\%\\
+ & \multicolumn{3}{c}{Speed error (km/h)} & \multicolumn{3}{c}{Distance vs GPS} & Journeys\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Speed model & All & Moto. & Car & All & Moto. & Car & within 20\%\\
 \midrule
-Store, 60 examples & 10.2 & 10.2 & 10.2 & $-9.5\%$ & 56\% \\
-Store, 150 examples & 10.1 & 9.9 & 10.4 & $-7.8\%$ & 57\% \\
-Store, 300 examples & 9.5 & 9.5 & 9.4 & $-6.8\%$ & 65\% \\
-Store, 1{,}000 examples & 8.9 & 9.0 & 8.7 & $-7.1\%$ & 72\% \\
-Store, 2{,}000 examples & 8.6 & 8.9 & 8.2 & $-6.6\%$ & 72\% \\
-Store, 3{,}000 examples & 8.6 & 8.9 & 8.3 & $-4.7\%$ & 74\% \\
-Store, 4{,}000 examples & 8.4 & 8.7 & 8.0 & $-7.6\%$ & 70\% \\
+Store, 60 examples & 10.2 & 10.2 & 10.2 & $-9.5\%$ & $-21.3\%$ & $+0.0\%$ & 56\% \\
+Store, 150 examples & 10.1 & 9.9 & 10.4 & $-7.8\%$ & $-21.0\%$ & $+3.0\%$ & 57\% \\
+Store, 300 examples & 9.5 & 9.5 & 9.4 & $-6.8\%$ & $-12.5\%$ & $-2.2\%$ & 65\% \\
+Store, 1{,}000 examples & 8.9 & 9.0 & 8.7 & $-7.1\%$ & $-12.2\%$ & $-2.9\%$ & 72\% \\
+Store, 2{,}000 examples & 8.6 & 8.9 & 8.2 & $-6.6\%$ & $-9.3\%$ & $-4.3\%$ & 72\% \\
+Store, 3{,}000 examples$^\ast$ & 8.6 & 8.9 & 8.3 & $-4.7\%$ & $-7.7\%$ & $-2.2\%$ & 74\% \\
+Store, 4{,}000 examples & 8.4 & 8.7 & 8.0 & $-7.6\%$ & $-11.5\%$ & $-4.4\%$ & 70\% \\
 \midrule
-Built-in network & 8.1 & 8.8 & 7.5 & $-7.0\%$ & 79\% \\
+Built-in network & 8.1 & 8.8 & 7.5 & $-7.0\%$ & $-6.6\%$ & $-7.3\%$ & 79\% \\
 \bottomrule
 \end{tabular}

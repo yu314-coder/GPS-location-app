@@ -20,7 +20,7 @@
 \usepackage{float}
 \usepackage[colorlinks=true,linkcolor={blue!45!black},citecolor={blue!45!black},urlcolor={blue!45!black}]{hyperref}
 % The app shows the newest copy it has by this number (no dates): the app build the paper was made for.
-\hypersetup{pdfkeywords={velocity-mode-paper revision 139}}
+\hypersetup{pdfkeywords={velocity-mode-paper revision 140}}
 \captionsetup{font=small,labelfont=bf,labelsep=period}
 \setlist{itemsep=2pt,topsep=4pt}
 \setlength{\parskip}{3pt}
@@ -710,18 +710,22 @@ same pooled flights. It is computed every second in the air and logged, not used
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.8\textwidth]{figures/fig6_network.pdf}
-\caption{The built-in network (blue) next to the main model with a full store (grey), on the same
-journeys, the network only on recordings it had never seen. (a)~Share of the GPS distance counted on the
-ground; in the air neither is used.
-(b)~Average speed error. (c)~Journeys within $20\%$. (d)~A store still filling up; the dotted line is
-where the app hands over.}
+\caption{A new phone: the built-in network (blue, squares) against the phone's own store (grey, circles) on the
+same journeys, the network only on recordings it had never seen and the store never holding a journey's own
+examples. (a, b)~The speed read in each $10$~km/h band of GPS speed, the middle of the band and its middle half
+shaded, with a full store of $4{,}000$ examples; on the dashed line the reading equals GPS. (c)~Every journey of
+at least $1$~km: the share of GPS's distance counted with the network against the share with the full store; on
+the dashed line the two agree, and in the shaded square both are within $20\%$. (d--f)~A store still filling
+up, from $60$ to $4{,}000$ examples, against the network (horizontal lines): the speed error and the distance for
+each vehicle (solid: motorcycle, dashed: car), and the journeys within $20\%$; the dotted line is where the app
+hands over. In the air neither is used.}
 \label{fig:network}
 \end{figure}
 
 \begin{table}[t]
 \centering\small
-\caption{A store still filling up against the built-in network, over motorcycle and car journeys
-together, with each journey's own examples left out.}
+\caption{A store still filling up against the built-in network, on motorcycle and car journeys, with each
+journey's own examples left out. $^\ast$Where the app hands over from the network to the store.}
 \label{tab:network}
 \input{tables/tab_network.tex}
 \end{table}
@@ -729,7 +733,12 @@ together, with each journey's own examples left out.}
 A new phone starts with the built-in network. On recordings it had never seen it missed by $\nNetMotoMae$~km/h
 on a motorcycle and $\nNetCarMae$~km/h in a car, against $\nMainMotoMae$ and $\nMainCarMae$ for the main model with a full store,
 and counted $\nNetMotoShare\%$ and $\nNetCarShare\%$ of the distance against $\nMainMotoShare\%$ and $\nMainCarShare\%$
-(Figure~\ref{fig:network}). A store still filling up does worse (Table~\ref{tab:network}): $\nStoreSixty$~km/h
+(Figure~\ref{fig:network}). Band by band the two read speed alike: both squeeze the motorcycle's range, and
+both read a car close to GPS up to $60$~km/h and low above it (Figure~\ref{fig:network}a--b). Journey by journey
+the network came closer to GPS on $\nNetCloser$ journeys and the full store on $\nStoreCloser$, the rest within two points
+of each other (Figure~\ref{fig:network}c). A store still filling up does worse (Table~\ref{tab:network},
+Figure~\ref{fig:network}d--f), above all on a motorcycle, whose rides a store of up to $1{,}000$ examples reads
+an eighth to a fifth short: $\nStoreSixty$~km/h
 with $60$ examples, $\nStoreThousand$ with $1{,}000$ and $\nStoreFourK$ with $4{,}000$, \nStoreVsNet{} the network's
 $\nNetAll$. The app hands over to the store at $3{,}000$ examples all the same, because the store keeps
 adapting to the phone's own vehicle and pocket, an advantage these recordings, made with the same few
