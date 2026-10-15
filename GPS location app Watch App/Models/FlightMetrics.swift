@@ -339,7 +339,12 @@ struct FlightMetrics: Codable {
             if location.speed >= 0 {
                 currentSpeed = location.speed
             } else if timeDelta >= 0.2 && distance > 0 && movementIsResolvable {
-                currentSpeed = distance / timeDelta
+                // A fix without a satellite speed is a Wi-Fi or cell position (build 138, as the iPhone): its speed
+                // is the step the distance counted, never the raw jump, and over 108 km/h it is not believed.
+                let derived = (distanceOverride ?? distance) / timeDelta
+                if derived <= 30.0 {
+                    currentSpeed = derived
+                }
             } else if timeDelta > 0 {
                 currentSpeed = 0.0
             }

@@ -1461,6 +1461,11 @@ class WorkoutSession: ObservableObject {
     private let STEPS_CARRIED_ROTATION = 0.60
     /// The distance real GPS fixes add, following their satellite speed (build 137; see GPSDistance.swift).
     private var gpsDistance = GPSDistanceStepper()
+    /// Did the last fix kept for the route carry a satellite (Doppler) speed? Only then does the smoothed speed seed
+    /// a gap (build 138).
+    private var lastRealFixHadSatelliteSpeed = false
+    /// This gap began with no measured speed; its first learned tick takes the model's answer outright (build 138).
+    private var estimateSeedUnmeasured = false
     /// The rotation level this phone normally shows while the vehicle is moving: a mount barely
     /// turns (typically 0.04), a trouser pocket on a motorcycle turns a little all the time
     /// (typically 0.15, 0.3 one tick in ten). The last 120 moving vehicle ticks.
@@ -2748,7 +2753,7 @@ class WorkoutSession: ObservableObject {
         let startDate = Date()
         flight = Flight(startDate: startDate)
         flight.workoutType = workoutType.rawValue
-        gpsDistance.reset()
+        gpsDistance.reset(); lastRealFixHadSatelliteSpeed = false
         isActive = true
         lastRealLocationTime = startDate
         lastGoodAccuracyFixTime = .distantPast
@@ -5042,6 +5047,13 @@ class WorkoutSession: ObservableObject {
             // logs: that drive +6% -> -4%, the worst handled ride +98% -> +10%, and no recent
             // recording worse by more than a point. The threshold is relative because a pocket on
             // a motorcycle turns more than a mount ever does.
+            // A GAP WITH NO MEASURED SPEED STARTS FROM THE MODEL (build 138, GPS mode). Its seed is 0 (see
+            // startEstimatedLocationFallback), and blending up from 0 would under-read the first seconds - or hold 0
+            // outright while the phone is handled, the handled target never rising above the estimate.
+            if estimateSeedUnmeasured, estimatedFallbackSpeed <= 0, !stoppedOnGround {
+                estimatedFallbackSpeed = learned
+            }
+            estimateSeedUnmeasured = false
             let handlingRaised = handlingIsAboveUsual
             let target = handlingRaised ? min(learned, estimatedFallbackSpeed) : learned
             // A POCKET MOTORCYCLE'S PHONE COMES OUT OF THE POCKET AT A STOP (build 134).
@@ -5602,9 +5614,15 @@ class WorkoutSession: ObservableObject {
             ? "velocity mode" : String(format: "last fix %.0f s ago", gapSeconds))
         lastEstimatedFallbackTick = nil
         let anchorSpeed = anchor.map { max($0.speed, 0.0) } ?? 0.0
-        // No speed cap — seed from the best known speed.
-        let seed = max(currentMetrics.smoothedSpeed > 0 ? currentMetrics.smoothedSpeed : anchorSpeed, 0.0)
+        // No speed cap — seed from the best known speed, but only a MEASURED one (build 138). When the last fix had no
+        // satellite speed, the smoothed speed came from Wi-Fi or cell positions; on 2026-10-15 those seeded gaps at
+        // 128-1,566 km/h with a pocketed phone, and the first tick drew 0.6 of it. Without a measurement the gap starts
+        // from the anchor's own speed (0 when it has none) and the estimate takes over from there.
+        let measuredSpeed = lastRealFixHadSatelliteSpeed ? currentMetrics.smoothedSpeed : 0.0
+        let seed = max(measuredSpeed > 0 ? measuredSpeed : anchorSpeed, 0.0)
         estimatedFallbackSpeed = seed
+        // Force Velocity keeps its anchor's speed exactly as before.
+        estimateSeedUnmeasured = !forceMotionFallback && !lastRealFixHadSatelliteSpeed && seed <= 0
         estimatedFallbackDistanceAdded = 0.0
         // Seed the velocity VECTOR along the last known course so a moving vehicle keeps
         // both its speed and its heading through the gap. Prefer GPS COURSE over the compass:
@@ -6609,6 +6627,8 @@ class WorkoutSession: ObservableObject {
             return
         }
 
+        lastRealFixHadSatelliteSpeed = location.speed >= 0
+
         // Add to flight (after GPS filtering passed), with the current motion snapshot.
         flight.locations.append(location.withMotion(currentMotionSnapshot(movementDirection: validCourse(location.course))))
         gpsFixesInRoute += 1
@@ -6872,7 +6892,7 @@ class WorkoutSession: ObservableObject {
         workoutBuilder = nil
         flight = Flight()
         currentMetrics = FlightMetrics()
-        gpsDistance.reset()
+        gpsDistance.reset(); lastRealFixHadSatelliteSpeed = false
         locationManager.reset()
         endTransitionBackgroundTaskIfNeeded()
         clearActiveWorkoutSnapshot(reason: "reset")

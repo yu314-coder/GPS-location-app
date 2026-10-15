@@ -380,7 +380,15 @@ struct FlightMetrics: Codable, Hashable {
                     print("⚡ Speed (Doppler): \(String(format: "%.1f", currentSpeed * 3.6))km/h  ±\(String(format: "%.0f", location.horizontalAccuracy))m")
                 }
             } else if timeDelta >= 0.2 && distance > 0 && movementIsResolvable {
-                currentSpeed = distance / timeDelta
+                // A FIX WITHOUT A SATELLITE SPEED IS A WI-FI OR CELL POSITION (build 138): its speed is the step the
+                // distance counted (the median of the last three such fixes, GPSDistanceStepper), never the raw jump,
+                // and a pair implying more than 108 km/h is not believed. On 2026-10-15 a pocketed phone's raw jumps
+                // of 214-299 m in about 6 s read as 128-171 km/h, seeded the next gap and drew 77-940 km/h for a
+                // second or two at a time; one of them would also have been the workout's top speed.
+                let derived = (distanceOverride ?? distance) / timeDelta
+                if derived <= GPSDistanceStepper.speedlessMaxSpeed {
+                    currentSpeed = derived
+                }
 
                 // Log speed calculation details every 25 points for background monitoring
                 if totalPoints % 25 == 0 {

@@ -1002,7 +1002,7 @@ class WorkoutSession: NSObject, ObservableObject {
             // Initialize flight
             flight = Flight(startDate: startDate)
             flight.workoutType = workoutType.rawValue
-            gpsDistanceAnchor = nil; speedlessFixes.removeAll()
+            gpsDistanceAnchor = nil; speedlessFixes.removeAll(); lastRealFixHadSatelliteSpeed = false
             isActive = true
 
             // Reset location filtering statistics
@@ -3273,8 +3273,11 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         // Seed from the best available speed so we keep moving through the gap:
         // smoothed speed → last GPS point's speed → average speed.
+        // The smoothed speed counts only when a satellite measured the last fix (build 138): from Wi-Fi or cell
+        // positions it is a jump over a few seconds, and the iPhone drew 77-940 km/h from such seeds.
         let lastPointSpeed = flight.locations.last.map { max($0.speed, 0.0) } ?? 0.0
-        let seed = max(currentMetrics.smoothedSpeed, max(lastPointSpeed, currentMetrics.averageSpeed))
+        let measuredSpeed = lastRealFixHadSatelliteSpeed ? currentMetrics.smoothedSpeed : 0.0
+        let seed = max(measuredSpeed, max(lastPointSpeed, currentMetrics.averageSpeed))
         let seedSpeed = max(seed, 0.0)   // no speed limit
         // Seed the velocity VECTOR along the last known GPS course so cruise is
         // maintained in the correct direction (a moving car keeps its speed & heading).
@@ -3604,6 +3607,9 @@ class WorkoutSession: NSObject, ObservableObject {
     // still read 1,985 m at 14-29 km/h against 1,700 m by Doppler - jitter filled the margin. 1.05 x + 0.3 m
     // on the same fix streams: clean recordings 3.7% -> 3.1% typical, worst 15% -> 9%; 2026-10-14 12:36 99%.
     private var gpsDistanceAnchor: (time: Date, lat: Double, lon: Double, speed: Double)?
+    /// Did the last fix kept for the route carry a satellite speed? Only then does the smoothed speed seed dead
+    /// reckoning (build 138, as the iPhone).
+    private var lastRealFixHadSatelliteSpeed = false
     private var speedlessFixes: [(lat: Double, lon: Double)] = []
     private let SPEEDLESS_MAX_SPEED = 30.0
 
@@ -4033,6 +4039,8 @@ class WorkoutSession: NSObject, ObservableObject {
             return
         }
 
+        lastRealFixHadSatelliteSpeed = location.speed >= 0
+
         // Add to flight (after GPS filtering passed)
         flight.locations.append(location)
         lastLocationTime = Date()  // Track location received
@@ -4367,7 +4375,7 @@ class WorkoutSession: NSObject, ObservableObject {
         workoutBuilder = nil
         flight = Flight()
         currentMetrics = FlightMetrics()
-        gpsDistanceAnchor = nil; speedlessFixes.removeAll()
+        gpsDistanceAnchor = nil; speedlessFixes.removeAll(); lastRealFixHadSatelliteSpeed = false
         locationManager.reset()
         pedometerManager.reset()
         isActive = false
