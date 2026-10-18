@@ -124,9 +124,18 @@ final class FlightPhaseEstimator {
     }
 
     /// Feed the relative altitude reported by the barometer, in metres.
+    ///
+    /// THE GROUND IS WHERE THIS WORKOUT'S FIRST READING WAS (build 141), not zero. The iPhone's altimeter starts
+    /// each workout at 0, so that was the same thing there; the watch's reading is carried across altimeter
+    /// restarts by an offset, and on 2026-10-17 a car drive began with it already at 517 m while the pressure
+    /// stood at 101.65 kPa - ground level. Counted from zero, the "cabin" was 517 m up from the first second:
+    /// airborne after the 90-s dwell, the climb confirmed at once, and when GPS paused at the end the watch
+    /// flew the parked car at 831 km/h for two minutes (65.7 km recorded for 27.2). Replayed from the first
+    /// reading: never airborne; both flights' phones unchanged to the second. A workout begun in the air is
+    /// still put right by anchorToField.
     func ingest(relativeAltitude: Double, at time: Date) {
         guard let previous = lastSample else {
-            lastSample = time; altitude = relativeAltitude; initialised = true; return
+            lastSample = time; altitude = relativeAltitude; groundLevel = relativeAltitude; initialised = true; return
         }
         let dt = time.timeIntervalSince(previous)
         guard dt > 0.5 else { return }
