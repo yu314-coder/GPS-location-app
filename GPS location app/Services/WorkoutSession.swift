@@ -1549,6 +1549,27 @@ class WorkoutSession: ObservableObject {
         let upright = Self.median(pocketRidePitch) > 0 && Self.median(pocketRideAbsRoll) < 30
         return !upright
     }
+    /// THE TRIP'S KIND FOR THE SPEED STORE (build 143): 1 a pocket motorcycle, 0 any other trip, nil until 60 riding
+    /// seconds above 20 km/h have been seen. The test now runs in GPS mode too (from the GPS speed; Force Velocity keeps
+    /// to the estimate) and keeps its evidence for the whole workout instead of starting again at every GPS gap, so
+    /// every trip is decided. The store learns each example under it and searches its own kind once that holds enough.
+    private var pocketVerdict: Int? { pocketRideRotation.count >= 60 ? (isPocketMotorcycle ? 1 : 0) : nil }
+    /// Adds one riding second to the pocket test, and hands the store the trip's kind as it is decided.
+    private func notePocketRiding() {
+        guard !deviceIsBeingHandled, !isAirborneForEstimation, let rot = locationManager.currentRotationRate,
+              let pitch = locationManager.currentPitch, let roll = locationManager.currentRoll else { return }
+        pocketRideRotation.append(rot); pocketRidePitch.append(pitch); pocketRideAbsRoll.append(abs(roll))
+        if pocketRideRotation.count > 900 {
+            pocketRideRotation.removeFirst(); pocketRidePitch.removeFirst(); pocketRideAbsRoll.removeFirst()
+        }
+        let n = pocketRideRotation.count
+        guard n == 60 || n % 30 == 0 else { return }
+        let verdict = pocketVerdict
+        if verdict != learnedSpeed.tripKind {
+            learnedSpeed.tripKind = verdict
+            sessionDiagnostics.recordEvent("trip_kind", detail: verdict == 1 ? "pocket motorcycle" : "other")
+        }
+    }
     /// When the phone was taken in hand while the vehicle branch held a speed, and that speed.
     private var handHoldStart: Date?
     private var handHoldStartSpeed = 0.0
@@ -2841,6 +2862,7 @@ class WorkoutSession: ObservableObject {
         flight = Flight(startDate: startDate)
         flight.workoutType = workoutType.rawValue
         gpsDistance.reset(); lastRealFixHadSatelliteSpeed = false
+        pocketRideRotation = []; pocketRidePitch = []; pocketRideAbsRoll = []; learnedSpeed.tripKind = nil
         isActive = true
         lastRealLocationTime = startDate
         lastGoodAccuracyFixTime = .distantPast
@@ -2982,7 +3004,7 @@ class WorkoutSession: ObservableObject {
         sessionDiagnostics.persistToDisk(workoutStart: flight.startDate)
         // Everything learned about this car and placement outlives the workout — including the
         // samples held back during Velocity Mode, which are only now allowed to be searchable.
-        learnedSpeed.commitQuarantinedObservations()
+        learnedSpeed.commitQuarantinedObservations(kind: pocketVerdict)
         learnedSpeed.save()
         stopEstimatedFallbackTimer()
         // LAST CHANCE. A short walk can end before the offset formally settles, and rotating by
@@ -5176,14 +5198,7 @@ class WorkoutSession: ObservableObject {
                     movingHandlingLevels.append(handlingRotationLevel)
                     if movingHandlingLevels.count > 120 { movingHandlingLevels.removeFirst() }
                 }
-                if !deviceIsBeingHandled, !isAirborneForEstimation, estimatedFallbackSpeed > 20 / 3.6,
-                   let rot = locationManager.currentRotationRate,
-                   let pitch = locationManager.currentPitch, let roll = locationManager.currentRoll {
-                    pocketRideRotation.append(rot); pocketRidePitch.append(pitch); pocketRideAbsRoll.append(abs(roll))
-                    if pocketRideRotation.count > 900 {
-                        pocketRideRotation.removeFirst(); pocketRidePitch.removeFirst(); pocketRideAbsRoll.removeFirst()
-                    }
-                }
+                if estimatedFallbackSpeed > 20 / 3.6 { notePocketRiding() }
             }
             distance = estimatedFallbackSpeed * dt
             // A HAND ON THE PHONE IS NOT A STOP.
@@ -5762,7 +5777,6 @@ class WorkoutSession: ObservableObject {
         lastFallbackPedometerDistanceForStride = nil
         heldSpeedCorrection = 0
         movingHandlingLevels = []
-        pocketRideRotation = []; pocketRidePitch = []; pocketRideAbsRoll = []
         handHoldStart = nil; handHoldLastTick = nil
         takeoffSpeedGain = 0
         takeoffQuietFor = 0
@@ -6048,7 +6062,6 @@ class WorkoutSession: ObservableObject {
         lastFallbackPedometerDistanceForStride = nil
         heldSpeedCorrection = 0
         movingHandlingLevels = []
-        pocketRideRotation = []; pocketRidePitch = []; pocketRideAbsRoll = []
         handHoldStart = nil; handHoldLastTick = nil
         resetInertialState(seedSpeed: 0, courseDegrees: motionHeadingDegrees)
         motionFallbackStatus = "GPS OK"
@@ -6778,6 +6791,7 @@ class WorkoutSession: ObservableObject {
             lastMeasuredVehicleSpeedTime = Date()
             // A fresh measurement supersedes everything integrated since the last one.
             heldSpeedCorrection = 0
+            if location.speed > 20 / 3.6, !forceMotionFallback { notePocketRiding() }
             if vehicleContextIsCurrent, !deviceIsBeingHandled {
                 learnedSpeed.learn(gpsSpeed: location.speed, airborne: isAirborneForEstimation)
             }
@@ -6980,6 +6994,7 @@ class WorkoutSession: ObservableObject {
         flight = Flight()
         currentMetrics = FlightMetrics()
         gpsDistance.reset(); lastRealFixHadSatelliteSpeed = false
+        pocketRideRotation = []; pocketRidePitch = []; pocketRideAbsRoll = []; learnedSpeed.tripKind = nil
         locationManager.reset()
         endTransitionBackgroundTaskIfNeeded()
         clearActiveWorkoutSnapshot(reason: "reset")

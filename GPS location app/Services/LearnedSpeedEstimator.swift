@@ -180,8 +180,29 @@ final class LearnedSpeedEstimator {
         /// needed to build and check that partition is now being kept, instead of having to be
         /// collected again from scratch once there is a motorcycle ride with usable GPS.
         var session: Int = 0
+        /// WHAT KIND OF TRIP TAUGHT THIS (build 143): 1 a phone in a motorcycle rider's pocket, 0 any other trip,
+        /// nil not known (taught before build 143, or before the trip's kind was decided).
+        var kind: Int? = nil
     }
     private var observations: [Observation] = []
+
+    /// A MOTORCYCLE AND A CAR KEEP THEIR OWN HALVES OF THE STORE (build 143).
+    ///
+    /// The store replaced a random example when full, so a run of one vehicle crowded out the other: after the
+    /// 3 h 20 min car drive of 2026-10-18 the next motorcycle commute read 74% of the road (94% on the same road
+    /// three days before), the network answering 35% of its seconds where the store declined. Now each example
+    /// records the kind of trip that taught it - the live pocket-motorcycle test (build 134) decides the trip -
+    /// a full store replaces an example of the incoming kind once that kind holds half of it (of the other kind
+    /// until then; examples of unknown kind always first), and a trip reads only its own kind once that holds
+    /// OWN_KIND_MIN. Replayed through every recording in the order it was made, deciding each trip as the live
+    /// test does and searching the whole store until it decides: motorcycle 85.6% -> 92.9% of GPS on riding
+    /// seconds, journeys within 20% 57% -> 81%; car 89.5% -> 88.7%, error 9.9 -> 10.0 km/h. Set by the workout;
+    /// nil until the trip's kind is decided, and always nil on the watch, which then behaves exactly as before.
+    var tripKind: Int?
+    static let OWN_KIND_MIN = 600
+    private var calibrationCurveKind: [Int: [(estimate: Double, actual: Double)]] = [:]
+    /// The kind whose half the last lookup searched, nil when it searched the whole ground store.
+    private var searchedKind: Int?
     /// Bounded so a long history cannot grow without limit or slow the lookup. When full, the
     /// sample replaced is the one whose speed is most over-represented, which keeps the memory
     /// spread across the speed range instead of saturating with whatever is most common
@@ -490,7 +511,7 @@ final class LearnedSpeedEstimator {
         updateNormalisation(f)
         let observation = Observation(f: f, speed: gpsSpeed, airborne: airborne,
                                       t: isQuarantined ? Date() : nil,
-                                      session: currentSession)
+                                      session: currentSession, kind: airborne ? nil : tripKind)
         if isQuarantined {
             // The speed tally waits for the quarantine too. Every answer weights its neighbours by
             // how common their speed is in naturalSpeedCounts, so counting this fix now would pull
@@ -524,11 +545,12 @@ final class LearnedSpeedEstimator {
 
     /// Fold everything learned during a forced session into the searchable store. Called when
     /// the workout ends, so the evidence is never available to the estimate that produced it.
-    func commitQuarantinedObservations() {
+    /// `kind`: the trip's kind as finally decided, given to every example it held back (build 143).
+    func commitQuarantinedObservations(kind: Int? = nil) {
         guard !quarantined.isEmpty else { return }
         let count = quarantined.count
         for var o in quarantined {
-            if !o.airborne { noteNaturalSpeed(o.speed) }
+            if !o.airborne { noteNaturalSpeed(o.speed); if let kind { o.kind = kind } }
             o.t = nil; insert(o)
         }
         quarantined.removeAll()
@@ -568,6 +590,21 @@ final class LearnedSpeedEstimator {
         func eligible(_ o: Observation) -> Bool {
             guard o.airborne == victimsAreAirborne else { return false }
             return o.airborne || o.speed < protectedGroundSpeed
+        }
+        func pick(_ ok: (Observation) -> Bool) -> Int? {
+            for _ in 0..<16 {
+                let i = Int.random(in: 0..<observations.count)
+                if ok(observations[i]) { return i }
+            }
+            return observations.indices.filter { ok(observations[$0]) }.randomElement()
+        }
+        if !incoming.airborne {
+            if let i = pick({ eligible($0) && $0.kind == nil }) { return i }
+            if let k = incoming.kind {
+                let own = observations.reduce(0) { $0 + (!$1.airborne && $1.kind == k ? 1 : 0) }
+                let victimKind = own >= capacity / 2 ? k : 1 - k
+                if let i = pick({ eligible($0) && $0.kind == victimKind }) { return i }
+            }
         }
         for _ in 0..<16 {
             let i = Int.random(in: 0..<observations.count)
@@ -715,7 +752,12 @@ final class LearnedSpeedEstimator {
         // answered from this trip's own GPS-labelled samples, so it is gone: quarantined samples
         // are never searched before the workout ends.
         guard isUsable(airborne: airborne) else { return nil }
-        let pool = observations.filter { $0.airborne == airborne }
+        var pool = observations.filter { $0.airborne == airborne }
+        searchedKind = nil
+        if !airborne, let k = tripKind {
+            let own = pool.filter { $0.kind == k }
+            if own.count >= Self.OWN_KIND_MIN { pool = own; searchedKind = k }
+        }
 
         var best = [(d: Double, s: Double)]()
         best.reserveCapacity(K + 1)
@@ -811,6 +853,9 @@ final class LearnedSpeedEstimator {
         // regime it has never seen, so the air answers raw until it has enough of its own.
         // The air curve is empty until the air partition has its own evidence, and calibrated()
         // returns the raw value unchanged in that case - so a first flight behaves as before.
+        if !airborne, let k = searchedKind, let curve = calibrationCurveKind[k], curve.count >= 2 {
+            return max(0, calibrated(num / den, curve: curve))
+        }
         return max(0, calibrated(num / den, airborne: airborne))
     }
     /// The store's answer on the last tick it declined as locally unreliable (build 125).
@@ -953,10 +998,14 @@ final class LearnedSpeedEstimator {
     private var calibrationCurveAir: [(estimate: Double, actual: Double)] = []
 
     private func calibrated(_ raw: Double, airborne: Bool = false) -> Double {
-        let calibrationCurve = airborne ? calibrationCurveAir : self.calibrationCurve
-        guard calibrationCurve.count >= 2 else {
+        let curve = airborne ? calibrationCurveAir : self.calibrationCurve
+        guard curve.count >= 2 else {
             return calibrationIntercept + calibrationSlope * raw
         }
+        return calibrated(raw, curve: curve)
+    }
+
+    private func calibrated(_ raw: Double, curve calibrationCurve: [(estimate: Double, actual: Double)]) -> Double {
         // BELOW THE FIRST BIN, RUN TO THE ORIGIN — do not clamp to it.
         //
         // The curve is fitted on MOVING observations only, so its lowest bin sits around 5 km/h.
@@ -994,9 +1043,14 @@ final class LearnedSpeedEstimator {
         observationsAtLastCalibration = observations.count
         recalibrate(airborne: false)
         recalibrate(airborne: true)
+        // Each kind's half is compressed in its own way, and a lookup confined to it is corrected by its own curve.
+        for k in [0, 1] {
+            let n = observations.reduce(0) { $0 + (!$1.airborne && $1.kind == k ? 1 : 0) }
+            if n >= Self.OWN_KIND_MIN { recalibrate(airborne: false, kind: k) } else { calibrationCurveKind[k] = nil }
+        }
     }
 
-    private func recalibrate(airborne: Bool) {
+    private func recalibrate(airborne: Bool, kind: Int? = nil) {
         refreshStoreDistributionIfNeeded()
         let stride = max(1, observations.count / 300)
         var n = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0
@@ -1009,10 +1063,10 @@ final class LearnedSpeedEstimator {
             // measured; and a stopped vehicle is now recognised directly rather than estimated,
             // so the correction has no reason to describe it. Measured on the drive above:
             // fitting on everything gives x1.15 and MAE 5.3, fitting on movement x1.26 and 5.0.
-            guard held.airborne == airborne else { index += stride; continue }
+            guard held.airborne == airborne, kind == nil || held.kind == kind else { index += stride; continue }
             var best = [(d: Double, s: Double)]()
             best.reserveCapacity(K)
-            for (j, o) in observations.enumerated() where j != index && o.airborne == airborne {
+            for (j, o) in observations.enumerated() where j != index && o.airborne == airborne && (kind == nil || o.kind == kind) {
                 var d = 0.0
                 for i in 0..<held.f.count {
                     let sd = max(featureVar[i].squareRoot(), 1e-6)
@@ -1061,6 +1115,10 @@ final class LearnedSpeedEstimator {
             curve.append((estimate, actual))
         }
         let fitted = curve.count >= 4 ? curve : []
+        if let kind {
+            calibrationCurveKind[kind] = fitted.isEmpty ? nil : fitted
+            return
+        }
         if airborne { calibrationCurveAir = fitted } else { calibrationCurve = fitted }
         if !fitted.isEmpty {
             print("🧠 Learned speed curve (\(airborne ? "air" : "ground")) over \(Int(n)) held-out samples: " +
