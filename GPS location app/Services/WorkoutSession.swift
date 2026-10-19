@@ -24,6 +24,9 @@ class WorkoutSession: ObservableObject {
         var compassSidecarCount: Int? = nil
         /// Build 127: the route too, as lines of new points; this many belong to the snapshot. nil: inside `flight`.
         var locationsSidecarCount: Int? = nil
+        /// Build 142: the once-a-second histories too (speed, altitude, pressure, acceleration, barometric altitude, GPS
+        /// quality), by name; this many records of each belong to the snapshot. nil: they are inside currentMetrics.
+        var seriesSidecarCounts: [String: Int]? = nil
     }
 
     private let healthStore = HKHealthStore()
@@ -135,6 +138,70 @@ class WorkoutSession: ObservableObject {
     private var locationsSidecarURL: URL { activeWorkoutSnapshotURL.deletingLastPathComponent().appendingPathComponent("active_workout_locations.jsonl") }
     private var locationsSidecarWritten = Int.max
     private var writtenRoute: [(UUID, UInt64, UInt64, UInt64, UInt64)] = []
+
+    /// THE ONCE-A-SECOND HISTORIES GO TO SIDE FILES TOO (build 142). The snapshot still carried six histories that each
+    /// gain a sample a second - speed, altitude, pressure, acceleration, barometric altitude and GPS quality, about 400
+    /// bytes of JSON a second together - and wrote them whole every five seconds, so the cost grew with the square of the
+    /// workout's length: 4.8 MB a save by the end of a 3 h 20 min drive on 2026-10-18, and iOS reported the app for
+    /// 1,074 MB of writes in a day (a MetricKit disk-write exception pointing at this save). Each is now appended like
+    /// the motion history, only what is new, as numbers; the snapshot holds how many records of each belong to it.
+    private static let SERIES: [(name: String, stride: Int)] = [("speed", 2), ("altitude", 2), ("pressure", 2),
+                                                                ("acceleration", 2), ("baro", 3), ("quality", 3)]
+    private var seriesSidecarWritten: [String: Int] = [:]
+    private func seriesSidecarURL(_ name: String) -> URL {
+        activeWorkoutSnapshotURL.deletingLastPathComponent().appendingPathComponent("active_workout_\(name).bin")
+    }
+    /// A history's records from `start` on, as numbers, timestamp first, a missing value as NaN.
+    private static func seriesValues(_ m: FlightMetrics, _ name: String, from start: Int) -> [Double] {
+        var out: [Double] = []
+        func add<T>(_ a: [T], _ row: (T) -> [Double]) {
+            guard start < a.count else { return }
+            for x in a[start...] { out.append(contentsOf: row(x)) }
+        }
+        switch name {
+        case "speed": add(m.speedHistory) { [$0.timestamp.timeIntervalSince1970, $0.speed] }
+        case "altitude": add(m.altitudeHistory) { [$0.timestamp.timeIntervalSince1970, $0.altitude] }
+        case "pressure": add(m.pressureHistory) { [$0.timestamp.timeIntervalSince1970, $0.pressure] }
+        case "acceleration": add(m.accelerationHistory ?? []) { [$0.timestamp.timeIntervalSince1970, $0.acceleration] }
+        case "baro": add(m.barometricAltitudeHistory ?? []) {
+            [$0.timestamp.timeIntervalSince1970, $0.relativeAltitude, $0.verticalSpeed ?? .nan] }
+        case "quality": add(m.gpsQualityHistory ?? []) { [$0.timestamp.timeIntervalSince1970, $0.score, $0.horizontalAccuracy] }
+        default: break
+        }
+        return out
+    }
+    private static func seriesCount(_ m: FlightMetrics, _ name: String) -> Int {
+        switch name {
+        case "speed": return m.speedHistory.count
+        case "altitude": return m.altitudeHistory.count
+        case "pressure": return m.pressureHistory.count
+        case "acceleration": return m.accelerationHistory?.count ?? 0
+        case "baro": return m.barometricAltitudeHistory?.count ?? 0
+        case "quality": return m.gpsQualityHistory?.count ?? 0
+        default: return 0
+        }
+    }
+    private static func stripSeries(_ m: inout FlightMetrics) {
+        m.speedHistory = []; m.altitudeHistory = []; m.pressureHistory = []
+        m.accelerationHistory = nil; m.barometricAltitudeHistory = nil; m.gpsQualityHistory = nil
+    }
+    private static func restoreSeries(_ m: inout FlightMetrics, _ name: String, _ v: [Double], stride: Int) {
+        var rows: [[Double]] = []
+        rows.reserveCapacity(v.count / stride)
+        var i = 0
+        while i + stride <= v.count { rows.append(Array(v[i..<(i + stride)])); i += stride }
+        func t(_ r: [Double]) -> Date { Date(timeIntervalSince1970: r[0]) }
+        switch name {
+        case "speed": m.speedHistory = rows.map { SpeedSample(timestamp: t($0), speed: $0[1]) }
+        case "altitude": m.altitudeHistory = rows.map { AltitudeSample(timestamp: t($0), altitude: $0[1]) }
+        case "pressure": m.pressureHistory = rows.map { PressureSample(timestamp: t($0), pressure: $0[1]) }
+        case "acceleration": m.accelerationHistory = rows.map { AccelerationSample(timestamp: t($0), acceleration: $0[1]) }
+        case "baro": m.barometricAltitudeHistory = rows.map {
+            BarometricAltitudeSample(timestamp: t($0), relativeAltitude: $0[1], verticalSpeed: $0[2].isNaN ? nil : $0[2]) }
+        case "quality": m.gpsQualityHistory = rows.map { GPSQualitySample(timestamp: t($0), score: $0[1], horizontalAccuracy: $0[2]) }
+        default: break
+        }
+    }
 
     private static func appendLocationsSidecar(_ url: URL, fresh: Bool, locations: [FlightLocation]) throws {
         guard fresh || !locations.isEmpty else { return }
@@ -2420,6 +2487,13 @@ class WorkoutSession: ObservableObject {
             if let n = snapshot.compassSidecarCount {
                 snapshot.currentMetrics.compassHeadingHistory = Self.readCompassSidecar(compassSidecarURL, count: n)
             }
+            if let counts = snapshot.seriesSidecarCounts {
+                for (name, stride) in Self.SERIES {
+                    guard let n = counts[name] else { continue }
+                    Self.restoreSeries(&snapshot.currentMetrics, name,
+                                       Self.readDoubles(seriesSidecarURL(name), stride: stride, count: n), stride: stride)
+                }
+            }
             if let n = snapshot.locationsSidecarCount {
                 let route = Self.readLocationsSidecar(locationsSidecarURL, count: n)
                 if route.count < n { print("⚠️ Recovery route side file holds \(route.count) of \(n) points") }
@@ -2427,7 +2501,7 @@ class WorkoutSession: ObservableObject {
             }
             // The side files may hold records written after this snapshot; the next save rewrites them whole.
             motionSidecarWritten = Int.max; compassSidecarWritten = Int.max
-            locationsSidecarWritten = Int.max; writtenRoute.removeAll()
+            locationsSidecarWritten = Int.max; writtenRoute.removeAll(); seriesSidecarWritten = [:]
             return snapshot
         } catch {
             print("⚠️ Failed to decode active workout snapshot: \(error.localizedDescription)")
@@ -2466,6 +2540,17 @@ class WorkoutSession: ObservableObject {
         let compassNew = Array(compass[(compassFresh ? 0 : compassSidecarWritten)...])
         motionSidecarWritten = motion.count
         compassSidecarWritten = compass.count
+        var seriesNew: [(url: URL, fresh: Bool, values: [Double])] = []
+        var seriesCounts: [String: Int] = [:]
+        for (name, _) in Self.SERIES {
+            let count = Self.seriesCount(metrics, name)
+            let written = seriesSidecarWritten[name] ?? Int.max
+            let fresh = count < written
+            seriesNew.append((seriesSidecarURL(name), fresh, Self.seriesValues(metrics, name, from: fresh ? 0 : written)))
+            seriesSidecarWritten[name] = count
+            seriesCounts[name] = count
+        }
+        Self.stripSeries(&metrics)
 
         // The route: what is new since the last save, or all of it when anything already written has changed.
         let route = flight.locations
@@ -2498,6 +2583,7 @@ class WorkoutSession: ObservableObject {
         snapshot.motionSidecarCount = motion.count
         snapshot.compassSidecarCount = compass.count
         snapshot.locationsSidecarCount = route.count
+        snapshot.seriesSidecarCounts = seriesCounts
 
         lastSnapshotSaveDate = now
         let url = activeWorkoutSnapshotURL
@@ -2517,6 +2603,7 @@ class WorkoutSession: ObservableObject {
                 for c in compassNew { compassValues.append(c.timestamp.timeIntervalSince1970); compassValues.append(c.heading) }
                 Self.appendSidecar(motionURL, fresh: motionFresh, values: motionValues)
                 Self.appendSidecar(compassURL, fresh: compassFresh, values: compassValues)
+                for side in seriesNew { Self.appendSidecar(side.url, fresh: side.fresh, values: side.values) }
                 try Self.appendLocationsSidecar(routeURL, fresh: routeFresh, locations: routeNew)
                 let encoder = JSONEncoder()
                 encoder.dateEncodingStrategy = .secondsSince1970
@@ -2535,9 +2622,9 @@ class WorkoutSession: ObservableObject {
     private func clearActiveWorkoutSnapshot(reason: String, shouldLog: Bool = false) {
         lastSnapshotSaveDate = nil
         motionSidecarWritten = Int.max; compassSidecarWritten = Int.max
-        locationsSidecarWritten = Int.max; writtenRoute.removeAll()
+        locationsSidecarWritten = Int.max; writtenRoute.removeAll(); seriesSidecarWritten = [:]
         let url = activeWorkoutSnapshotURL
-        let sidecars = [motionSidecarURL, compassSidecarURL, locationsSidecarURL]
+        let sidecars = [motionSidecarURL, compassSidecarURL, locationsSidecarURL] + Self.SERIES.map { seriesSidecarURL($0.name) }
 
         activeWorkoutSnapshotQueue.async {
             for side in sidecars { try? FileManager.default.removeItem(at: side) }
