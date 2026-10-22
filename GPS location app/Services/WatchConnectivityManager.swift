@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WatchConnectivity
 import Combine
 import CoreLocation
@@ -258,7 +259,13 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         NotificationCenter.default.publisher(for: .workoutDidStop)
             .sink { [weak self] _ in
                 self?.isLocalWorkoutActive = false
+                self?.flushTrafficNow()
             }
+            .store(in: &cancellables)
+
+        // The day's watch-link counts reach the log before iOS may suspend the app (build 144).
+        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .sink { [weak self] _ in self?.flushTrafficNow() }
             .store(in: &cancellables)
     }
 
@@ -475,11 +482,81 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         if let takeoffRoll { payload["flightRoll"] = takeoffRoll.timeIntervalSince1970 }
         if session.isReachable {
             session.sendMessage(payload, replyHandler: nil) { _ in }
+            noteTraffic("sent_message")
         } else {
             // Not reachable: application context always holds the LATEST state (it coalesces),
-            // which is exactly the semantics we want for a live speed/heading value.
-            try? session.updateApplicationContext(payload)
+            // which is exactly the semantics we want for a live speed/heading value - but each
+            // update is written to disk, so at most every CONTEXT_MIN_INTERVAL (build 144).
+            updateContextThrottled(session, payload)
         }
+    }
+
+    // MARK: - What the watch link writes (build 144)
+    //
+    // iOS flagged the app twice for writing over a gigabyte a day (MetricKit disk-write exceptions, build 143,
+    // 2026-10-19 and -20), and nearly all of it was inside WatchConnectivity's own threads: the link stores an
+    // application context or a queued userInfo on disk before it delivers it. With the watch app not reachable,
+    // every dead-reckoning tick, every fix and the GPS-sharing timer each rewrote the context - up to three times
+    // a second - and each fix was also queued as a userInfo the watch then discarded as stale (it skips a relayed
+    // fix older than 30 s, and a queued one arrives when the watch app next runs). Now the context goes at most
+    // every 10 s and fixes are not queued. The traffic is counted per day in VelocityLogs/wc_traffic_<day>.json,
+    // written at most every ten minutes, so the next MetricKit report can be read against it.
+    private let CONTEXT_MIN_INTERVAL: TimeInterval = 10
+    private var lastContextSentAt = Date.distantPast
+    private func updateContextThrottled(_ session: WCSession, _ payload: [String: Any]) {
+        let now = Date()
+        guard now.timeIntervalSince(lastContextSentAt) >= CONTEXT_MIN_INTERVAL else {
+            noteTraffic("context_skipped"); return
+        }
+        lastContextSentAt = now
+        do {
+            try session.updateApplicationContext(payload)
+            noteTraffic("sent_context")
+        } catch {
+            noteTraffic("context_failed")
+        }
+    }
+
+    private let trafficQueue = DispatchQueue(label: "euleryu.gps.wc-traffic")
+    private var trafficCounts: [String: Int] = [:]
+    private var trafficDay = ""
+    private var trafficFlushedAt = Date.distantPast
+    private static let trafficDayFormat: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f
+    }()
+
+    /// Count one event on the watch link (and its bytes, under key + "_bytes").
+    func noteTraffic(_ key: String, bytes: Int = 0) {
+        let now = Date()
+        trafficQueue.async { [weak self] in
+            guard let self else { return }
+            let day = Self.trafficDayFormat.string(from: now)
+            if day != self.trafficDay {
+                if !self.trafficDay.isEmpty { self.flushTraffic() }
+                self.trafficDay = day; self.trafficCounts = [:]
+            }
+            self.trafficCounts[key, default: 0] += 1
+            if bytes > 0 { self.trafficCounts[key + "_bytes", default: 0] += bytes }
+            if now.timeIntervalSince(self.trafficFlushedAt) >= 600 { self.flushTraffic() }
+        }
+    }
+
+    /// On trafficQueue only.
+    private func flushTraffic() {
+        trafficFlushedAt = Date()
+        guard !trafficDay.isEmpty,
+              let base = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else { return }
+        let dir = base.appendingPathComponent("VelocityLogs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let body: [String: Any] = ["day": trafficDay, "counts": trafficCounts]
+        if let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .prettyPrinted]) {
+            try? data.write(to: dir.appendingPathComponent("wc_traffic_\(trafficDay).json"), options: .atomic)
+        }
+    }
+
+    /// Write the day's counts now (the app is going to the background).
+    func flushTrafficNow() {
+        trafficQueue.async { [weak self] in self?.flushTraffic() }
     }
 
     private func sendCurrentLocationToWatch() {
@@ -543,20 +620,11 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             session.sendMessage(locationData, replyHandler: nil) { error in
                 print("📱 ❌ Failed to send GPS location to watch: \(error.localizedDescription)")
             }
+            noteTraffic("sent_message")
         } else {
-            let pendingTransfers = session.outstandingUserInfoTransfers.count
-            if pendingTransfers < 60 {
-                session.transferUserInfo(locationData)
-                print("📱 📦 Queued GPS location via userInfo (pending: \(pendingTransfers + 1))")
-            } else {
-                print("📱 ⚠️ Skipping userInfo GPS queue (pending transfers: \(pendingTransfers))")
-            }
-            do {
-                try session.updateApplicationContext(locationData)
-                print("📱 📤 Queued latest GPS location for watch (not currently reachable)")
-            } catch {
-                print("📱 ❌ Failed to queue GPS context for watch: \(error.localizedDescription)")
-            }
+            // Not reachable: only the latest fix, as the application context, at most every 10 s (build 144). A fix
+            // queued as a userInfo arrived when the watch app next ran, by then older than the 30 s the watch accepts.
+            updateContextThrottled(session, locationData)
         }
     }
 }
@@ -596,6 +664,7 @@ extension WatchConnectivityManager: WCSessionDelegate {
     // MARK: - Receive Messages
 
     func session(_ session: WCSession, didReceiveMessage message: [String : Any], replyHandler: @escaping ([String : Any]) -> Void) {
+        noteTraffic("received_message")
         print("📱 Received message from watch: \(message)")
 
         if message["type"] as? String == "flightLink" {
@@ -632,6 +701,7 @@ extension WatchConnectivityManager: WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String : Any]) {
+        noteTraffic("received_context")
         if let action = applicationContext["action"] as? String {
             DispatchQueue.main.async {
                 switch action {
@@ -684,12 +754,14 @@ extension WatchConnectivityManager: WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveMessageData messageData: Data) {
+        noteTraffic("received_message_data", bytes: messageData.count)
         handleFlightCheckpointMessageData(messageData)
     }
 
     // Durable delivery of the flight→workout link (arrives even if the app was
     // suspended because it was never in a workout).
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any]) {
+        noteTraffic("received_userinfo")
         if userInfo["type"] as? String == "flightLink" {
             handleFlightLink(userInfo)
         }
@@ -709,6 +781,8 @@ extension WatchConnectivityManager: WCSessionDelegate {
 
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
         let metadataType = file.metadata?["type"] as? String
+        let fileBytes = (try? file.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        noteTraffic("received_file_" + (metadataType ?? "other"), bytes: fileBytes)
 
         // A diagnostics CSV from the watch. watchOS has no useful way to share a file, so the
         // watch records and the phone stores: it lands in the same folder the export UI already

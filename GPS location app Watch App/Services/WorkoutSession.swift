@@ -442,6 +442,50 @@ class WorkoutSession: NSObject, ObservableObject {
     private var confirmedRollAnchor = -1
     private var takeoffHandover: (sinceRoll: TimeInterval, kmh: Double)?
 
+    /// A TAKEOFF THE CABIN DOES NOT CONFIRM IS WITHDRAWN (build 144). The watch's own takeoff test integrates
+    /// the wrist's acceleration, and on 2026-10-20 a wrist at rest and then a walk ran it past 30 kt and 200 km/h
+    /// twice: the watch flew a parked wearer at 200-811 km/h for 385 s, 41 km of an 8 km trip, with GPS at 0 km/h
+    /// and the pressure flat. On every real takeoff recorded - BR215 and BR226, two phones and the watch each - the
+    /// cabin had fallen 0.3 kPa within 99-111 s of the roll. So a roll stands once the cabin has fallen
+    /// ROLL_CABIN_DROP_KPA, or the cabin says airborne; until then the flight's distance is held back, and at
+    /// ROLL_CABIN_WITHIN with neither, the roll is withdrawn and the held distance dropped. With the watch measuring
+    /// by GPS (not Force Velocity), a satellite fix reading under walking-to-jogging pace 20 s or more into the roll
+    /// withdraws it at once: a plane is past 100 km/h by then. Wrist steps cannot decide it: the watch counted 74
+    /// "steps" of runway vibration during the real BR215 roll.
+    private var ownRollPressureKPa: Double?
+    private var ownRollCabinConfirmed = false
+    private var heldTakeoffDistance = 0.0
+    private var withdrawnRollAnchor = -1
+    private let ROLL_CABIN_DROP_KPA = 0.25
+    private let ROLL_CABIN_WITHIN: TimeInterval = 150
+    private let ROLL_GPS_VETO_AFTER: TimeInterval = 20
+    private let ROLL_GPS_VETO_SPEED = 15.0   // m/s
+
+    /// The cabin's word on the watch's own roll, from each barometer reading.
+    private func checkOwnTakeoffCabin(pressure: Double?, at now: Date) {
+        guard let roll = ownTakeoffRollAt, !ownRollCabinConfirmed else { return }
+        // The wearer said it is a flight, or the cabin already climbs, or there was no barometer at the roll: as before.
+        if flightSpeedForced || flightEmergency || flightPhase.isAirborne || ownRollPressureKPa == nil {
+            ownRollCabinConfirmed = true; return
+        }
+        if let p = pressure, let p0 = ownRollPressureKPa, p0 - p >= ROLL_CABIN_DROP_KPA {
+            ownRollCabinConfirmed = true; return
+        }
+        if now.timeIntervalSince(roll) >= ROLL_CABIN_WITHIN {
+            withdrawOwnTakeoff(String(format: "the cabin did not climb in %.0f s", ROLL_CABIN_WITHIN))
+        }
+    }
+
+    private func withdrawOwnTakeoff(_ why: String) {
+        guard let roll = ownTakeoffRollAt else { return }
+        print("⌚ ✈️ Takeoff withdrawn: \(why); \(Int(heldTakeoffDistance)) m held back dropped")
+        if lastWatchFlightRoll == roll { lastWatchFlightRoll = nil }
+        ownTakeoffRollAt = nil; confirmedRollAnchor = -1; takeoffHandover = nil
+        withdrawnRollAnchor = launchIntegrator.anchorCount; rollCandidateAt = nil
+        heldTakeoffDistance = 0; ownRollPressureKPa = nil; ownRollCabinConfirmed = false
+        flightHeading.endFlight()
+    }
+
     /// A takeoff roll (the watch's own or the iPhone's) in the last 4 minutes, before the cabin has said
     /// airborne (build 116): the flight already counts, from the roll itself.
     private func watchTakeoffUnderway(at now: Date) -> Bool {
@@ -496,6 +540,8 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         guard let v = launchIntegrator.speed else { return }
         let now = Date()
+        // The integration whose roll was withdrawn may not confirm it again; the next still moment starts afresh.
+        guard launchIntegrator.anchorCount != withdrawnRollAnchor else { return }
         if v < 15.43 { rollCandidateAt = nil } else if rollCandidateAt == nil {
             rollCandidateAt = now; flightHeading.beginRoll(at: now, cabinAirborne: flightPhase.isAirborne)
             // The runways at the airport of the watch's last fix (build 124): the roll takes the one it matches.
@@ -510,6 +556,7 @@ class WorkoutSession: NSObject, ObservableObject {
         if let start = rollCandidateAt, v >= 55.6, ownTakeoffRollAt != start,
            now.timeIntervalSince(start) <= 30 {
             ownTakeoffRollAt = start; confirmedRollAnchor = launchIntegrator.anchorCount; takeoffHandover = nil
+            ownRollPressureKPa = watchDiagnostics.latestPressure; ownRollCabinConfirmed = false; heldTakeoffDistance = 0
             flightHeading.confirmRoll(startedAt: start)
         }
     }
@@ -796,6 +843,7 @@ class WorkoutSession: NSObject, ObservableObject {
             self.watchDiagnostics.latestRelativeAltitude = relativeAltitude
             self.watchDiagnostics.latestPressure = pressure
             self.flightPhase.ingest(relativeAltitude: relativeAltitude, at: timestamp)
+            self.checkOwnTakeoffCabin(pressure: pressure, at: timestamp)
             // A workout started in the air (build 125, as on the iPhone): the ground is the airport, not here.
             let fixIsFresh = self.locationManager.currentLocation.map {
                 timestamp.timeIntervalSince($0.timestamp) < 60 && $0.horizontalAccuracy >= 0 && $0.horizontalAccuracy <= 50 } ?? false
@@ -1018,6 +1066,7 @@ class WorkoutSession: NSObject, ObservableObject {
             learnedSpeed.beginSession()
             flightPhase.reset(); locationManager.beginAltitudeEpoch(); watchAirborneSince = nil; relayedTakeoffRoll = nil; lastRelayedFlightAt = nil
             launchIntegrator.reset(); ownTakeoffRollAt = nil; rollCandidateAt = nil; rollCandidateAnchor = -1; confirmedRollAnchor = -1; takeoffHandover = nil
+            ownRollPressureKPa = nil; ownRollCabinConfirmed = false; heldTakeoffDistance = 0; withdrawnRollAnchor = -1
             flightHeading = FlightHeading()
             flightSpeedForced = false; flightEmergency = false; lastWatchFlightRoll = nil; flightStatus = "On the ground"
             watchFieldPressure = nil; watchCabinAnchorChecked = false
@@ -3131,7 +3180,20 @@ class WorkoutSession: NSObject, ObservableObject {
                 motionFallbackSpeed = 0
                 accelSource = "DR(waiting)"
             }
-            distance = motionFallbackSpeed * dt
+            var step = motionFallbackSpeed * dt
+            // The watch's own takeoff, not yet confirmed by the cabin, lays down nothing yet (build 144): its distance is
+            // held and paid back once the cabin climbs, at most doubling each step; withdrawn, it is dropped.
+            if accelSource == "FLIGHT(profile)" {
+                if let roll = ownTakeoffRollAt, lastWatchFlightRoll == roll, !ownRollCabinConfirmed,
+                   !flightSpeedForced, !flightEmergency {
+                    heldTakeoffDistance += step; step = 0
+                    accelSource = "FLIGHT(unconfirmed)"
+                } else if heldTakeoffDistance > 0 {
+                    let paid = min(heldTakeoffDistance, step)
+                    step += paid; heldTakeoffDistance -= paid
+                }
+            }
+            distance = step
             // Peg the integrator so it cannot diverge in the background and reappear later.
             let hr = motionHeadingDegrees * .pi / 180
             motionVelX = motionFallbackSpeed * cos(hr)
@@ -3236,8 +3298,9 @@ class WorkoutSession: NSObject, ObservableObject {
         let appendDistance = pendingMotionDistance
         pendingMotionDistance = 0
 
+        // An unconfirmed takeoff's speed is shown but not recorded (build 144): it would become the workout's top speed.
         appendEstimatedPedometerFallbackLocation(distanceMeters: appendDistance, timestamp: now,
-                                                 speedMetersPerSecond: motionFallbackSpeed)
+                                                 speedMetersPerSecond: accelSource == "FLIGHT(unconfirmed)" ? 0 : motionFallbackSpeed)
         motionFallbackDistanceAdded += appendDistance
 
         let now2 = Date()
@@ -3824,6 +3887,15 @@ class WorkoutSession: NSObject, ObservableObject {
         }
 
         let fixIsCurrent = Date().timeIntervalSince(location.timestamp) <= sourceAgeThreshold
+        // A slow satellite fix withdraws the watch's own takeoff (build 144; see ownRollCabinConfirmed). GPS mode only:
+        // Force Velocity decides nothing from GPS.
+        if !forceMotionFallback, fixIsCurrent, location.speed >= 0, location.horizontalAccuracy >= 0,
+           location.horizontalAccuracy <= 50, let roll = ownTakeoffRollAt, !ownRollCabinConfirmed,
+           !flightSpeedForced, !flightEmergency,
+           location.timestamp.timeIntervalSince(roll) >= ROLL_GPS_VETO_AFTER, location.speed < ROLL_GPS_VETO_SPEED {
+            withdrawOwnTakeoff(String(format: "a satellite fix read %.0f km/h %.0f s into the roll",
+                                      location.speed * 3.6, location.timestamp.timeIntervalSince(roll)))
+        }
         if location.horizontalAccuracy <= GOOD_FIX_ACCURACY, fixIsCurrent {
             lastGoodFixTimeWatch = Date()
         }
