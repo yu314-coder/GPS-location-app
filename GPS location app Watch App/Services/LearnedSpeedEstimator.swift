@@ -200,6 +200,8 @@ final class LearnedSpeedEstimator {
     /// nil until the trip's kind is decided, and always nil on the watch, which then behaves exactly as before.
     var tripKind: Int?
     static let OWN_KIND_MIN = 600
+    /// Observation.kind of a trip the live test calls a pocket motorcycle (0 is every other trip).
+    static let KIND_POCKET_MOTORCYCLE = 1
     private var calibrationCurveKind: [Int: [(estimate: Double, actual: Double)]] = [:]
     /// The kind whose half the last lookup searched, nil when it searched the whole ground store.
     private var searchedKind: Int?
@@ -247,6 +249,7 @@ final class LearnedSpeedEstimator {
         case unlearnedRegime = "unlearned regime"
         case noCloseMatch = "no close match"
         case locallyUnreliable = "locally unreliable"
+        case ownKindTooFew = "own kind too few"
     }
     private(set) var lastStoreStatus: StoreStatus = .tooFewExamples
     /// The last estimate came from the bundled SpeedNetwork, not the store.
@@ -757,6 +760,16 @@ final class LearnedSpeedEstimator {
         if !airborne, let k = tripKind {
             let own = pool.filter { $0.kind == k }
             if own.count >= Self.OWN_KIND_MIN { pool = own; searchedKind = k }
+            // A POCKET MOTORCYCLE NEVER READS A CAR'S EXAMPLES (build 145). Its half fills only from riding seconds
+            // with a satellite fix, and a pocketed phone had none for a week: after the 3 h 20 min car drive the
+            // store was the car, and on three rides it read the bike near a flat 30 km/h - 81% of the watch's
+            // satellite distance, 12.7 km/h off - while the network it computed every second read 101%, 10.7 km/h
+            // off. So until its own half holds OWN_KIND_MIN the store steps aside and the network answers. A car
+            // trip still searches everything, as the paper's replay does.
+            else if k == Self.KIND_POCKET_MOTORCYCLE {
+                lastStoreStatus = .ownKindTooFew
+                return nil
+            }
         }
 
         var best = [(d: Double, s: Double)]()
