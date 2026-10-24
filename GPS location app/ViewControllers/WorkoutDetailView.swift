@@ -11,6 +11,8 @@ struct WorkoutDetailView: View {
     @AppStorage("developerUnlocked") private var developerUnlocked = false
     /// A flight has thousands of one-kilometre splits (build 128): the first hundred, the rest on request.
     @State private var showAllSplits = false
+    /// The splits as shown; a workout saved before build 148 has them timed again from its route (see retimedSplits).
+    @State private var shownSplits: [Split]?
     private static let SPLITS_SHOWN = 100
     @State private var gpxFileURL: URL?
     @State private var detailedFlight: Flight?
@@ -690,7 +692,7 @@ struct WorkoutDetailView: View {
                     }
 
                     // Splits Section
-                    if !metrics.splits.isEmpty {
+                    if !(shownSplits ?? metrics.splits).isEmpty {
                         Divider()
 
                         VStack(alignment: .leading, spacing: 16) {
@@ -699,7 +701,7 @@ struct WorkoutDetailView: View {
                                 .padding(.horizontal)
 
                             LazyVStack(spacing: 8) {
-                                ForEach(showAllSplits ? metrics.splits : Array(metrics.splits.prefix(Self.SPLITS_SHOWN))) { split in
+                                ForEach(showAllSplits ? (shownSplits ?? metrics.splits) : Array((shownSplits ?? metrics.splits).prefix(Self.SPLITS_SHOWN))) { split in
                                     HStack {
                                         Text("Km \(split.number)")
                                             .font(.subheadline)
@@ -735,8 +737,8 @@ struct WorkoutDetailView: View {
                                     .background(Color(.systemGray6))
                                     .cornerRadius(8)
                                 }
-                                if !showAllSplits, metrics.splits.count > Self.SPLITS_SHOWN {
-                                    Button("Show all \(metrics.splits.count) splits") { showAllSplits = true }
+                                if !showAllSplits, (shownSplits ?? metrics.splits).count > Self.SPLITS_SHOWN {
+                                    Button("Show all \((shownSplits ?? metrics.splits).count) splits") { showAllSplits = true }
                                         .font(.subheadline)
                                         .padding(.vertical, 6)
                                 }
@@ -897,9 +899,13 @@ struct WorkoutDetailView: View {
             loadDetailsIfNeeded()
             loadHealthKitRouteSummary()
             refreshSavedLogs()
+            refreshSplits()
         }
         .onChange(of: activeFlight.startDate) {
             refreshSavedLogs()
+        }
+        .onChange(of: activeFlight.locations.count) {
+            refreshSplits()
         }
         .onDisappear {
             detailedFlight = nil
@@ -910,6 +916,12 @@ struct WorkoutDetailView: View {
                 ShareSheet(items: [url])
             }
         }
+    }
+
+    private func refreshSplits() {
+        guard let metrics = activeFlight.metrics else { shownSplits = nil; return }
+        shownSplits = FlightMetrics.retimedSplits(metrics.splits, route: activeFlight.locations,
+                                                  recordedDistance: metrics.totalDistance, start: activeFlight.startDate)
     }
 
     private func refreshSavedLogs() {

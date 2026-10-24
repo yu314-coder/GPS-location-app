@@ -315,7 +315,7 @@ final class WorkoutImporter: ObservableObject {
             }
             // Kilometre splits as the live workout adds them (WorkoutSession, after each point): without this a
             // re-run had one "split" the length of the whole workout.
-            metrics.updateSplits(startDate: r.start)
+            metrics.updateSplits(startDate: r.start, at: p.time)
             locations.append(loc); previous = loc; previousInFlight = p.inFlight
         }
         let duration = max(r.end.timeIntervalSince(r.start), 0)

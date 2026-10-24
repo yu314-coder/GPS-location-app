@@ -168,6 +168,10 @@ struct FlightMetrics: Codable {
     var splits: [Split] = []
     private var currentSplitDistance: Double = 0.0
     private var currentSplitStartTime: Date?
+    /// When the splits were last brought up to date, and the distance then: a kilometre that ends between two updates
+    /// ends at the moment the distance crossed it (build 148). Optional, so workouts saved before it still decode.
+    private var splitCheckTime: Date?
+    private var splitCheckDistance: Double?
 
     // GPS quality metrics
     var totalPoints: Int = 0
@@ -712,45 +716,54 @@ struct FlightMetrics: Codable {
 
     // MARK: - Splits Management
 
-    mutating func updateSplits(startDate: Date?) {
-        // Check if we've completed a kilometer
+    /// KILOMETRE SPLITS ARE TIMED (build 148). Every split was created with a duration of 0 ("will be calculated from
+    /// timestamps" - it never was), so the summary showed 0:00 for every kilometre. A kilometre now ends at the moment
+    /// the distance crossed it, interpolated between the two updates either side, and lasts from the previous one's end
+    /// (the start, for the first). `now` is the time of this update: the point's own time when a recording is re-run.
+    mutating func updateSplits(startDate: Date?, at now: Date = Date()) {
         let splitDistance: Double = 1000.0 // 1 km in meters
-        let newDistance = totalDistance - currentSplitDistance
+        if currentSplitStartTime == nil { currentSplitStartTime = startDate ?? now }
+        let fromTime = splitCheckTime ?? currentSplitStartTime ?? now
+        let fromDistance = splitCheckDistance ?? currentSplitDistance
+        let span = max(now.timeIntervalSince(fromTime), 0)
 
-        if newDistance >= splitDistance {
-            // Create a split for each completed kilometer
-            let completedKilometers = Int(newDistance / splitDistance)
-
-            for _ in 0..<completedKilometers {
-                let splitNumber = splits.count + 1
-                let split = Split(
-                    number: splitNumber,
-                    distance: splitDistance,
-                    duration: 0, // Will be calculated from timestamps
-                    averageSpeed: averageSpeed,
-                    averageHeartRate: currentHeartRate,
-                    timestamp: Date()
-                )
-                splits.append(split)
-                currentSplitDistance += splitDistance
-            }
+        while totalDistance - currentSplitDistance >= splitDistance {
+            let end = currentSplitDistance + splitDistance
+            let covered = totalDistance - fromDistance
+            let fraction = covered > 0 ? min(max((end - fromDistance) / covered, 0), 1) : 1
+            let endTime = fromTime.addingTimeInterval(fraction * span)
+            let duration = max(endTime.timeIntervalSince(currentSplitStartTime ?? endTime), 0)
+            splits.append(Split(
+                number: splits.count + 1,
+                distance: splitDistance,
+                duration: duration,
+                averageSpeed: duration > 0 ? splitDistance / duration : 0,
+                averageHeartRate: currentHeartRate,
+                timestamp: endTime
+            ))
+            currentSplitDistance = end
+            currentSplitStartTime = endTime
         }
+        splitCheckTime = now
+        splitCheckDistance = totalDistance
     }
 
-    mutating func finalizeSplits() {
-        // Add final partial split if there's remaining distance
+    /// The last, partial kilometre, timed to the last update (or `end`). Counted once, however often it is called.
+    mutating func finalizeSplits(at end: Date? = nil) {
         let remainingDistance = totalDistance - currentSplitDistance
         if remainingDistance > 0 {
-            let splitNumber = splits.count + 1
-            let split = Split(
-                number: splitNumber,
+            let endTime = end ?? splitCheckTime ?? Date()
+            let duration = max(endTime.timeIntervalSince(currentSplitStartTime ?? endTime), 0)
+            splits.append(Split(
+                number: splits.count + 1,
                 distance: remainingDistance,
-                duration: 0,
-                averageSpeed: averageSpeed,
+                duration: duration,
+                averageSpeed: duration > 0 ? remainingDistance / duration : 0,
                 averageHeartRate: currentHeartRate,
-                timestamp: Date()
-            )
-            splits.append(split)
+                timestamp: endTime
+            ))
+            currentSplitDistance = totalDistance
+            currentSplitStartTime = endTime
         }
     }
 }

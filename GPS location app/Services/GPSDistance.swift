@@ -55,12 +55,19 @@ struct GPSDistanceStepper {
     /// dead-reckoned points (isEstimated) keep the straight line between them, which is the step they were drawn
     /// with. Invalid points and jumps over 1 km are skipped, as before.
     static func total(_ locations: [FlightLocation]) -> Double {
-        guard locations.count > 1 else { return 0 }
+        cumulative(locations).last?.distance ?? 0
+    }
+
+    /// total(), point by point: each valid location's time and the distance up to and including it (build 148, to
+    /// time the kilometre splits of workouts saved before they were timed).
+    static func cumulative(_ locations: [FlightLocation]) -> [(time: Date, distance: Double)] {
+        var out: [(time: Date, distance: Double)] = []
+        guard locations.count > 1 else { return out }
         var stepper = GPSDistanceStepper()
         var total = 0.0
         var previous: FlightLocation?
         for location in locations where location.isValid {
-            defer { previous = location }
+            defer { previous = location; out.append((location.timestamp, total)) }
             guard let p = previous else {
                 if !location.isEstimated { _ = stepper.step(location) }
                 continue
@@ -77,6 +84,6 @@ struct GPSDistanceStepper {
                 total += add
             }
         }
-        return total
+        return out
     }
 }
