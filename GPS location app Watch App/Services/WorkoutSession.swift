@@ -3762,6 +3762,8 @@ class WorkoutSession: NSObject, ObservableObject {
         watchDiagnostics.latestGPSAccuracy = location.horizontalAccuracy
         watchDiagnostics.latestGPSLatitude = location.latitude
         watchDiagnostics.latestGPSLongitude = location.longitude
+        watchDiagnostics.recordFix(location, source: source == .watchGPS ? "watch" : (source == .iphoneAssist ? "iphone-assist" : "iphone-fallback"),
+                                   kind: "fix")
 
         if forceMotionFallback {
             // ONE RECENT FIX AS THE ORIGIN, exactly as the iPhone does. Dead reckoning gives
@@ -4115,11 +4117,13 @@ class WorkoutSession: NSObject, ObservableObject {
         // The distance this fix adds, following its satellite speed (build 135); a fix without one that
         // implies an impossible speed is refused here, before it can bend the route.
         guard let gpsStep = gpsDistanceStep(for: location) else {
+            watchDiagnostics.recordFix(location, source: sourceLabel, kind: "refused")
             print("⌚ 🚫 [\(sourceLabel)] Fix without satellite speed implies over \(Int(SPEEDLESS_MAX_SPEED * 3.6)) km/h - REJECTED")
             skippedLocationCount += 1
             return
         }
 
+        watchDiagnostics.recordFix(location, source: sourceLabel, kind: "step", step: gpsStep)
         lastRealFixHadSatelliteSpeed = location.speed >= 0
 
         // Add to flight (after GPS filtering passed)

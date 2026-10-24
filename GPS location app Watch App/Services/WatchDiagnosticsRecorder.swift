@@ -64,6 +64,11 @@ final class WatchDiagnosticsRecorder {
     }
 
     private var stream: CSVStream?
+    /// EVERY FIX, AS IT ARRIVED (build 149). The once-a-second rows keep only the latest position, so the fixes between
+    /// them - the Wi-Fi positions that jump indoors, say - could never be replayed. This second file records each fix
+    /// handed to the watch, before any check, and what the GPS distance did with it. It only records: nothing reads it,
+    /// and it changes no calculation.
+    private var fixStream: CSVStream?
     private var workoutStart: Date?
     private(set) var count = 0
     var latestRelativeAltitude: Double?
@@ -77,6 +82,8 @@ final class WatchDiagnosticsRecorder {
     func reset(workoutStart: Date) {
         stream?.close()
         stream = nil
+        fixStream?.close()
+        fixStream = nil
         count = 0
         self.workoutStart = workoutStart
         latestRelativeAltitude = nil
@@ -96,8 +103,27 @@ final class WatchDiagnosticsRecorder {
         count += 1
     }
 
+    /// One fix as it arrived ("fix"), or what the GPS distance did with it: the metres it added ("step") or that it
+    /// was refused for implying an impossible speed ("refused"). A fix with no "step" or "refused" line was turned away
+    /// earlier, or arrived while Force Velocity ignores GPS.
+    func recordFix(_ location: FlightLocation, source: String, kind: String, step: Double? = nil) {
+        guard let workoutStart else { return }
+        if fixStream == nil {
+            fixStream = CSVStream(url: Self.fixFileURL(for: workoutStart), header: Self.fixHeader, flushEvery: 30)
+        }
+        var out = Self.isoFormatter.string(from: Date()) + ",\(kind),\(source),"
+        out += Self.isoFormatter.string(from: location.timestamp) + ","
+        out += Self.fmt(location.latitude, 7) + "," + Self.fmt(location.longitude, 7) + ","
+        out += Self.fmt(location.horizontalAccuracy, 1) + "," + Self.fmt(location.verticalAccuracy, 1) + ","
+        out += Self.fmt(location.altitude, 1) + "," + Self.fmt(location.speed, 2) + "," + Self.fmt(location.course, 1) + ","
+        out += Self.fmt(step, 2) + "\n"
+        fixStream?.append(out)
+    }
+
+    static let fixHeader = "time,kind,source,fix_time,lat,lon,h_acc_m,v_acc_m,alt_m,speed_ms,course_deg,step_m\n"
+
     /// Put buffered rows on disk now (the app is going inactive).
-    func flush() { stream?.flush() }
+    func flush() { stream?.flush(); fixStream?.flush() }
 
     private static func fmt(_ v: Double?, _ places: Int = 5) -> String {
         guard let v, v.isFinite else { return "" }
@@ -158,31 +184,44 @@ final class WatchDiagnosticsRecorder {
         return logDirectory.appendingPathComponent("watch_velocity_debug_\(df.string(from: workoutStart)).csv")
     }
 
+    /// The same workout's fixes, beside it: watch_velocity_fixes_<start>.csv.
+    private static func fixFileURL(for workoutStart: Date) -> URL {
+        let df = DateFormatter()
+        df.dateFormat = "yyyyMMdd_HHmmss"
+        return logDirectory.appendingPathComponent("watch_velocity_fixes_\(df.string(from: workoutStart)).csv")
+    }
+
     /// The workout has ended: close its file and hand it to the iPhone, with any earlier file that
     /// never got there.
     func finishAndSend() {
         let url = stream?.url
         stream?.close()
         stream = nil
+        let fixURL = fixStream?.url
+        fixStream?.close()
+        fixStream = nil
         workoutStart = nil
         if let url, FileManager.default.fileExists(atPath: url.path) {
             WatchConnectivityManager.shared.transferDiagnosticsLog(at: url)
             print("⌚ 📤 Queued \(count)-row diagnostics log for iPhone: \(url.lastPathComponent)")
         }
-        Self.sendUnsentLogs(excluding: url, untouchedFor: 0)
+        if let fixURL, FileManager.default.fileExists(atPath: fixURL.path) {
+            WatchConnectivityManager.shared.transferDiagnosticsLog(at: fixURL)
+        }
+        Self.sendUnsentLogs(excluding: [url, fixURL].compactMap { $0 }, untouchedFor: 0)
     }
 
     /// Send every log still on the watch that is not already on its way. A file stays here until
     /// the iPhone confirms it (WatchConnectivityManager deletes it then), so a file found here was
     /// either cut short by the app ending or never delivered. `untouchedFor` skips a file written to
     /// in the last few seconds, which belongs to a workout still running.
-    static func sendUnsentLogs(excluding current: URL? = nil, untouchedFor: TimeInterval) {
+    static func sendUnsentLogs(excluding current: [URL] = [], untouchedFor: TimeInterval) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: logDirectory,
                                                       includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         let inFlight = Set(WatchConnectivityManager.shared.outstandingDiagnosticsLogNames())
         for file in files where file.pathExtension == "csv" {
-            if file.lastPathComponent == current?.lastPathComponent || inFlight.contains(file.lastPathComponent) { continue }
+            if current.contains(where: { $0.lastPathComponent == file.lastPathComponent }) || inFlight.contains(file.lastPathComponent) { continue }
             let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
             guard Date().timeIntervalSince(modified) >= untouchedFor else { continue }
             WatchConnectivityManager.shared.transferDiagnosticsLog(at: file)
