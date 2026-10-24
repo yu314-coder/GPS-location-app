@@ -3283,6 +3283,15 @@ class WorkoutSession: NSObject, ObservableObject {
         // even though the pedometer baseline had already advanced, permanently losing that
         // distance.
         pendingMotionDistance += distance
+        // DISTANCE LAID DOWN WITHOUT GPS ENDS THE GPS DISTANCE ANCHOR (build 146), as on the iPhone. The next fix
+        // measured its step from the last real fix before the pause, so the stretch this tick covered was counted
+        // twice: on a 2026-10-23 drive Wi-Fi positions after the iPhone's relayed speed or the watch's store had
+        // carried the gap added 198, 522 and 347 m where the car moved 142 m and then stood. The next fix now starts
+        // the anchor afresh. On the watch logs with the iPhone's satellite speed as the answer: that drive 108% ->
+        // 96%, the others within 0-3 points.
+        if distance > 0, gpsDistanceAnchor != nil {
+            gpsDistanceAnchor = nil; speedlessFixes.removeAll()
+        }
 
         // ALWAYS RECORD SOMETHING — the guarantee the iPhone already makes and the watch did
         // not. Below the threshold this returned outright, so whenever the estimator produced

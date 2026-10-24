@@ -789,7 +789,13 @@ class WorkoutSession: ObservableObject {
         }
         previousUncorrectedDatum = raw
         let measured = headingDriftSeconds > DRIFT_MIN_STILL ? headingDriftDegrees / headingDriftSeconds : 0
-        headingDriftRate = min(max(measured, -DRIFT_MAX_RATE), DRIFT_MAX_RATE)
+        // A RATE PAST THE CAP IS NOT THE GYROSCOPE (build 146): it is taken as unmeasured, not clipped to the cap. On a
+        // 2026-10-23 drive the first stops, in a field of 58 microtesla - inside DRIFT_FIELD_RANGE - "measured" a rate
+        // beyond it for six minutes; clipped, 3 degrees a minute piled up 58 degrees and every graded second was more than
+        // 30 degrees off (with no drift at all, all of them within 30). Replayed on every recording: cars 81.5% -> 82.7% of
+        // seconds within 30 degrees (that drive 1% -> 52%, no other moved 10 points), motorcycles unchanged. A narrower
+        // field range, a lower cap and more still seconds before any drift were each worse.
+        headingDriftRate = abs(measured) > DRIFT_MAX_RATE ? 0 : measured
         driftFromStops += headingDriftRate * step
         // The magnetometer anchor; see driftFromStops.
         let now = Date()
