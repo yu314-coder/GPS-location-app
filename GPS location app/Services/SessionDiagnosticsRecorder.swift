@@ -200,9 +200,11 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         let flightTilt60: Double?
         /// Over the last minute: how far the heading swept (degrees), how far the field in Core
         /// Motion's world frame strayed from its mean (microtesla, RMS), and whether that minute
-        /// passed as Earth's field. See WorkoutSession's turn check.
+        /// passed as Earth's field. See WorkoutSession's turn check. magMovingScatter is the same
+        /// RMS over only the readings where the heading moved (build 147).
         let magTurn: Double?
         let magScatter: Double?
+        let magMovingScatter: Double?
         let magVerified: Bool
         /// CMPedometer's cumulative steps and metres as it last reported them, the steps the
         /// accelerometer detector counted, and the detector's current refractory time (seconds;
@@ -728,7 +730,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         out += "heading_drift_deg,drift_rate_dpm,datum_raw_deg,phone_compass_deg,phone_compass_acc_deg,mag_accuracy,mag_field_ut,"
         out += "mag_offset_deg,mag_dip_deg,mag_clean,mag_anchor_deg,drift_stops_deg,"
         out += "flight_net_ms,flight_store_ms,flight_min,flight_tilt60_deg,"
-        out += "mag_turn_deg,mag_scatter_ut,mag_verified,"
+        out += "mag_turn_deg,mag_scatter_ut,mag_moving_scatter_ut,mag_verified,"
         out += "ped_steps,ped_distance_m,imu_steps,step_refractory_s\n"
         return out
     }()
@@ -767,7 +769,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
             out += Self.fmt(r.phoneCompass, 1) + "," + Self.fmt(r.phoneCompassAccuracy, 1) + "," + (r.magAccuracy.map(String.init) ?? "") + "," + Self.fmt(r.magField, 1) + ","
             out += Self.fmt(r.magOffset, 2) + "," + Self.fmt(r.magDip, 2) + "," + (r.magClean ? "1" : "0") + "," + Self.fmt(r.magAnchor, 2) + "," + Self.fmt(r.driftFromStops, 2) + ","
             out += Self.fmt(r.flightNetwork, 2) + "," + Self.fmt(r.flightStore, 2) + "," + Self.fmt(r.flightMinutes, 2) + "," + Self.fmt(r.flightTilt60, 2) + ","
-            out += Self.fmt(r.magTurn, 1) + "," + Self.fmt(r.magScatter, 2) + "," + (r.magVerified ? "1" : "0") + ","
+            out += Self.fmt(r.magTurn, 1) + "," + Self.fmt(r.magScatter, 2) + "," + Self.fmt(r.magMovingScatter, 2) + "," + (r.magVerified ? "1" : "0") + ","
             out += (r.pedometerSteps.map(String.init) ?? "") + "," + Self.fmt(r.pedometerDistance, 1) + ",\(r.imuSteps)," + Self.fmt(r.stepRefractory, 3) + "\n"
         }
         return out

@@ -742,12 +742,23 @@ class WorkoutSession: ObservableObject {
     /// For the diagnostics columns: the last minute's heading sweep, field scatter, and verdict.
     private var lastMagnetometerTurn: Double?
     private var lastMagnetometerScatter: Double?
+    private var lastMagnetometerMovingScatter: Double?
     private var lastMagnetometerVerified = false
     private let MAG_TURN_WINDOW: TimeInterval = 60
     private let MAG_TURN_MIN_COVER = 48               // readings in the window
     private let MAG_TURN_MIN_SWEEP = 30.0             // degrees
     private let MAG_TURN_MAX_SCATTER = 8.0            // microtesla, RMS about the minute's mean
     private let MAG_TURN_FIELD_RANGE = 25.0...70.0    // microtesla
+    // HELD STILL WHILE TURNING, NOT JUST OVER THE MINUTE (build 147). On a 2026-10-24 drive the car turned 36 degrees in
+    // its window's first few seconds and then waited 45 seconds at a light beside something magnetic (60 microtesla, Earth
+    // is about 45 here). Those identical stopped readings pulled the minute's scatter down to 7.9, one second passed, and
+    // north was set 69 degrees wrong for the rest of the drive. Over only the readings where the heading moved, the field
+    // had scattered 16-18. So the turning readings must also hold within 12 microtesla of their own mean. Replayed on
+    // every recording: no route moved (the most 1.8 points, upward), 39 of 3,596 accepted minutes refused; that drive's
+    // replay with the app's sample 0% within 30 degrees, without it 23%. A 10 microtesla limit cost one car drive 46 points.
+    private let MAG_TURN_MOVING_STEP = 2.0            // degrees between readings that count as turning
+    private let MAG_TURN_MIN_MOVING = 3               // turning readings in the window
+    private let MAG_TURN_MAX_MOVING_SCATTER = 12.0    // microtesla, RMS about the turning readings' own mean
 
     /// numpy's default (linear) percentile, so the app and the replay agree exactly.
     private static func percentile(_ values: [Double], _ p: Double) -> Double {
@@ -822,13 +833,28 @@ class WorkoutSession: ObservableObject {
             recentMagnetometer.append((now, mag.world.north, mag.world.west, mag.world.up, mag.offset, heading))
         }
         recentMagnetometer.removeAll { now.timeIntervalSince($0.time) >= MAG_TURN_WINDOW }
-        lastMagnetometerTurn = nil; lastMagnetometerScatter = nil; lastMagnetometerVerified = false
+        lastMagnetometerTurn = nil; lastMagnetometerScatter = nil; lastMagnetometerMovingScatter = nil; lastMagnetometerVerified = false
         if recentMagnetometer.count >= MAG_TURN_MIN_COVER {
             var unwrapped = recentMagnetometer[0].heading, low = unwrapped, high = unwrapped
+            var moving: [Int] = []
             for i in 1..<recentMagnetometer.count {
-                unwrapped += normalizedSignedAngle(recentMagnetometer[i].heading - recentMagnetometer[i - 1].heading)
+                let turned = normalizedSignedAngle(recentMagnetometer[i].heading - recentMagnetometer[i - 1].heading)
+                unwrapped += turned
                 low = min(low, unwrapped); high = max(high, unwrapped)
+                if abs(turned) >= MAG_TURN_MOVING_STEP { moving.append(i) }
             }
+            var movingScatter: Double?
+            if moving.count >= MAG_TURN_MIN_MOVING {
+                let m = Double(moving.count)
+                let tn = moving.reduce(0) { $0 + recentMagnetometer[$1].north } / m
+                let tw = moving.reduce(0) { $0 + recentMagnetometer[$1].west } / m
+                let tu = moving.reduce(0) { $0 + recentMagnetometer[$1].up } / m
+                movingScatter = sqrt(moving.reduce(0) {
+                    let r = recentMagnetometer[$1]
+                    return $0 + (r.north - tn) * (r.north - tn) + (r.west - tw) * (r.west - tw) + (r.up - tu) * (r.up - tu)
+                } / m)
+            }
+            lastMagnetometerMovingScatter = movingScatter
             let n = Double(recentMagnetometer.count)
             let mn = recentMagnetometer.reduce(0) { $0 + $1.north } / n
             let mw = recentMagnetometer.reduce(0) { $0 + $1.west } / n
@@ -838,7 +864,8 @@ class WorkoutSession: ObservableObject {
             } / n)
             lastMagnetometerTurn = high - low; lastMagnetometerScatter = scatter
             if high - low >= MAG_TURN_MIN_SWEEP, scatter <= MAG_TURN_MAX_SCATTER,
-               MAG_TURN_FIELD_RANGE.contains(sqrt(mn * mn + mw * mw + mu * mu)) {
+               MAG_TURN_FIELD_RANGE.contains(sqrt(mn * mn + mw * mw + mu * mu)),
+               let movingScatter, movingScatter <= MAG_TURN_MAX_MOVING_SCATTER {
                 let o = recentMagnetometer.map { $0.offset * .pi / 180 }
                 let mean = atan2(o.reduce(0) { $0 + sin($1) }, o.reduce(0) { $0 + cos($1) }) * 180 / .pi
                 turnVerifiedAnchors.append((now, -mean - driftFromStops))
@@ -5670,6 +5697,7 @@ class WorkoutSession: ObservableObject {
             flightTilt60: lastFlightAnswers.features?[1],
             magTurn: lastMagnetometerTurn,
             magScatter: lastMagnetometerScatter,
+            magMovingScatter: lastMagnetometerMovingScatter,
             magVerified: lastMagnetometerVerified,
             pedometerSteps: pedometerStepsTotal,
             pedometerDistance: fallbackPedometerDistance,
