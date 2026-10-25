@@ -1987,6 +1987,16 @@ class WorkoutSession: NSObject, ObservableObject {
             newGapLength += flight.locations[start + k].distance(to: previous)
             previous = flight.locations[start + k]
         }
+        // A POSITION WITHOUT A SATELLITE SPEED MOVES THE ROUTE, NOT THE DISTANCE (build 150). On 2026-10-25 the watch
+        // came up from a basement car park in an elevator; the first Wi-Fi positions upstairs (no satellite speed, but
+        // claiming 7.5 m) ended the gap 142 and 227 m from where the estimate stood, and stretching the gap onto them
+        // added those metres while the car stood still. The log of every fix (build 149) showed it. On the 17 watch logs
+        // with the iPhone's GPS alongside, leaving such stretches out: 5 closer, 11 unchanged, 1 further by 0.1 point;
+        // mean error 4.4% -> 4.1%. A returning fix with a satellite speed reconciles the distance as before.
+        guard fix.speed >= 0 else {
+            print("⌚ 📍 Rubber-sheet: warped \(n) DR points onto a fix without satellite speed (drift \(String(format: "%.0f", driftMagnitude))m); distance unchanged")
+            return
+        }
         currentMetrics.totalDistance = max(0, currentMetrics.totalDistance + (newGapLength - oldGapLength))
         print("⌚ 📍 Rubber-sheet: warped \(n) DR points onto GPS (drift \(String(format: "%.0f", driftMagnitude))m, Δdist \(String(format: "%+.0f", newGapLength - oldGapLength))m)")
     }
