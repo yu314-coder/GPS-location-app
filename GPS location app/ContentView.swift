@@ -64,8 +64,14 @@ struct ContentView: View {
     }()
     @State private var showLiveSession = false
 
+    @State private var rootWidth: CGFloat = 0
+
+    /// The sidebar layout needs room beside the screen it opens: an iPad, or the iPhone Duo unfolded and turned on its
+    /// side (951 points). Unfolded upright (669 points) the sidebar was hidden, took two taps to change screen and
+    /// stayed open over it after a choice; there the iPhone's tab bar (one tap) stays, and the screens inside still use
+    /// their wide layouts.
     private var isIPadLayout: Bool {
-        horizontalSizeClass == .regular
+        horizontalSizeClass == .regular && (UIDevice.current.userInterfaceIdiom == .pad || rootWidth >= 800)
     }
 
     var body: some View {
@@ -76,6 +82,7 @@ struct ContentView: View {
                 iPhoneRootView
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rootWidth = $0 }
         .sheet(isPresented: $showLiveSession) {
             LiveSessionView()
                 .interactiveDismissDisabled(true) // Prevent swipe-to-dismiss
@@ -181,6 +188,7 @@ struct ContentView: View {
             .navigationTitle("GPS Tracker")
         } detail: {
             selectedTabContent
+                .environment(\.inSidebarLayout, true)
         }
     }
 
@@ -216,6 +224,17 @@ struct ContentView: View {
     }
 }
 
+/// Whether a screen sits in ContentView's sidebar layout, whose NavigationStack it shares. A wide screen alone does not
+/// say so: the iPhone Duo unfolded upright is regular width but keeps the tab bar, where each screen brings its own.
+private struct InSidebarLayoutKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    var inSidebarLayout: Bool {
+        get { self[InSidebarLayoutKey.self] }
+        set { self[InSidebarLayoutKey.self] = newValue }
+    }
+}
+
 /// The first screen, rebuilt around the user's own data.
 ///
 /// It used to be a product page: a pulsing icon, the tagline "Track your workouts with precision
@@ -243,6 +262,7 @@ struct HomeView: View {
     @State private var isAnimating = false
 
     private var isIPad: Bool { horizontalSizeClass == .regular }
+    @Environment(\.inSidebarLayout) private var inSidebarLayout
 
     /// Newest first, and only finished workouts — an in-progress one belongs on the live screen.
     ///
@@ -265,8 +285,10 @@ struct HomeView: View {
 
     var body: some View {
         Group {
-            if isIPad {
+            if inSidebarLayout {
+                // The sidebar layout's NavigationStack holds it (see ContentView.selectedTabContent).
                 content
+                    .navigationDestination(item: $detailFlight) { WorkoutDetailView(flight: $0) }
             } else {
                 NavigationStack {
                     content

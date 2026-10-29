@@ -51,685 +51,73 @@ struct LiveSessionView: View {
                 .padding()
                 .background(Color.blue)
 
-                // Content
-                ScrollView {
-                    VStack(spacing: 20) {
-                        // Metrics Display
-                        if workoutSession.isActive {
-                            // Workout Type Display
-                            HStack {
-                                Image(systemName: getWorkoutIcon(selectedWorkoutType))
-                                Text(getWorkoutName(selectedWorkoutType))
-                                    .font(.headline)
-                                Spacer()
-                                WorkoutClockText(workoutSession: workoutSession, format: formatDuration)
-                                    .font(.headline)
-                                    .foregroundColor(.blue)
-                            }
-                            .padding()
-                            .background(Color(.systemGray6))
-                            .cornerRadius(12)
-                            .padding(.horizontal)
-
-                        // Live metrics with modern design
-                        VStack(spacing: 16) {
-                            ModernLiveMetricCard(
-                                title: "Distance",
-                                value: String(format: "%.2f", workoutSession.currentMetrics.totalDistance / 1000),
-                                unit: "km",
-                                icon: "figure.walk",
-                                color: .green
-                            )
-
-                            HStack(spacing: 12) {
-                                ModernLiveMetricCard(
-                                    title: "Speed",
-                                    value: String(format: "%.1f", workoutSession.currentMetrics.currentSpeed * 3.6),
-                                    unit: "km/h",
-                                    icon: "speedometer",
-                                    color: .blue
-                                )
-
-                                if let heartRate = workoutSession.currentMetrics.currentHeartRate {
-                                    ModernLiveMetricCard(
-                                        title: "Heart Rate",
-                                        value: String(format: "%.0f", heartRate),
-                                        unit: "bpm",
-                                        icon: "heart.fill",
-                                        color: .red
-                                    )
-                                } else {
-                                    ModernLiveMetricCard(
-                                        title: "Avg Speed",
-                                        value: String(format: "%.1f", workoutSession.currentMetrics.averageSpeed * 3.6),
-                                        unit: "km/h",
-                                        icon: "gauge.medium",
-                                        color: .orange
-                                    )
+                // Content. On a wide screen - an unfolded iPhone Duo, an iPad - the cards and the live map
+                // sit side by side instead of the phone's one long column.
+                if workoutSession.isActive && isWide {
+                    HStack(alignment: .top, spacing: 0) {
+                        ScrollView {
+                            VStack(spacing: 20) {
+                                workoutTypeRow
+                                VStack(spacing: 16) {
+                                    liveMetrics
                                 }
-                            }
-
-                            HStack(spacing: 12) {
-                                ModernLiveMetricCard(
-                                    title: "Altitude",
-                                    value: String(format: "%.0f", workoutSession.currentMetrics.currentAltitude),
-                                    unit: "m",
-                                    icon: "mountain.2.fill",
-                                    color: .purple
-                                )
-
-                                if let pressure = workoutSession.locationManager.currentPressure {
-                                    ModernLiveMetricCard(
-                                        title: "Pressure",
-                                        value: String(format: "%.1f", pressure * 10), // Convert kPa to hPa (millibars)
-                                        unit: "hPa",
-                                        icon: "gauge",
-                                        color: .cyan
-                                    )
-                                } else {
-                                    ModernLiveMetricCard(
-                                        title: "Calories",
-                                        value: String(format: "%.0f", workoutSession.currentMetrics.caloriesBurned),
-                                        unit: "kcal",
-                                        icon: "flame.fill",
-                                        color: .orange
-                                    )
-                                }
-                            }
-
-                            // Additional row if pressure is available (to show calories)
-                            if workoutSession.locationManager.currentPressure != nil {
-                                HStack(spacing: 12) {
-                                    ModernLiveMetricCard(
-                                        title: "Calories",
-                                        value: String(format: "%.0f", workoutSession.currentMetrics.caloriesBurned),
-                                        unit: "kcal",
-                                        icon: "flame.fill",
-                                        color: .orange
-                                    )
-
-                                    // Placeholder for symmetry
-                                    Color.clear
-                                        .frame(maxWidth: .infinity)
-                                }
-                            }
-
-                            if workoutSession.currentMetrics.currentMotionAcceleration != nil ||
-                                workoutSession.currentMetrics.currentGPSQualityScore != nil ||
-                                workoutSession.currentMetrics.currentVerticalSpeed != nil {
-                                HStack(spacing: 12) {
-                                    if let motionAcceleration = workoutSession.currentMetrics.currentMotionAcceleration {
-                                        ModernLiveMetricCard(
-                                            title: "Motion Accel",
-                                            value: String(format: "%.2f", motionAcceleration),
-                                            unit: "m/s²",
-                                            icon: "waveform.path.ecg",
-                                            color: .pink
-                                        )
-                                    }
-
-                                    if let motionAccelerationX = workoutSession.currentMetrics.currentMotionAccelerationX {
-                                        ModernLiveMetricCard(
-                                            title: "a_x",
-                                            value: String(format: "%.2f", motionAccelerationX),
-                                            unit: "m/s²",
-                                            icon: "arrow.left.and.right",
-                                            color: .blue
-                                        )
-                                    } else if let gpsQuality = workoutSession.currentMetrics.currentGPSQualityScore {
-                                        ModernLiveMetricCard(
-                                            title: "GPS Quality",
-                                            value: String(format: "%.0f", gpsQuality),
-                                            unit: "/100",
-                                            icon: "location.magnifyingglass",
-                                            color: gpsQuality >= 80 ? .green : gpsQuality >= 50 ? .orange : .red
-                                        )
-                                    } else if let verticalSpeed = workoutSession.currentMetrics.currentVerticalSpeed {
-                                        ModernLiveMetricCard(
-                                            title: "Climb Rate",
-                                            value: String(format: "%.0f", verticalSpeed * 60.0),
-                                            unit: "m/min",
-                                            icon: "arrow.up.and.down",
-                                            color: .teal
-                                        )
-                                    }
-                                }
-                            }
-
-                            if workoutSession.currentMetrics.currentMotionAccelerationY != nil ||
-                                workoutSession.currentMetrics.currentMotionAccelerationZ != nil ||
-                                workoutSession.currentMetrics.currentGPSQualityScore != nil {
-                                HStack(spacing: 12) {
-                                    if let motionAccelerationY = workoutSession.currentMetrics.currentMotionAccelerationY {
-                                        ModernLiveMetricCard(
-                                            title: "a_y",
-                                            value: String(format: "%.2f", motionAccelerationY),
-                                            unit: "m/s²",
-                                            icon: "arrow.up.and.down",
-                                            color: .green
-                                        )
-                                    }
-
-                                    if let motionAccelerationZ = workoutSession.currentMetrics.currentMotionAccelerationZ {
-                                        ModernLiveMetricCard(
-                                            title: "a_z",
-                                            value: String(format: "%.2f", motionAccelerationZ),
-                                            unit: "m/s²",
-                                            icon: "arrow.down.forward.and.arrow.up.backward",
-                                            color: .orange
-                                        )
-                                    } else if let gpsQuality = workoutSession.currentMetrics.currentGPSQualityScore {
-                                        ModernLiveMetricCard(
-                                            title: "GPS Quality",
-                                            value: String(format: "%.0f", gpsQuality),
-                                            unit: "/100",
-                                            icon: "location.magnifyingglass",
-                                            color: gpsQuality >= 80 ? .green : gpsQuality >= 50 ? .orange : .red
-                                        )
-                                    }
-                                }
-                            }
-
-                            if let motionHistory = workoutSession.currentMetrics.motionAccelerationHistory,
-                               !motionHistory.isEmpty {
-                                // Only the 120 samples it draws. Handing over the whole history let the kept
-                                // view value share its buffer, so the next 50 Hz append copied all of it.
-                                LiveMotionAccelerationGraph(
-                                    title: "a",
-                                    samples: Array(motionHistory.suffix(120)),
-                                    color: .pink
-                                )
-                                .frame(height: 150)
-                            }
-
-                            if let gpsQuality = workoutSession.currentMetrics.currentGPSQualityScore,
-                               workoutSession.currentMetrics.currentMotionAccelerationX != nil ||
-                                workoutSession.currentMetrics.currentMotionAccelerationY != nil ||
-                                workoutSession.currentMetrics.currentMotionAccelerationZ != nil {
-                                HStack(spacing: 12) {
-                                    ModernLiveMetricCard(
-                                        title: "GPS Quality",
-                                        value: String(format: "%.0f", gpsQuality),
-                                        unit: "/100",
-                                        icon: "location.magnifyingglass",
-                                        color: gpsQuality >= 80 ? .green : gpsQuality >= 50 ? .orange : .red
-                                    )
-
-                                    if let verticalSpeed = workoutSession.currentMetrics.currentVerticalSpeed {
-                                        ModernLiveMetricCard(
-                                            title: "Climb Rate",
-                                            value: String(format: "%.0f", verticalSpeed * 60.0),
-                                            unit: "m/min",
-                                            icon: "arrow.up.and.down",
-                                            color: .teal
-                                        )
-                                    } else {
-                                        Color.clear
-                                            .frame(maxWidth: .infinity)
-                                    }
-                                }
-                            }
-
-                            if workoutSession.currentMetrics.currentPitch != nil ||
-                                workoutSession.currentMetrics.currentCompassHeading != nil ||
-                                workoutSession.currentMetrics.currentRotationRate != nil {
-                                HStack(spacing: 12) {
-                                    if let heading = workoutSession.currentMetrics.currentCompassHeading {
-                                        ModernLiveMetricCard(
-                                            title: "Heading",
-                                            value: String(format: "%.0f", heading),
-                                            unit: "°",
-                                            icon: "safari.fill",
-                                            color: .indigo
-                                        )
-                                    }
-
-                                    if let pitch = workoutSession.currentMetrics.currentPitch,
-                                       let roll = workoutSession.currentMetrics.currentRoll {
-                                        ModernLiveMetricCard(
-                                            title: "Pitch/Roll",
-                                            value: String(format: "%.0f / %.0f", pitch, roll),
-                                            unit: "°",
-                                            icon: "gyroscope",
-                                            color: .purple
-                                        )
-                                    } else if let rotation = workoutSession.currentMetrics.currentRotationRate {
-                                        ModernLiveMetricCard(
-                                            title: "Rotation",
-                                            value: String(format: "%.2f", rotation),
-                                            unit: "rad/s",
-                                            icon: "rotate.3d",
-                                            color: .purple
-                                        )
-                                    }
-                                }
-                            }
-
-                            if workoutSession.currentMetrics.currentYaw != nil ||
-                                workoutSession.currentMetrics.currentRotationRate != nil {
-                                HStack(spacing: 12) {
-                                    if let yaw = workoutSession.currentMetrics.currentYaw {
-                                        ModernLiveMetricCard(
-                                            title: "Yaw",
-                                            value: String(format: "%.0f", yaw),
-                                            unit: "°",
-                                            icon: "rotate.3d",
-                                            color: .mint
-                                        )
-                                    }
-
-                                    if let rotation = workoutSession.currentMetrics.currentRotationRate {
-                                        ModernLiveMetricCard(
-                                            title: "Rotation",
-                                            value: String(format: "%.2f", rotation),
-                                            unit: "rad/s",
-                                            icon: "gyroscope",
-                                            color: .purple
-                                        )
-                                    }
-                                }
-                            }
-
-                            if workoutSession.currentMetrics.currentRotationRateX != nil ||
-                                workoutSession.currentMetrics.currentRotationRateY != nil ||
-                                workoutSession.currentMetrics.currentRotationRateZ != nil {
-                                HStack(spacing: 12) {
-                                    if let rotationX = workoutSession.currentMetrics.currentRotationRateX {
-                                        ModernLiveMetricCard(
-                                            title: "r_x",
-                                            value: String(format: "%.2f", rotationX),
-                                            unit: "rad/s",
-                                            icon: "arrow.left.and.right",
-                                            color: .blue
-                                        )
-                                    }
-
-                                    if let rotationY = workoutSession.currentMetrics.currentRotationRateY {
-                                        ModernLiveMetricCard(
-                                            title: "r_y",
-                                            value: String(format: "%.2f", rotationY),
-                                            unit: "rad/s",
-                                            icon: "arrow.up.and.down",
-                                            color: .green
-                                        )
-                                    }
-                                }
-
-                                if let rotationZ = workoutSession.currentMetrics.currentRotationRateZ {
-                                    HStack(spacing: 12) {
-                                        ModernLiveMetricCard(
-                                            title: "r_z",
-                                            value: String(format: "%.2f", rotationZ),
-                                            unit: "rad/s",
-                                            icon: "arrow.clockwise",
-                                            color: .orange
-                                        )
-
-                                        Color.clear
-                                            .frame(maxWidth: .infinity)
-                                    }
-                                }
-                            }
-
-                            // Additional Stats
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("Max Speed:")
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Text(String(format: "%.1f km/h", workoutSession.currentMetrics.maxSpeed * 3.6))
-                                        .fontWeight(.medium)
-                                }
-
-                                HStack {
-                                    Text("Max Altitude:")
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Text(String(format: "%.0f m", workoutSession.currentMetrics.maxAltitude))
-                                        .fontWeight(.medium)
-                                }
-
-                                HStack {
-                                    Text("Avg Speed:")
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Text(String(format: "%.1f km/h", workoutSession.currentMetrics.averageSpeed * 3.6))
-                                        .fontWeight(.medium)
-                                }
-
-                                if let gpsQuality = workoutSession.currentMetrics.averageGPSQualityScore {
-                                    HStack {
-                                        Text("Avg GPS Quality:")
-                                            .foregroundColor(.secondary)
-                                        Spacer()
-                                        Text(String(format: "%.0f/100", gpsQuality))
-                                            .fontWeight(.medium)
-                                    }
-                                }
-
-                                if let climbRate = workoutSession.currentMetrics.currentVerticalSpeed {
-                                    HStack {
-                                        Text("Climb Rate:")
-                                            .foregroundColor(.secondary)
-                                        Spacer()
-                                        Text(String(format: "%.0f m/min", climbRate * 60.0))
-                                            .fontWeight(.medium)
-                                    }
-                                }
-
-                                HStack {
-                                    Text("Location Points:")
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Text("\(workoutSession.flight.locations.count)")
-                                        .fontWeight(.medium)
-                                }
-                            }
-                            .padding()
-                            .background(Color(.systemGray6))
-                            .cornerRadius(12)
-
-                            // Show/Hide Logs Button
-                            Button(action: {
-                                showLogs.toggle()
-                            }) {
-                                HStack {
-                                    Image(systemName: showLogs ? "eye.slash" : "eye")
-                                    Text(showLogs ? "Hide Logs" : "Show Logs")
-                                }
-                                .frame(maxWidth: .infinity)
                                 .padding()
-                                .background(Color(.systemGray5))
-                                .foregroundColor(.primary)
-                                .cornerRadius(12)
                             }
-
-                            // Logs Section
-                            if showLogs {
-                                // Pick what the panel shows. The map is here rather than behind
-                                // its own button because this is the same question — "what is it
-                                // actually recording right now" — asked two ways.
-                                Picker("View", selection: $logsMode) {
-                                    ForEach(LogsMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                                }
-                                .pickerStyle(.segmented)
-                                .padding(.bottom, 4)
-                            }
-
-                            if showLogs, logsMode == .map {
+                        }
+                        ScrollView {
+                            VStack(spacing: 16) {
                                 SessionMapPanel(
                                     locations: workoutSession.flight.locations,
                                     current: workoutSession.locationManager.currentLocation
                                 )
-                                .frame(height: 380)
+                                .frame(height: 360)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                                liveGraphs
                             }
-
-                            if showLogs, logsMode == .live {
-                                SessionDebugView(
-                                    locations: workoutSession.flight.locations,
-                                    diagnostics: workoutSession.sessionDiagnostics,
-                                    statusLine: workoutSession.motionFallbackStatus
-                                )
-                            }
-
-                            if showLogs, logsMode == .logs {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Live Tracking Data")
-                                        .font(.headline)
-                                        .padding(.bottom, 4)
-
-                                    ScrollView(.vertical, showsIndicators: true) {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            let locations = Array(workoutSession.flight.locations.suffix(100))
-
-                                            ForEach(Array(locations.enumerated()), id: \.offset) { index, location in
-                                                    VStack(alignment: .leading, spacing: 2) {
-                                                        HStack {
-                                                            Text("[\(formatTime(location.timestamp))]")
-                                                                .font(.caption2)
-                                                                .foregroundColor(.secondary)
-
-                                                            // Show time delta between GPS points
-                                                            if index > 0 {
-                                                                let prevLocation = locations[index - 1]
-                                                                let timeDelta = location.timestamp.timeIntervalSince(prevLocation.timestamp)
-                                                                Text(String(format: "Δt: %.2fs", timeDelta))
-                                                                    .font(.caption2)
-                                                                    .foregroundColor(timeDelta <= 0.2 ? .green : .orange)
-                                                            }
-                                                        }
-
-                                                        HStack {
-                                                            Text("📍 Lat: \(String(format: "%.6f", location.latitude))")
-                                                            Text("Lon: \(String(format: "%.6f", location.longitude))")
-                                                        }
-                                                        .font(.caption)
-
-                                                        HStack {
-                                                            Text("⛰ Alt: \(String(format: "%.1f", location.altitude))m")
-                                                            Text("🎯 Acc: ±\(String(format: "%.1f", location.horizontalAccuracy))m")
-                                                            if location.isFiltered {
-                                                                Image(systemName: "waveform.path.ecg")
-                                                                    .foregroundColor(.green)
-                                                            }
-                                                        }
-                                                        .font(.caption2)
-                                                        .foregroundColor(.secondary)
-
-                                                        Divider()
-                                                    }
-                                            }
-
-                                            if let heartRate = workoutSession.currentMetrics.currentHeartRate {
-                                                HStack {
-                                                    Text("❤️ Heart Rate:")
-                                                    Text("\(Int(heartRate)) bpm")
-                                                        .fontWeight(.bold)
-                                                    if let avg = workoutSession.currentMetrics.averageHeartRate {
-                                                        Text("(Avg: \(Int(avg)))")
-                                                            .foregroundColor(.secondary)
-                                                    }
-                                                }
-                                                .font(.caption)
-                                                .padding(.top, 4)
-                                            }
-                                        }
-                                    }
-                                    .frame(maxHeight: 300)
-                                }
-                                .padding()
-                                .background(Color(.systemBackground))
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color(.systemGray4), lineWidth: 1)
-                                )
-                            }
-
-                            // Speed Graph. The graphs get only the last minute they draw, cut with the same
-                            // `>= now - 60 s` test they apply themselves, so the drawn window is unchanged; a
-                            // whole history kept in the view value made the next append copy all of it.
-                            SpeedGraphView(speedHistory: Self.lastMinute(of: workoutSession.currentMetrics.speedHistory, at: \.timestamp))
-
-                            // Altitude Graph
-                            AltitudeGraphView(altitudeHistory: Self.lastMinute(of: workoutSession.currentMetrics.altitudeHistory, at: \.timestamp))
-
-                            // Pressure Graph
-                            if !workoutSession.currentMetrics.pressureHistory.isEmpty {
-                                PressureGraphView(pressureHistory: Self.lastMinute(of: workoutSession.currentMetrics.pressureHistory, at: \.timestamp))
-                            }
+                            .padding()
                         }
-                        .padding()
-                    } else {
-                        // Not tracking
-                        VStack(spacing: 20) {
-                            Image(systemName: "location.fill.viewfinder")
-                                .font(.system(size: 80))
-                                .foregroundColor(.blue)
-
-                            Text("GPS Tracking Ready")
-                                .font(.title2)
-                                .fontWeight(.bold)
-
-                            Text("Start workout tracking on iPhone")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal)
-
-                            // Workout Type Selector
-                            Button(action: {
-                                showWorkoutTypeSelector = true
-                            }) {
-                                HStack {
-                                    Image(systemName: getWorkoutIcon(selectedWorkoutType))
-                                    Text("Workout Type: \(getWorkoutName(selectedWorkoutType))")
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                }
-                                .padding()
-                                .background(Color(.systemGray6))
-                                .cornerRadius(12)
-                            }
-                            .foregroundColor(.primary)
-                            .padding(.horizontal)
-                        }
-                        .padding()
                     }
+                } else {
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            // Metrics Display
+                            if workoutSession.isActive {
+                                workoutTypeRow
+                                VStack(spacing: 16) {
+                                    liveMetrics
+                                    liveGraphs
+                                }
+                                .padding()
+                            } else {
+                                notTrackingPanel
+                            }
+                        }
                     }
                 }
 
-                // Control Buttons
+                // Control Buttons. In two columns on a wide screen, and on a short one (the Duo's outer screen,
+                // an iPhone SE), where four full-width buttons would leave little room for the numbers.
                 VStack(spacing: 12) {
                     if workoutSession.isActive {
-                        // Pause/Resume button
-                        if workoutSession.isPaused {
-                            Button(action: {
-                                workoutSession.resumeWorkout()
-                            }) {
-                                HStack {
-                                    Image(systemName: "play.fill")
-                                    Text("Resume Tracking")
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.green)
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
+                        if compactControls {
+                            HStack(spacing: 12) {
+                                pauseResumeButton
+                                stopButton
                             }
-                            .disabled(!workoutSession.isPaused || !workoutSession.isActive)
+                            .fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 12) {
+                                forceVelocityButton
+                                flightButton
+                            }
+                            .fixedSize(horizontal: false, vertical: true)
+                            unfamiliarVehicleNotice
                         } else {
-                            Button(action: {
-                                workoutSession.pauseWorkout()
-                            }) {
-                                HStack {
-                                    Image(systemName: "pause.fill")
-                                    Text("Pause Tracking")
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.orange)
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
-                            }
-                            .disabled(workoutSession.isPaused || !workoutSession.isActive)
+                            pauseResumeButton
+                            forceVelocityButton
+                            flightButton
+                            unfamiliarVehicleNotice
+                            stopButton
                         }
-
-                        // Force Velocity toggle: track distance purely from accelerometer
-                        // + velocity dead reckoning, ignoring GPS. Useful in known-bad-GPS
-                        // areas. Turning it off hands back to GPS on the next fix.
-                        Button(action: {
-                            workoutSession.forceMotionFallback.toggle()
-                            print("🔘 Force Velocity toggled -> \(workoutSession.forceMotionFallback ? "ON" : "OFF")")
-                        }) {
-                            HStack {
-                                Image(systemName: workoutSession.forceMotionFallback ? "speedometer" : "location.fill")
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(workoutSession.forceMotionFallback ? "Velocity Mode: ON" : "Force Velocity")
-                                        .fontWeight(.semibold)
-                                    if workoutSession.forceMotionFallback {
-                                        Text(workoutSession.motionFallbackStatus)
-                                            .font(.caption2)
-                                            .opacity(0.9)
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(workoutSession.forceMotionFallback ? Color.purple : Color.gray.opacity(0.5))
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
-                        }
-                        .disabled(!workoutSession.isActive)
-
-                        // EMERGENCY FLIGHT (build 123): keep the flight model running if the phone stops
-                        // flying on its own mid-flight (the cabin reading fell back to the ground).
-                        Button(action: {
-                            workoutSession.flightForced.toggle()
-                        }) {
-                            HStack {
-                                Image(systemName: "airplane")
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(workoutSession.flightForced ? "Flight: forced ON" : "Flight: Auto")
-                                        .fontWeight(.semibold)
-                                    Text(workoutSession.flightForced
-                                         ? "The flight model runs whatever the cabin says. Turn off after landing."
-                                         : "Tap if the phone stops flying mid-flight")
-                                        .font(.caption2)
-                                        .opacity(0.9)
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(workoutSession.flightForced ? Color.cyan : Color.gray.opacity(0.5))
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
-                        }
-                        .disabled(!workoutSession.isActive)
-
-                        // WHEN THE MODEL IS OUT OF ITS DEPTH, SAY SO ON SCREEN.
-                        //
-                        // The regime gate makes Velocity Mode decline rather than assert a speed
-                        // about a vehicle and carry it has never learned, and falls through to the
-                        // last GPS-measured speed instead. That is the right behaviour and it is
-                        // invisible: the number on the card simply comes from somewhere else. On a
-                        // ride where the estimate would previously have read a confident ~50 km/h
-                        // at a red light, the rider deserves to know which of the two they are
-                        // looking at — and it makes a test drive answerable on the spot instead of
-                        // afterwards in a CSV.
-                        if workoutSession.forceMotionFallback, workoutSession.speedModelIsOutOfItsDepth {
-                            HStack(spacing: 10) {
-                                Image(systemName: "questionmark.circle.fill")
-                                    .foregroundColor(.orange)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Unfamiliar vehicle or carry")
-                                        .font(.subheadline).fontWeight(.semibold)
-                                    Text("Holding the last GPS speed rather than guessing")
-                                        .font(.caption2).foregroundColor(.secondary)
-                                }
-                                Spacer()
-                            }
-                            .padding()
-                            .background(Color.orange.opacity(0.12))
-                            .cornerRadius(12)
-                        }
-
-                        // Stop tracking
-                        Button(action: {
-                            showStopConfirmation = true
-                        }) {
-                            HStack {
-                                Image(systemName: "stop.fill")
-                                Text("Stop Tracking")
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red)
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
-                        }
-                        .disabled(isStopping)
                     } else {
                         // Start options
                         Button(action: {
@@ -769,6 +157,7 @@ struct LiveSessionView: View {
                 .cornerRadius(12)
             }
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { viewSize = $0 }
         .sheet(isPresented: $showWorkoutTypeSelector) {
             WorkoutTypeSelectorView(selectedType: $selectedWorkoutType)
         }
@@ -840,6 +229,712 @@ struct LiveSessionView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Layout for wide and short screens
+
+    @State private var viewSize: CGSize = .zero
+
+    /// An unfolded iPhone Duo (669 x 951 points), an iPad, a phone turned on its side: room for the cards and the map
+    /// side by side. Measured, not the size class: inside this sheet the Duo reports a compact width even unfolded.
+    private var isWide: Bool { viewSize.width >= 600 }
+
+    /// The controls in two columns: on a wide screen, and on a short one - the Duo's outer screen is 678 points tall,
+    /// an iPhone SE 667 - where four full-width buttons took about 40% of the height.
+    private var compactControls: Bool { isWide || (viewSize.height > 0 && viewSize.height < 740) }
+
+    /// The logs panel's choice; on a wide screen the map is already beside the cards, so Map reads as Live there.
+    private var shownLogsMode: Binding<LogsMode> {
+        Binding(get: { isWide && logsMode == .map ? .live : logsMode }, set: { logsMode = $0 })
+    }
+
+    private var workoutTypeRow: some View {
+        // Workout Type Display
+        HStack {
+            Image(systemName: getWorkoutIcon(selectedWorkoutType))
+            Text(getWorkoutName(selectedWorkoutType))
+                .font(.headline)
+            Spacer()
+            WorkoutClockText(workoutSession: workoutSession, format: formatDuration)
+                .font(.headline)
+                .foregroundColor(.blue)
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+        .padding(.horizontal)
+    }
+
+    @ViewBuilder
+    private var liveMetrics: some View {
+        ModernLiveMetricCard(
+            title: "Distance",
+            value: String(format: "%.2f", workoutSession.currentMetrics.totalDistance / 1000),
+            unit: "km",
+            icon: "figure.walk",
+            color: .green
+        )
+
+        HStack(spacing: 12) {
+            ModernLiveMetricCard(
+                title: "Speed",
+                value: String(format: "%.1f", workoutSession.currentMetrics.currentSpeed * 3.6),
+                unit: "km/h",
+                icon: "speedometer",
+                color: .blue
+            )
+
+            if let heartRate = workoutSession.currentMetrics.currentHeartRate {
+                ModernLiveMetricCard(
+                    title: "Heart Rate",
+                    value: String(format: "%.0f", heartRate),
+                    unit: "bpm",
+                    icon: "heart.fill",
+                    color: .red
+                )
+            } else {
+                ModernLiveMetricCard(
+                    title: "Avg Speed",
+                    value: String(format: "%.1f", workoutSession.currentMetrics.averageSpeed * 3.6),
+                    unit: "km/h",
+                    icon: "gauge.medium",
+                    color: .orange
+                )
+            }
+        }
+
+        HStack(spacing: 12) {
+            ModernLiveMetricCard(
+                title: "Altitude",
+                value: String(format: "%.0f", workoutSession.currentMetrics.currentAltitude),
+                unit: "m",
+                icon: "mountain.2.fill",
+                color: .purple
+            )
+
+            if let pressure = workoutSession.locationManager.currentPressure {
+                ModernLiveMetricCard(
+                    title: "Pressure",
+                    value: String(format: "%.1f", pressure * 10), // Convert kPa to hPa (millibars)
+                    unit: "hPa",
+                    icon: "gauge",
+                    color: .cyan
+                )
+            } else {
+                ModernLiveMetricCard(
+                    title: "Calories",
+                    value: String(format: "%.0f", workoutSession.currentMetrics.caloriesBurned),
+                    unit: "kcal",
+                    icon: "flame.fill",
+                    color: .orange
+                )
+            }
+        }
+
+        // Additional row if pressure is available (to show calories)
+        if workoutSession.locationManager.currentPressure != nil {
+            HStack(spacing: 12) {
+                ModernLiveMetricCard(
+                    title: "Calories",
+                    value: String(format: "%.0f", workoutSession.currentMetrics.caloriesBurned),
+                    unit: "kcal",
+                    icon: "flame.fill",
+                    color: .orange
+                )
+
+                // Placeholder for symmetry
+                Color.clear
+                    .frame(maxWidth: .infinity)
+            }
+        }
+
+        if workoutSession.currentMetrics.currentMotionAcceleration != nil ||
+            workoutSession.currentMetrics.currentGPSQualityScore != nil ||
+            workoutSession.currentMetrics.currentVerticalSpeed != nil {
+            HStack(spacing: 12) {
+                if let motionAcceleration = workoutSession.currentMetrics.currentMotionAcceleration {
+                    ModernLiveMetricCard(
+                        title: "Motion Accel",
+                        value: String(format: "%.2f", motionAcceleration),
+                        unit: "m/s²",
+                        icon: "waveform.path.ecg",
+                        color: .pink
+                    )
+                }
+
+                if let motionAccelerationX = workoutSession.currentMetrics.currentMotionAccelerationX {
+                    ModernLiveMetricCard(
+                        title: "a_x",
+                        value: String(format: "%.2f", motionAccelerationX),
+                        unit: "m/s²",
+                        icon: "arrow.left.and.right",
+                        color: .blue
+                    )
+                } else if let gpsQuality = workoutSession.currentMetrics.currentGPSQualityScore {
+                    ModernLiveMetricCard(
+                        title: "GPS Quality",
+                        value: String(format: "%.0f", gpsQuality),
+                        unit: "/100",
+                        icon: "location.magnifyingglass",
+                        color: gpsQuality >= 80 ? .green : gpsQuality >= 50 ? .orange : .red
+                    )
+                } else if let verticalSpeed = workoutSession.currentMetrics.currentVerticalSpeed {
+                    ModernLiveMetricCard(
+                        title: "Climb Rate",
+                        value: String(format: "%.0f", verticalSpeed * 60.0),
+                        unit: "m/min",
+                        icon: "arrow.up.and.down",
+                        color: .teal
+                    )
+                }
+            }
+        }
+
+        if workoutSession.currentMetrics.currentMotionAccelerationY != nil ||
+            workoutSession.currentMetrics.currentMotionAccelerationZ != nil ||
+            workoutSession.currentMetrics.currentGPSQualityScore != nil {
+            HStack(spacing: 12) {
+                if let motionAccelerationY = workoutSession.currentMetrics.currentMotionAccelerationY {
+                    ModernLiveMetricCard(
+                        title: "a_y",
+                        value: String(format: "%.2f", motionAccelerationY),
+                        unit: "m/s²",
+                        icon: "arrow.up.and.down",
+                        color: .green
+                    )
+                }
+
+                if let motionAccelerationZ = workoutSession.currentMetrics.currentMotionAccelerationZ {
+                    ModernLiveMetricCard(
+                        title: "a_z",
+                        value: String(format: "%.2f", motionAccelerationZ),
+                        unit: "m/s²",
+                        icon: "arrow.down.forward.and.arrow.up.backward",
+                        color: .orange
+                    )
+                } else if let gpsQuality = workoutSession.currentMetrics.currentGPSQualityScore {
+                    ModernLiveMetricCard(
+                        title: "GPS Quality",
+                        value: String(format: "%.0f", gpsQuality),
+                        unit: "/100",
+                        icon: "location.magnifyingglass",
+                        color: gpsQuality >= 80 ? .green : gpsQuality >= 50 ? .orange : .red
+                    )
+                }
+            }
+        }
+
+        if let motionHistory = workoutSession.currentMetrics.motionAccelerationHistory,
+           !motionHistory.isEmpty {
+            // Only the 120 samples it draws. Handing over the whole history let the kept
+            // view value share its buffer, so the next 50 Hz append copied all of it.
+            LiveMotionAccelerationGraph(
+                title: "a",
+                samples: Array(motionHistory.suffix(120)),
+                color: .pink
+            )
+            .frame(height: 150)
+        }
+
+        if let gpsQuality = workoutSession.currentMetrics.currentGPSQualityScore,
+           workoutSession.currentMetrics.currentMotionAccelerationX != nil ||
+            workoutSession.currentMetrics.currentMotionAccelerationY != nil ||
+            workoutSession.currentMetrics.currentMotionAccelerationZ != nil {
+            HStack(spacing: 12) {
+                ModernLiveMetricCard(
+                    title: "GPS Quality",
+                    value: String(format: "%.0f", gpsQuality),
+                    unit: "/100",
+                    icon: "location.magnifyingglass",
+                    color: gpsQuality >= 80 ? .green : gpsQuality >= 50 ? .orange : .red
+                )
+
+                if let verticalSpeed = workoutSession.currentMetrics.currentVerticalSpeed {
+                    ModernLiveMetricCard(
+                        title: "Climb Rate",
+                        value: String(format: "%.0f", verticalSpeed * 60.0),
+                        unit: "m/min",
+                        icon: "arrow.up.and.down",
+                        color: .teal
+                    )
+                } else {
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+
+        if workoutSession.currentMetrics.currentPitch != nil ||
+            workoutSession.currentMetrics.currentCompassHeading != nil ||
+            workoutSession.currentMetrics.currentRotationRate != nil {
+            HStack(spacing: 12) {
+                if let heading = workoutSession.currentMetrics.currentCompassHeading {
+                    ModernLiveMetricCard(
+                        title: "Heading",
+                        value: String(format: "%.0f", heading),
+                        unit: "°",
+                        icon: "safari.fill",
+                        color: .indigo
+                    )
+                }
+
+                if let pitch = workoutSession.currentMetrics.currentPitch,
+                   let roll = workoutSession.currentMetrics.currentRoll {
+                    ModernLiveMetricCard(
+                        title: "Pitch/Roll",
+                        value: String(format: "%.0f / %.0f", pitch, roll),
+                        unit: "°",
+                        icon: "gyroscope",
+                        color: .purple
+                    )
+                } else if let rotation = workoutSession.currentMetrics.currentRotationRate {
+                    ModernLiveMetricCard(
+                        title: "Rotation",
+                        value: String(format: "%.2f", rotation),
+                        unit: "rad/s",
+                        icon: "rotate.3d",
+                        color: .purple
+                    )
+                }
+            }
+        }
+
+        if workoutSession.currentMetrics.currentYaw != nil ||
+            workoutSession.currentMetrics.currentRotationRate != nil {
+            HStack(spacing: 12) {
+                if let yaw = workoutSession.currentMetrics.currentYaw {
+                    ModernLiveMetricCard(
+                        title: "Yaw",
+                        value: String(format: "%.0f", yaw),
+                        unit: "°",
+                        icon: "rotate.3d",
+                        color: .mint
+                    )
+                }
+
+                if let rotation = workoutSession.currentMetrics.currentRotationRate {
+                    ModernLiveMetricCard(
+                        title: "Rotation",
+                        value: String(format: "%.2f", rotation),
+                        unit: "rad/s",
+                        icon: "gyroscope",
+                        color: .purple
+                    )
+                }
+            }
+        }
+
+        if workoutSession.currentMetrics.currentRotationRateX != nil ||
+            workoutSession.currentMetrics.currentRotationRateY != nil ||
+            workoutSession.currentMetrics.currentRotationRateZ != nil {
+            HStack(spacing: 12) {
+                if let rotationX = workoutSession.currentMetrics.currentRotationRateX {
+                    ModernLiveMetricCard(
+                        title: "r_x",
+                        value: String(format: "%.2f", rotationX),
+                        unit: "rad/s",
+                        icon: "arrow.left.and.right",
+                        color: .blue
+                    )
+                }
+
+                if let rotationY = workoutSession.currentMetrics.currentRotationRateY {
+                    ModernLiveMetricCard(
+                        title: "r_y",
+                        value: String(format: "%.2f", rotationY),
+                        unit: "rad/s",
+                        icon: "arrow.up.and.down",
+                        color: .green
+                    )
+                }
+            }
+
+            if let rotationZ = workoutSession.currentMetrics.currentRotationRateZ {
+                HStack(spacing: 12) {
+                    ModernLiveMetricCard(
+                        title: "r_z",
+                        value: String(format: "%.2f", rotationZ),
+                        unit: "rad/s",
+                        icon: "arrow.clockwise",
+                        color: .orange
+                    )
+
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+
+        // Additional Stats
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Max Speed:")
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(String(format: "%.1f km/h", workoutSession.currentMetrics.maxSpeed * 3.6))
+                    .fontWeight(.medium)
+            }
+
+            HStack {
+                Text("Max Altitude:")
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(String(format: "%.0f m", workoutSession.currentMetrics.maxAltitude))
+                    .fontWeight(.medium)
+            }
+
+            HStack {
+                Text("Avg Speed:")
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(String(format: "%.1f km/h", workoutSession.currentMetrics.averageSpeed * 3.6))
+                    .fontWeight(.medium)
+            }
+
+            if let gpsQuality = workoutSession.currentMetrics.averageGPSQualityScore {
+                HStack {
+                    Text("Avg GPS Quality:")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(String(format: "%.0f/100", gpsQuality))
+                        .fontWeight(.medium)
+                }
+            }
+
+            if let climbRate = workoutSession.currentMetrics.currentVerticalSpeed {
+                HStack {
+                    Text("Climb Rate:")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(String(format: "%.0f m/min", climbRate * 60.0))
+                        .fontWeight(.medium)
+                }
+            }
+
+            HStack {
+                Text("Location Points:")
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(workoutSession.flight.locations.count)")
+                    .fontWeight(.medium)
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+
+        // Show/Hide Logs Button
+        Button(action: {
+            showLogs.toggle()
+        }) {
+            HStack {
+                Image(systemName: showLogs ? "eye.slash" : "eye")
+                Text(showLogs ? "Hide Logs" : "Show Logs")
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color(.systemGray5))
+            .foregroundColor(.primary)
+            .cornerRadius(12)
+        }
+
+        // Logs Section
+        if showLogs {
+            // Pick what the panel shows. The map is here rather than behind
+            // its own button because this is the same question — "what is it
+            // actually recording right now" — asked two ways.
+            Picker("View", selection: shownLogsMode) {
+                ForEach(isWide ? [LogsMode.live, .logs] : LogsMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.bottom, 4)
+        }
+
+        if showLogs, shownLogsMode.wrappedValue == .map {
+            SessionMapPanel(
+                locations: workoutSession.flight.locations,
+                current: workoutSession.locationManager.currentLocation
+            )
+            .frame(height: 380)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+
+        if showLogs, shownLogsMode.wrappedValue == .live {
+            SessionDebugView(
+                locations: workoutSession.flight.locations,
+                diagnostics: workoutSession.sessionDiagnostics,
+                statusLine: workoutSession.motionFallbackStatus
+            )
+        }
+
+        if showLogs, shownLogsMode.wrappedValue == .logs {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Live Tracking Data")
+                    .font(.headline)
+                    .padding(.bottom, 4)
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        let locations = Array(workoutSession.flight.locations.suffix(100))
+
+                        ForEach(Array(locations.enumerated()), id: \.offset) { index, location in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text("[\(formatTime(location.timestamp))]")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+
+                                        // Show time delta between GPS points
+                                        if index > 0 {
+                                            let prevLocation = locations[index - 1]
+                                            let timeDelta = location.timestamp.timeIntervalSince(prevLocation.timestamp)
+                                            Text(String(format: "Δt: %.2fs", timeDelta))
+                                                .font(.caption2)
+                                                .foregroundColor(timeDelta <= 0.2 ? .green : .orange)
+                                        }
+                                    }
+
+                                    HStack {
+                                        Text("📍 Lat: \(String(format: "%.6f", location.latitude))")
+                                        Text("Lon: \(String(format: "%.6f", location.longitude))")
+                                    }
+                                    .font(.caption)
+
+                                    HStack {
+                                        Text("⛰ Alt: \(String(format: "%.1f", location.altitude))m")
+                                        Text("🎯 Acc: ±\(String(format: "%.1f", location.horizontalAccuracy))m")
+                                        if location.isFiltered {
+                                            Image(systemName: "waveform.path.ecg")
+                                                .foregroundColor(.green)
+                                        }
+                                    }
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+
+                                    Divider()
+                                }
+                        }
+
+                        if let heartRate = workoutSession.currentMetrics.currentHeartRate {
+                            HStack {
+                                Text("❤️ Heart Rate:")
+                                Text("\(Int(heartRate)) bpm")
+                                    .fontWeight(.bold)
+                                if let avg = workoutSession.currentMetrics.averageHeartRate {
+                                    Text("(Avg: \(Int(avg)))")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .font(.caption)
+                            .padding(.top, 4)
+                        }
+                    }
+                }
+                .frame(maxHeight: 300)
+            }
+            .padding()
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color(.systemGray4), lineWidth: 1)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var liveGraphs: some View {
+        // Speed Graph. The graphs get only the last minute they draw, cut with the same
+        // `>= now - 60 s` test they apply themselves, so the drawn window is unchanged; a
+        // whole history kept in the view value made the next append copy all of it.
+        SpeedGraphView(speedHistory: Self.lastMinute(of: workoutSession.currentMetrics.speedHistory, at: \.timestamp))
+
+        // Altitude Graph
+        AltitudeGraphView(altitudeHistory: Self.lastMinute(of: workoutSession.currentMetrics.altitudeHistory, at: \.timestamp))
+
+        // Pressure Graph
+        if !workoutSession.currentMetrics.pressureHistory.isEmpty {
+            PressureGraphView(pressureHistory: Self.lastMinute(of: workoutSession.currentMetrics.pressureHistory, at: \.timestamp))
+        }
+    }
+
+    private var notTrackingPanel: some View {
+        // Not tracking
+        VStack(spacing: 20) {
+            Image(systemName: "location.fill.viewfinder")
+                .font(.system(size: 80))
+                .foregroundColor(.blue)
+
+            Text("GPS Tracking Ready")
+                .font(.title2)
+                .fontWeight(.bold)
+
+            Text("Start workout tracking on iPhone")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+
+            // Workout Type Selector
+            Button(action: {
+                showWorkoutTypeSelector = true
+            }) {
+                HStack {
+                    Image(systemName: getWorkoutIcon(selectedWorkoutType))
+                    Text("Workout Type: \(getWorkoutName(selectedWorkoutType))")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(12)
+            }
+            .foregroundColor(.primary)
+            .padding(.horizontal)
+        }
+        .padding()
+    }
+
+    @ViewBuilder
+    private var pauseResumeButton: some View {
+        // Pause/Resume button
+        if workoutSession.isPaused {
+            Button(action: {
+                workoutSession.resumeWorkout()
+            }) {
+                HStack {
+                    Image(systemName: "play.fill")
+                    Text("Resume Tracking")
+                }
+                .frame(maxWidth: .infinity, maxHeight: compactControls ? .infinity : nil)
+                .padding()
+                .background(Color.green)
+                .foregroundColor(.white)
+                .cornerRadius(12)
+            }
+            .disabled(!workoutSession.isPaused || !workoutSession.isActive)
+        } else {
+            Button(action: {
+                workoutSession.pauseWorkout()
+            }) {
+                HStack {
+                    Image(systemName: "pause.fill")
+                    Text("Pause Tracking")
+                }
+                .frame(maxWidth: .infinity, maxHeight: compactControls ? .infinity : nil)
+                .padding()
+                .background(Color.orange)
+                .foregroundColor(.white)
+                .cornerRadius(12)
+            }
+            .disabled(workoutSession.isPaused || !workoutSession.isActive)
+        }
+    }
+
+    private var forceVelocityButton: some View {
+        // Force Velocity toggle: track distance purely from accelerometer
+        // + velocity dead reckoning, ignoring GPS. Useful in known-bad-GPS
+        // areas. Turning it off hands back to GPS on the next fix.
+        Button(action: {
+            workoutSession.forceMotionFallback.toggle()
+            print("🔘 Force Velocity toggled -> \(workoutSession.forceMotionFallback ? "ON" : "OFF")")
+        }) {
+            HStack {
+                Image(systemName: workoutSession.forceMotionFallback ? "speedometer" : "location.fill")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(workoutSession.forceMotionFallback ? "Velocity Mode: ON" : "Force Velocity")
+                        .fontWeight(.semibold)
+                    if workoutSession.forceMotionFallback {
+                        Text(workoutSession.motionFallbackStatus)
+                            .font(.caption2)
+                            .lineLimit(compactControls ? 2 : nil)
+                            .opacity(0.9)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: compactControls ? .infinity : nil)
+            .padding()
+            .background(workoutSession.forceMotionFallback ? Color.purple : Color.gray.opacity(0.5))
+            .foregroundColor(.white)
+            .cornerRadius(12)
+        }
+        .disabled(!workoutSession.isActive)
+    }
+
+    private var flightButton: some View {
+        // EMERGENCY FLIGHT (build 123): keep the flight model running if the phone stops
+        // flying on its own mid-flight (the cabin reading fell back to the ground).
+        Button(action: {
+            workoutSession.flightForced.toggle()
+        }) {
+            HStack {
+                Image(systemName: "airplane")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(workoutSession.flightForced ? "Flight: forced ON" : "Flight: Auto")
+                        .fontWeight(.semibold)
+                    Text(workoutSession.flightForced
+                         ? "The flight model runs whatever the cabin says. Turn off after landing."
+                         : "Tap if the phone stops flying mid-flight")
+                        .font(.caption2)
+                        .lineLimit(compactControls ? 2 : nil)
+                        .opacity(0.9)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: compactControls ? .infinity : nil)
+            .padding()
+            .background(workoutSession.flightForced ? Color.cyan : Color.gray.opacity(0.5))
+            .foregroundColor(.white)
+            .cornerRadius(12)
+        }
+        .disabled(!workoutSession.isActive)
+    }
+
+    @ViewBuilder
+    private var unfamiliarVehicleNotice: some View {
+        // WHEN THE MODEL IS OUT OF ITS DEPTH, SAY SO ON SCREEN.
+        //
+        // The regime gate makes Velocity Mode decline rather than assert a speed
+        // about a vehicle and carry it has never learned, and falls through to the
+        // last GPS-measured speed instead. That is the right behaviour and it is
+        // invisible: the number on the card simply comes from somewhere else. On a
+        // ride where the estimate would previously have read a confident ~50 km/h
+        // at a red light, the rider deserves to know which of the two they are
+        // looking at — and it makes a test drive answerable on the spot instead of
+        // afterwards in a CSV.
+        if workoutSession.forceMotionFallback, workoutSession.speedModelIsOutOfItsDepth {
+            HStack(spacing: 10) {
+                Image(systemName: "questionmark.circle.fill")
+                    .foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Unfamiliar vehicle or carry")
+                        .font(.subheadline).fontWeight(.semibold)
+                    Text("Holding the last GPS speed rather than guessing")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                Spacer()
+            }
+            .padding()
+            .background(Color.orange.opacity(0.12))
+            .cornerRadius(12)
+        }
+    }
+
+    private var stopButton: some View {
+        // Stop tracking
+        Button(action: {
+            showStopConfirmation = true
+        }) {
+            HStack {
+                Image(systemName: "stop.fill")
+                Text("Stop Tracking")
+            }
+            .frame(maxWidth: .infinity, maxHeight: compactControls ? .infinity : nil)
+            .padding()
+            .background(Color.red)
+            .foregroundColor(.white)
+            .cornerRadius(12)
+        }
+        .disabled(isStopping)
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {

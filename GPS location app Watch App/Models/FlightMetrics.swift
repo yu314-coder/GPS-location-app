@@ -751,7 +751,8 @@ struct FlightMetrics: Codable {
     /// The last, partial kilometre, timed to the last update (or `end`). Counted once, however often it is called.
     mutating func finalizeSplits(at end: Date? = nil) {
         let remainingDistance = totalDistance - currentSplitDistance
-        if remainingDistance > 0 {
+        // A remainder under 10 m is not a split: its pace would be noise (a 0.0 km workout showed 107084810:46).
+        if remainingDistance >= 10 {
             let endTime = end ?? splitCheckTime ?? Date()
             let duration = max(endTime.timeIntervalSince(currentSplitStartTime ?? endTime), 0)
             splits.append(Split(
@@ -786,6 +787,8 @@ struct Split: Codable, Identifiable {
 
     var formattedPace: String {
         let pace = pacePerKm
+        // No time measured, or a last split of a few metres (seconds over metres reads as hours per kilometre): no pace.
+        guard pace.isFinite, pace > 0, pace < 100 * 60 else { return "–" }
         let minutes = Int(pace) / 60
         let seconds = Int(pace) % 60
         return String(format: "%d:%02d", minutes, seconds)

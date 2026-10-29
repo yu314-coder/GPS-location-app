@@ -34,7 +34,7 @@ struct SettingsView: View {
     @State private var locationPermissionStatus = "Not Determined"
     @State private var healthKitPermissionStatus = "Not Determined"
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.inSidebarLayout) private var inSidebarLayout
 
     var body: some View {
         navigationWrapper {
@@ -320,7 +320,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func navigationWrapper<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        if horizontalSizeClass == .regular {
+        if inSidebarLayout {
             content()
                 .navigationTitle("Settings")
         } else {
