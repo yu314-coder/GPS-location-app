@@ -5717,7 +5717,9 @@ class WorkoutSession: ObservableObject {
             pedometerSteps: pedometerStepsTotal,
             pedometerDistance: fallbackPedometerDistance,
             imuSteps: imuStepsTotal,
-            stepRefractory: stepRefractory))
+            stepRefractory: stepRefractory,
+            vehicleContext: vehicleContextIsCurrent,
+            vehicleEvidenceAge: lastVehicleEvidenceTime.map { now.timeIntervalSince($0) }))
 
         // Push the iPhone's integrated answer to the watch every tick, regardless of GPS —
         // the watch's own device motion is frequently suppressed, and without this its assist

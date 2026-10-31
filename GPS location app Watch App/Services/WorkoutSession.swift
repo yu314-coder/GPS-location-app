@@ -3358,14 +3358,19 @@ class WorkoutSession: NSObject, ObservableObject {
             print("⌚ 📱 DR engaged — requesting iPhone as motion/heading source")
             connectivityManager.requestIPhoneGPS()
         }
-        // Seed from the best available speed so we keep moving through the gap:
-        // smoothed speed → last GPS point's speed → average speed.
+        // Seed from the best available speed so we keep moving through the gap: the smoothed speed, else the last
+        // GPS point's own speed.
         // The smoothed speed counts only when a satellite measured the last fix (build 138): from Wi-Fi or cell
         // positions it is a jump over a few seconds, and the iPhone drew 77-940 km/h from such seeds.
+        // NOT THE WORKOUT'S AVERAGE SPEED (build 153), which the iPhone never used: it is no measurement of this
+        // moment. Indoors, where Wi-Fi positions about every 6 s start and end a gap each time, every gap began at the
+        // trip's average: on 2026-10-31 standing at home after a drive, 11.7 km/h for a second each time, ~115 m. Across
+        // 46 watch logs dropping it removes 1.05 km in 11 - 982 m with no satellite speed within a minute (indoors),
+        // 30 m beside GPS saying still, 35 m within a minute of driving - and moves none of the 15 drives the iPhone's
+        // GPS covered.
         let lastPointSpeed = flight.locations.last.map { max($0.speed, 0.0) } ?? 0.0
         let measuredSpeed = lastRealFixHadSatelliteSpeed ? currentMetrics.smoothedSpeed : 0.0
-        let seed = max(measuredSpeed, max(lastPointSpeed, currentMetrics.averageSpeed))
-        let seedSpeed = max(seed, 0.0)   // no speed limit
+        let seedSpeed = max(measuredSpeed > 0 ? measuredSpeed : lastPointSpeed, 0.0)   // no speed limit
         // Seed the velocity VECTOR along the last known GPS course so cruise is
         // maintained in the correct direction (a moving car keeps its speed & heading).
         let courseDeg = flight.locations.last.flatMap { validCourse($0.course) } ?? motionHeadingDegrees
