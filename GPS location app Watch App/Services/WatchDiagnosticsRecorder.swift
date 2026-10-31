@@ -138,9 +138,13 @@ final class WatchDiagnosticsRecorder {
         out += "net_speed_ms,net_familiarity,store_speed_ms,store_ground_obs,"
         out += (0..<11).map { "f\($0)" }.joined(separator: ",") + ","
         out += "imu_steps,pedometer_steps,pedometer_gap_m,step_refractory_s,vehicle_ctx,relay_speed_ms,"
-        out += "rel_alt_m,pressure_kpa\n"
+        // The app's build on every row (build 152): which logging rules wrote it - from 152 a GPS row's distance_m
+        // no longer repeats a gap's metres - and whether the watch has updated at all.
+        out += "rel_alt_m,pressure_kpa,app_build\n"
         return out
     }()
+
+    private static let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
 
     private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -163,7 +167,7 @@ final class WatchDiagnosticsRecorder {
         out += fmt(r.imuSteps.map(Double.init), 0) + "," + fmt(r.pedometerSteps.map(Double.init), 0) + ","
         out += fmt(r.pedometerGapDistance, 1) + "," + fmt(r.stepRefractory, 3) + ","
         out += (r.vehicleContext.map { $0 ? "1" : "0" } ?? "") + "," + fmt(r.relayedSpeed) + ","
-        out += fmt(r.relativeAltitude, 2) + "," + fmt(r.pressure, 4) + "\n"
+        out += fmt(r.relativeAltitude, 2) + "," + fmt(r.pressure, 4) + "," + appBuild + "\n"
         return out
     }
 

@@ -1686,6 +1686,11 @@ class WorkoutSession: ObservableObject {
         guard let since = vigorousHandlingSince else { return false }
         return Date().timeIntervalSince(since) > CARRIED_HOLD
     }
+    /// Steps in the last 3 s, or carrying: the evidence on which recentLearnedAnswer stops holding a vehicle speed.
+    private var phoneHasLeftVehicle: Bool {
+        let steppingNow = (lastStepIncrementTime.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude) < 3.0
+        return steppingNow || handlingShowsDismount
+    }
     /// Long-window (~90 s) mean world acceleration = bias + gravity leakage. Removing it is
     /// what bounds a vehicle, whose true mean acceleration over such a window is ~0.
     private var longRunMeanNorth: Double = 0
@@ -5260,7 +5265,17 @@ class WorkoutSession: ObservableObject {
             let hr = motionHeadingDegrees * .pi / 180
             motionVelNorth = estimatedFallbackSpeed * cos(hr)
             motionVelEast = estimatedFallbackSpeed * sin(hr)
-        } else if vehicleContextIsCurrent, let held = lastMeasuredVehicleSpeed {
+        } else if vehicleContextIsCurrent, let held = lastMeasuredVehicleSpeed,
+                  held >= MAX_GROUND_STOP_SPEED || !phoneHasLeftVehicle {
+            // A CARRIED PHONE HOLDS NO VEHICLE SPEED HERE EITHER (build 152). recentLearnedAnswer stops holding
+            // the model's answer once steps or carrying say the phone has left the vehicle, and the chain then fell
+            // through to this branch, which held the last GPS speed plus everything the accelerometer had integrated
+            // since - a hand's swing included. 2026-10-31 12:15: parked in a basement after 100 s without GPS, the
+            // phone picked up and carried read 61-73 km/h for 11 s (203 m) before its steps took over; 2026-10-19
+            // 16:03 held 281 km/h for 10 s while walking (782 m). Across every log: 85 such ticks in 13 recordings,
+            // 1.56 km; where GPS was logged alongside they laid down 483 m while the phone moved 16 m, and none came
+            // with GPS above 15 km/h. Same exemption as the learned hold: nothing that fast is being carried.
+            //
             // HOLD THE LAST MEASURED SPEED.
             //
             // Vibration is not a speed sensor on this hardware, and that is now measured rather

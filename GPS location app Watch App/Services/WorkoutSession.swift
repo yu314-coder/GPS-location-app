@@ -1074,7 +1074,7 @@ class WorkoutSession: NSObject, ObservableObject {
             lastVehicleEvidenceTime = nil; consecutiveVehicleSpeedFixes = 0; consecutiveVehicleModelTicks = 0
             lastGoodFixTimeWatch = nil; latestGPSFixTimeWatch = nil
             watchDiagnostics.reset(workoutStart: flight.startDate)
-            lastGPSRowTotalDistance = nil
+            loggedTotalDistance = nil
             startActivityClassifier()
             lastLocationTime = Date()
             latestIPhoneMotionAssist = nil
@@ -2638,13 +2638,17 @@ class WorkoutSession: NSObject, ObservableObject {
     /// reckoning ran, so a workout with good GPS left nothing to score the wrist's engines against,
     /// and nothing of the stretches either side of a gap. These rows carry the GPS speed and fix as
     /// the truth, both engines' readings and the fingerprint, the barometer and the steps.
-    private var lastGPSRowTotalDistance: Double?
+    /// A GPS row logs the change in the total since the last row of EITHER kind (build 152). It used to be the change
+    /// since the last GPS row, and none are written while dead reckoning runs, so the first GPS row after a gap repeated
+    /// every metre the gap's own rows had logged: 2026-10-31 12:14 summed to 15.20 km for a 14.17 km workout. Logging
+    /// only; no distance changes.
+    private var loggedTotalDistance: Double?
     private func recordGPSRow(now: Date) {
         let r = engineReadout
         let gpsFresh = now.timeIntervalSince(lastLocationTime) <= 5 && watchDiagnostics.latestGPSSpeed >= 0
         let total = currentMetrics.totalDistance
-        let added = max(0, total - (lastGPSRowTotalDistance ?? total))
-        lastGPSRowTotalDistance = total
+        let added = max(0, total - (loggedTotalDistance ?? total))
+        loggedTotalDistance = total
         watchDiagnostics.record(.init(
             t: now,
             source: gpsFresh ? "GPS" : "GPS(waiting)",
@@ -3321,6 +3325,7 @@ class WorkoutSession: NSObject, ObservableObject {
         appendEstimatedPedometerFallbackLocation(distanceMeters: appendDistance, timestamp: now,
                                                  speedMetersPerSecond: accelSource == "FLIGHT(unconfirmed)" ? 0 : motionFallbackSpeed)
         motionFallbackDistanceAdded += appendDistance
+        loggedTotalDistance = currentMetrics.totalDistance   // this tick's row logged it
 
         let now2 = Date()
         if now2.timeIntervalSince(lastMotionFallbackLogTime) >= 5.0 {
