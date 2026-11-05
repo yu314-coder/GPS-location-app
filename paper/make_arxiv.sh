@@ -13,7 +13,7 @@ mkdir -p "$TMP/src/tables" "$TMP/src/figures"
 cp velocity_mode.tex "$TMP/src/"
 cp tables/*.tex "$TMP/src/tables/"
 # only the figures the paper includes
-grep -o 'figures/[A-Za-z0-9_]*\.pdf' velocity_mode.tex | sort -u | while read -r f; do cp "$f" "$TMP/src/$f"; done
+grep -oE 'figures/[A-Za-z0-9_]+\.(pdf|png)' velocity_mode.tex | sort -u | while read -r f; do cp "$f" "$TMP/src/$f"; done
 mkdir -p "$TMP/build" && cp -R "$TMP/src/." "$TMP/build/"
 ( cd "$TMP/build" && pdflatex -interaction=nonstopmode -halt-on-error velocity_mode.tex > pass1.log \
   && pdflatex -interaction=nonstopmode -halt-on-error velocity_mode.tex > pass2.log ) \

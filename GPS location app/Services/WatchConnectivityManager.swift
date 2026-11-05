@@ -227,6 +227,23 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     @Published var isSharingGPS = false
     private var gpsSharingTimer: Timer?
     private let locationManager = LocationManager.shared
+    /// SHARING NEVER STOPPED THE GPS IT STARTED (build 156). startGPSSharing started the shared location manager -
+    /// navigation-accuracy GPS, the compass, significant-change monitoring, the barometer and 50 Hz motion, all
+    /// allowed in the background - and stopGPSSharing only stopped the 1 Hz relay, so after the first watch workout
+    /// they ran until iOS ended the app. MetricKit (builds 143-151) showed navigation-accuracy location for 10 to 23
+    /// hours a day and up to 24 h of background running, against an hour or two of workouts. Sharing now remembers
+    /// whether it started the tracking and stops it, and it ends three ways: the watch's "stopped" message, the
+    /// watch's final workout file (queued, so it arrives even when the message is lost), or no word at all from the
+    /// watch for WATCH_SILENCE_LIMIT; a checkpoint arriving after such a silence starts it again.
+    private var sharingStartedTracking = false
+    private var lastWatchContact = Date()
+    private var sharingStoppedForSilence = false
+    private static let WATCH_SILENCE_LIMIT: TimeInterval = 15 * 60
+    /// Where the fixes sent to the watch come from: the iPhone workout's own location manager while one runs, so the
+    /// phone never runs two GPS sessions and two 50 Hz motion streams at once (build 156); the shared one otherwise.
+    private var fixSource: LocationManager {
+        isLocalWorkoutActive ? WorkoutSession.shared.locationManager : locationManager
+    }
     /// Derives heading/speed from iPhone motion so the phone can serve the watch even with no
     /// iPhone workout running.
     private let motionRelay = PhoneMotionRelayEstimator()
@@ -253,6 +270,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
                 if self.isMirroringWatchLiveActivity {
                     self.endMirroredLiveActivity(finalDuration: 0, finalDistance: 0, finalCalories: 0)
                 }
+                DispatchQueue.main.async { self.updateSharedTracking() }
             }
             .store(in: &cancellables)
 
@@ -260,6 +278,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             .sink { [weak self] _ in
                 self?.isLocalWorkoutActive = false
                 self?.flushTrafficNow()
+                DispatchQueue.main.async { self?.updateSharedTracking() }
             }
             .store(in: &cancellables)
 
@@ -384,30 +403,54 @@ class WatchConnectivityManager: NSObject, ObservableObject {
 
         print("📱 🛰️ Starting GPS sharing with watch")
         isSharingGPS = true
-
-        // Start location tracking if not already active
-        if !locationManager.isTracking {
-            locationManager.startTracking()
-        }
-        locationManager.requestImmediateLocationFix()
-
-        // Act as a MOTION SOURCE for the watch too, not just a GPS source. This runs with NO
-        // iPhone workout — the watch may be recording in Force Velocity with the phone merely
-        // nearby, and a watch alone cannot resolve walking direction. startTracking() above
-        // already started device motion, so we only need to consume and relay it.
-        motionRelay.reset(seedHeading: locationManager.currentLocation.flatMap {
-            $0.course >= 0 && $0.speed > 0.5 ? $0.course : nil
-        })
-        locationManager.onWorldAccelSampleRelay = { [weak self] north, east, up, rotationRate, dt in
-            self?.motionRelay.ingest(north: north, east: east, up: up,
-                                     rotationRate: rotationRate, dt: dt)
-        }
+        sharingStoppedForSilence = false
+        lastWatchContact = Date()
+        updateSharedTracking()
+        fixSource.requestImmediateLocationFix()
 
         // Send GPS locations at 1Hz (every 1.0 second) to match watch GPS frequency
         gpsSharingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
+            if Date().timeIntervalSince(self.lastWatchContact) > Self.WATCH_SILENCE_LIMIT {
+                print("📱 🛑 No word from the watch for \(Int(Self.WATCH_SILENCE_LIMIT / 60)) min - GPS sharing stopped")
+                self.noteTraffic("gps_sharing_stopped_silence")
+                self.stopGPSSharing()
+                self.sharingStoppedForSilence = true
+                return
+            }
             self.sendCurrentLocationToWatch()
             self.relayMotionDerivedStateIfNeeded()
+        }
+    }
+
+    /// The shared location manager runs only while the watch is being served with no iPhone workout running; the
+    /// workout's own manager serves it otherwise (see fixSource), and it stops with sharing (see sharingStartedTracking).
+    private func updateSharedTracking() {
+        if isSharingGPS && !isLocalWorkoutActive {
+            if !locationManager.isTracking {
+                locationManager.startTracking()
+                sharingStartedTracking = true
+            }
+            // Act as a MOTION SOURCE for the watch too, not just a GPS source. This runs with NO
+            // iPhone workout — the watch may be recording in Force Velocity with the phone merely
+            // nearby, and a watch alone cannot resolve walking direction. startTracking() above
+            // already started device motion, so we only need to consume and relay it.
+            if locationManager.onWorldAccelSampleRelay == nil {
+                motionRelay.reset(seedHeading: locationManager.currentLocation.flatMap {
+                    $0.course >= 0 && $0.speed > 0.5 ? $0.course : nil
+                })
+                locationManager.onWorldAccelSampleRelay = { [weak self] north, east, up, rotationRate, dt in
+                    self?.motionRelay.ingest(north: north, east: east, up: up,
+                                             rotationRate: rotationRate, dt: dt)
+                }
+            }
+        } else {
+            locationManager.onWorldAccelSampleRelay = nil
+            motionRelay.reset(seedHeading: nil)
+            if sharingStartedTracking {
+                locationManager.stopTracking()
+                sharingStartedTracking = false
+            }
         }
     }
 
@@ -418,7 +461,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     /// workout is relaying, whose answer is the better one; two senders took turns before.
     private func relayMotionDerivedStateIfNeeded() {
         if let last = lastWorkoutRelayTime, Date().timeIntervalSince(last) < 3.0 { return }
-        let fix = locationManager.currentLocation
+        let fix = fixSource.currentLocation
         let gpsUsableForHeading: Bool = {
             guard let fix else { return false }
             return Date().timeIntervalSince(fix.timestamp) < 5.0 && fix.course >= 0 && fix.speed > 0.5
@@ -439,8 +482,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         isSharingGPS = false
         gpsSharingTimer?.invalidate()
         gpsSharingTimer = nil
-        locationManager.onWorldAccelSampleRelay = nil
-        motionRelay.reset(seedHeading: nil)
+        updateSharedTracking()
     }
 
     /// Relay the iPhone's computed dead-reckoning state to the watch, INDEPENDENT of GPS.
@@ -528,6 +570,14 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     /// Count one event on the watch link (and its bytes, under key + "_bytes").
     func noteTraffic(_ key: String, bytes: Int = 0) {
         let now = Date()
+        if key.hasPrefix("received") {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.lastWatchContact = now
+                // A checkpoint after a silence: the watch's workout is still going, so serve it again.
+                if self.sharingStoppedForSilence, key == "received_file_flightCheckpoint" { self.startGPSSharing() }
+            }
+        }
         trafficQueue.async { [weak self] in
             guard let self else { return }
             let day = Self.trafficDayFormat.string(from: now)
@@ -565,23 +615,23 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             return
         }
 
-        let preferredLocation = locationManager.currentLocation
-        let relayLocation = preferredLocation ?? locationManager.latestRawLocation
+        let preferredLocation = fixSource.currentLocation
+        let relayLocation = preferredLocation ?? fixSource.latestRawLocation
 
         guard let location = relayLocation else {
             print("📱 ⚠️ No iPhone GPS location available")
-            locationManager.requestImmediateLocationFix()
+            fixSource.requestImmediateLocationFix()
             return
         }
 
         if location.horizontalAccuracy < 0 {
             print("📱 ⚠️ iPhone location invalid (negative accuracy) - requesting new fix")
-            locationManager.requestImmediateLocationFix()
+            fixSource.requestImmediateLocationFix()
             return
         }
 
         let usingRawRelayLocation = (preferredLocation == nil)
-        let sourceTag = locationManager.locationSource.description
+        let sourceTag = fixSource.locationSource.description
         print(
             "📱 📡 Relaying iPhone location to watch: source=\(sourceTag), acc=±\(String(format: "%.1f", location.horizontalAccuracy))m, rawFallback=\(usingRawRelayLocation)"
         )
@@ -600,19 +650,19 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             "relaySource": sourceTag,
             "usingRawRelayLocation": usingRawRelayLocation
         ]
-        if let acceleration = locationManager.currentMotionAcceleration {
+        if let acceleration = fixSource.currentMotionAcceleration {
             locationData["motionAcceleration"] = acceleration
         }
-        if let horizontalAcceleration = locationManager.currentMotionHorizontalAcceleration {
+        if let horizontalAcceleration = fixSource.currentMotionHorizontalAcceleration {
             locationData["motionHorizontalAcceleration"] = horizontalAcceleration
         }
-        if let forwardAcceleration = locationManager.currentMotionForwardAcceleration {
+        if let forwardAcceleration = fixSource.currentMotionForwardAcceleration {
             locationData["motionForwardAcceleration"] = forwardAcceleration
         }
-        if let lateralAcceleration = locationManager.currentMotionLateralAcceleration {
+        if let lateralAcceleration = fixSource.currentMotionLateralAcceleration {
             locationData["motionLateralAcceleration"] = lateralAcceleration
         }
-        if let directionDegrees = locationManager.currentMotionDirectionDegrees {
+        if let directionDegrees = fixSource.currentMotionDirectionDegrees {
             locationData["motionDirectionDegrees"] = directionDegrees
         }
 
@@ -675,24 +725,27 @@ extension WatchConnectivityManager: WCSessionDelegate {
 
         if let action = message["action"] as? String {
             switch action {
+            // GPS sharing starts and stops on the main thread (build 156): this delegate runs on a WatchConnectivity
+            // queue, where the 1 Hz sharing timer was scheduled on a run loop that never runs - the tracking started,
+            // the relay never fired, and a later "requestGPS" found sharing "already active".
             case "workoutStarted":
                 startMirroredLiveActivityIfNeeded()
                 // Keep iPhone positioning ready so watch can switch to phone-assisted location quickly.
-                startGPSSharing()
+                DispatchQueue.main.async { self.startGPSSharing() }
                 replyHandler(["status": "acknowledged"])
             case "workoutStopped":
-                stopGPSSharing()  // Stop GPS sharing when workout stops
+                DispatchQueue.main.async { self.stopGPSSharing() }  // Stop GPS sharing when workout stops
                 endMirroredLiveActivity(finalDuration: 0, finalDistance: 0, finalCalories: 0)
                 replyHandler(["status": "acknowledged"])
             case "requestGPS":
                 // Watch is requesting iPhone GPS fallback
                 print("📱 🛰️ Watch requesting GPS fallback")
-                startGPSSharing()
+                DispatchQueue.main.async { self.startGPSSharing() }
                 replyHandler(["status": "gps_sharing_started"])
             case "stopGPS":
                 // Watch has recovered its own GPS
                 print("📱 🛑 Watch stopped requesting GPS fallback")
-                stopGPSSharing()
+                DispatchQueue.main.async { self.stopGPSSharing() }
                 replyHandler(["status": "gps_sharing_stopped"])
             default:
                 replyHandler(["status": "unknown action"])
@@ -826,6 +879,11 @@ extension WatchConnectivityManager: WCSessionDelegate {
                 }
 
                 print("📱 Received final flight transfer from watch: \(flight.id)")
+                // The watch's workout has ended even if its "stopped" message never arrived (build 156).
+                DispatchQueue.main.async { [weak self] in
+                    self?.sharingStoppedForSilence = false
+                    self?.stopGPSSharing()
+                }
                 saveFlightToHealthKit(flight: flight, metrics: metrics)
             }
         } catch {
