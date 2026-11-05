@@ -1,3 +1,4 @@
+\pdfoutput=1   % arXiv: build with pdfLaTeX
 \documentclass[11pt]{article}
 % No build timestamps or source-file metadata in the output.
 \pdfinfoomitdate=1
@@ -20,7 +21,7 @@
 \usepackage{float}
 \usepackage[colorlinks=true,linkcolor={blue!45!black},citecolor={blue!45!black},urlcolor={blue!45!black}]{hyperref}
 % The app shows the newest copy it has by this number (no dates): the app build the paper was made for.
-\hypersetup{pdfkeywords={velocity-mode-paper revision 140}}
+\hypersetup{pdfkeywords={velocity-mode-paper revision 155}}
 \captionsetup{font=small,labelfont=bf,labelsep=period}
 \setlist{itemsep=2pt,topsep=4pt}
 \setlength{\parskip}{3pt}
@@ -196,6 +197,14 @@ rather than a guess, and the starting network below answers in its place: the sp
 GPS and never stalls while the vehicle moves. Averaging pulls every answer
 toward the middle, so a correction learned from the stored examples stretches the answers back out.
 
+\paragraph{A half for each kind of trip.} Each stored example remembers the kind of trip that taught it:
+a phone in a motorcycle rider's pocket, by the test described under \emph{Stops and hands} below, or
+anything else. A full store replaces an example of the incoming kind once that kind holds half of it, so a
+long week of driving cannot crowd the motorcycle out (Section~\ref{sec:wrong}). Until the test decides the
+current trip, after a minute above $20$~km/h, the whole store is searched; then only the trip's own half,
+once it holds $600$ examples, with its own correction. A pocket motorcycle whose half is still smaller
+leaves the answer to the starting network rather than read a car's examples.
+
 \paragraph{A starting network.} A new phone has no examples, so until it holds $3{,}000$ it uses a
 small network ($11$ inputs, two layers of $32$, one output) trained on recorded trips and shipped with
 the app. It needs nothing from the current trip, and it declines a fingerprint unlike anything it was
@@ -215,8 +224,14 @@ the takeoff: from the last moment it was still, it follows its own turning with 
 adds up the push the accelerometer feels for up to two minutes. Core Motion's own orientation cannot
 be used for this, because it takes a takeoff's steady push for a tilt~\cite{quatcf}. Only a takeoff
 starts the flight: the measured speed must pass $30$~knots and then $200$~km/h within $30$~s, which the
-two flights did in $17$ to $18$~s and no road journey did in under $36$. From that moment the measured
-speed is shown, and what was counted before it is made up.
+two flights did in $17$ to $18$~s and no road journey did in under $36$. The cabin must then confirm it:
+the takeoff counts once the cabin's pressure has fallen $0.25$~kPa from where it stood at $200$~km/h, which on
+all four takeoffs the phones recorded it had $99$ to $112$~s after the roll began. Until then the distance
+waits; if the cabin has not fallen within $150$~s, or a satellite fix $20$~s or more into the roll reads
+under $15$~m/s, the takeoff is withdrawn and what waited is dropped. Once confirmed, the measured speed is
+shown and what was counted before it is made up. A phone carried from a parked car into a lift once
+passed the speed test --- its integration had run on from the car --- and would have added $3.9$~km; the
+lift rose $13$~m, $0.17$~kPa.
 
 \paragraph{After the takeoff: the typical flight.} Integration beyond two minutes gathers too much error,
 and what a phone in a cabin can still sense without it is time: how long ago the takeoff roll began and
@@ -273,8 +288,10 @@ by about $1\dg$ a minute.
 \paragraph{Drift, measured at stops.} In a car the heading also drifts slowly with the gyroscope's own
 bias, because the steel around it keeps the magnetometer from holding north: on one drive it turned
 $42\dg$ in $25$~minutes with the phone fixed in place. A stopped car does not turn, so any turning the
-heading shows while the car is stopped and the phone still is drift. The phone measures it as a rate,
-at most $3\dg$ a minute, and takes the accumulated drift off every heading. It counts a still second only
+heading shows while the car is stopped and the phone still is drift. The phone measures it as a rate
+and takes the accumulated drift off every heading. A gyroscope drifts by well under $3\dg$ a minute; a
+faster rate is the heading being pulled by something else, and is not taken off at all rather than taken
+off at $3\dg$ (on one drive with the phone tilted, clipping it piled up $58\dg$). It counts a still second only
 while the magnetic field reads like Earth's here, $30$ to $60~\mu$T: Core Motion's heading leans on the
 magnetometer, and in a disturbed field it is pulled toward the disturbance --- which in a car is not the
 same standing as driving, so a drift measured at stops would be carried wrongly into the drive.
@@ -290,7 +307,10 @@ has shown it is Earth's. Earth's field is fixed in the world; a field from the c
 carried with the phone, turns with them. Over each last minute in which the heading swept at least
 $30\dg$, the phone expresses the field in Core Motion's world frame; if it stayed within $8~\mu$T of its
 mean, at a strength of $25$ to $70~\mu$T, that minute was Earth's field and its average difference is a
-sample of the correction. Until the first such minute, a field between $25$ and $65~\mu$T whose strength
+sample of the correction. The same must hold over the turning seconds alone --- at least three of them,
+each turning $2\dg$ or more, within $12~\mu$T of their own mean --- since a minute that turned in its first
+seconds and then stood still in a disturbed field looks steady only because the standing readings
+agree with each other: one such minute set north $69\dg$ wrong for a whole drive. Until the first such minute, a field between $25$ and $65~\mu$T whose strength
 and dip have been steady for a minute is used instead. Beside a MagSafe charger the phone read up to
 $2{,}600~\mu$T and nothing is taken from it.
 
@@ -370,8 +390,9 @@ method from its raw sensor data:
 \item \textbf{Speed:} the same fingerprint, the same $12$-neighbour average and correction, refusals
 answered by a starting network trained without that recording, and the same rules for stops and a
 phone in the hand, the fade on a pocket motorcycle included. The store holds
-$4{,}000$ examples drawn at random from every \emph{other} journey, so no journey is measured with its
-own GPS in the store. Each example keeps the same chance of being drawn whatever recordings are added,
+$4{,}000$ examples drawn at random from every \emph{other} journey, $2{,}000$ of each kind of trip, so no
+journey is measured with its own GPS in the store; each journey searches the whole store until the
+pocket test, replayed second by second, decides its kind, and its own half after that. Each example keeps the same chance of being drawn whatever recordings are added,
 so a new recording changes the other journeys' stores only by its own examples. On $\nRecN$ recent
 journeys the replay differed from what the app itself had drawn by a median $\nRecDiff\%$.
 \item \textbf{Direction:} the heading reference, drift correction, magnetometer correction (where the
@@ -383,7 +404,9 @@ phone had learned, and Apple's pedometer as logged where it was logged, modelled
 before that.
 \item \textbf{The flights:} the app's own code for the takeoff integration and test, the typical
 flight and the direction in the air, compiled and run on the flights' raw samples and the cabin's
-recorded pressure, against the short flight's GPS and the long flights' ADS-B tracks.
+recorded pressure, against the short flight's GPS and the long flights' ADS-B tracks. The cabin's
+confirmation of the takeoff only delays distance on a real flight, so it leaves the flights' totals as
+they were.
 \item \textbf{The typical flight, held out:} each NASA and OpenSky flight measured by medians built without
 its aircraft (the aircraft split into five groups), from the roll to landing.
 \end{itemize}
@@ -426,7 +449,7 @@ Section~\ref{sec:across} then sets them side by side.
 \centering
 \includegraphics[width=\textwidth]{figures/fig_motorcycle.pdf}
 \caption{Motorcycle, with the phone in a trouser pocket. (a)~Speed per half-minute against GPS; the line is the middle of each $10$~km/h band, the shading the
-middle half, and on the dashed line the two agree. (b)~Distance per journey of at least $1$~km; the shading is
+middle half, and on the dashed line the two agree. (b)~Distance per journey of at least $1$~km, on logarithmic scales; the shading is
 within $20\%$. (c)~How often the direction is within a given angle of GPS. (d)~Direction error through a ride,
 in two-minute bins with at least $300$ graded seconds: the full method against the compass heading with the
 angle from turns alone. (e)~How far each whole route is turned. (f)~How far the drawn position is from GPS as
@@ -518,7 +541,7 @@ direction is within a given angle of GPS, over $\nWalks$ longer walks.}
 \centering
 \includegraphics[width=\textwidth]{figures/fig_car.pdf}
 \caption{Car, with the phone in a pocket, lying flat or in a mount. (a)~Speed per half-minute against GPS; the line is the middle of each $10$~km/h band, the shading the
-middle half, and on the dashed line the two agree. (b)~Distance per journey of at least $1$~km; the shading is
+middle half, and on the dashed line the two agree. (b)~Distance per journey of at least $1$~km, on logarithmic scales; the shading is
 within $20\%$. (c)~How often the direction is within a given angle of GPS. (d)~Direction error through a ride,
 in two-minute bins with at least $300$ graded seconds: the full method against the compass heading with the
 angle from turns alone. (e)~How far each whole route is turned. (f)~How far the drawn position is from GPS as
@@ -738,7 +761,7 @@ both read a car close to GPS up to $60$~km/h and low above it (Figure~\ref{fig:n
 the network came closer to GPS on $\nNetCloser$ journeys and the full store on $\nStoreCloser$, the rest within two points
 of each other (Figure~\ref{fig:network}c). A store still filling up does worse (Table~\ref{tab:network},
 Figure~\ref{fig:network}d--f), above all on a motorcycle, whose rides a store of up to $1{,}000$ examples reads
-an eighth to a fifth short: $\nStoreSixty$~km/h
+$\nStoreSmallMotoLo$ to $\nStoreSmallMotoHi\%$ short; the speed error is $\nStoreSixty$~km/h
 with $60$ examples, $\nStoreThousand$ with $1{,}000$ and $\nStoreFourK$ with $4{,}000$, \nStoreVsNet{} the network's
 $\nNetAll$. The app hands over to the store at $3{,}000$ examples all the same, because the store keeps
 adapting to the phone's own vehicle and pocket, an advantage these recordings, made with the same few
@@ -833,8 +856,9 @@ new turns have been learned.
 replaces a random old one, so a run of car drives leaves it mostly car. On the next two motorcycle
 rides it declined $\nForgetDeclLo$--$\nForgetDeclHi\%$ of the riding seconds, and the app, which then held its last
 answer, read $\nForgetLiveA\%$ and $\nForgetLiveB\%$ of GPS as recorded. The newest version answers those seconds
-with the starting network, which on the same seconds reads $\nForgetNetA\%$ and $\nForgetNetB\%$. The re-run draws its
-store from every journey, so it cannot show the forgetting itself.
+with the starting network, which on the same seconds reads $\nForgetNetA\%$ and $\nForgetNetB\%$, and a car can no
+longer take the motorcycle's half (Section~\ref{sec:speed-method}). The re-run draws each half from every
+journey of its kind, so it cannot show the forgetting itself.
 \item \textbf{A disturbed field at stops.} On one $49$-minute drive the field read about $80~\mu$T at stops
 and $165$ at speed. The stops then measured a drift that did not happen while moving, and the route turned
 further off every minute: with every still second counted, $\nLongDriftEvery\%$ of seconds were within $30\dg$; with no drift
@@ -857,6 +881,10 @@ steady-field seconds did so $\nCleanSampFifteen\%$ of the time (median $\nCleanS
 Over those recordings' graded seconds the turn check moved the share within $30\dg$ from $\nMagPooledF\%$ to
 $\nMagPooledG\%$. Matching the field's strength and dip to Earth's values instead was fragile
 (Table~\ref{tab:failed}).
+\item \textbf{A three-hour drive.} The longest journey, three hours and twenty minutes with $\nThreeHourKm$~km
+that GPS could check, covered $\nThreeHourFastShare\%$ of that distance at $70$~km/h or more, where the speed read
+$\nThreeHourFastRead\%$ of GPS; below $70$~km/h it read $\nThreeHourSlowRead\%$. It counted $\nThreeHourDist\%$ of its distance, and alone
+takes the cars' total from \nThreeHourCarWithout{} to \nCarDistTxt{}; $\nThreeHourW\%$ of its seconds were within $30\dg$.
 \item \textbf{A magnet beside the phone.} By a car's MagSafe charger the phone read up to
 $2{,}600~\mu$T, fifty times Earth's field, yet reported its compass as well calibrated; the iPhone's own
 Compass then drifted $49\dg$ with the gyroscope. The app ignores such a field. On the drive with the

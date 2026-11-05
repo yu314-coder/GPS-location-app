@@ -122,6 +122,9 @@ struct ContentView: View {
         if ProcessInfo.processInfo.environment["START_SCREEN"] == "method" {
             return AnyView(NavigationStack { VelocityMethodView() })
         }
+        if ProcessInfo.processInfo.environment["START_SCREEN"] == "paper" {
+            return AnyView(NavigationStack { PaperView() })
+        }
         #endif
         return AnyView(tabRootView)
     }

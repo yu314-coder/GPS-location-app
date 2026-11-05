@@ -4,7 +4,7 @@ Setting & Value\\
 \midrule
 \multicolumn{2}{l}{\emph{Speed}}\\
 Vibration window for one fingerprint & $5$~s at $50$~Hz, $11$ numbers\\
-Store of the phone's own examples & up to $4{,}000$\\
+Store of the phone's own examples & up to $4{,}000$: a half for pocket-motorcycle trips, a half for all others; a trip reads only its own half once its kind is decided and the half holds $600$ (a smaller pocket-motorcycle half: the network)\\
 Neighbours averaged & $12$\\
 Built-in network & $11 \to 32 \to 32 \to 1$; used until the store holds $3{,}000$, and after that whenever the store declines\\
 Network refuses a fingerprint & farther from all training clusters than $99.5\%$ of training data\\
@@ -27,10 +27,10 @@ Redrawing a ride & when the angle moves $\geq 3^\circ$, at most every $10$~s\\
 A new ride & after $20$~s without riding\\
 A phone taken out of the pocket & angle forgotten after $10$~s in the hand\\
 Drift measured at stops & stopped, turning $< 0.005$~rad/s, hand-rotation $< 0.2$~rad/s\\
-Drift estimate & after $30$ still seconds, $10$-minute memory, at most $3^\circ$/min\\
+Drift estimate & after $30$ still seconds, $10$-minute memory; a rate above $3^\circ$/min is not used\\
 Drift counted only in a field of & $30$--$60~\mu$T\\
 Clean magnetic field & $25$--$65~\mu$T, strength and dip steady to $3$ over $60$~s\\
-North checked by turning & last $60$~s: heading swept $\geq 30^\circ$, field in the world frame within $8~\mu$T (RMS), $25$--$70~\mu$T\\
+North checked by turning & last $60$~s: heading swept $\geq 30^\circ$, field in the world frame within $8~\mu$T (RMS), $25$--$70~\mu$T; over the seconds turning $\geq 2^\circ$ (at least $3$) within $12~\mu$T\\
 Magnetometer correction & any turn-checked minute in the last $20$~min; before the first, $60$ clean seconds; spread $< 15^\circ$\\
 Walking direction window & $4$~s\\
 \bottomrule
