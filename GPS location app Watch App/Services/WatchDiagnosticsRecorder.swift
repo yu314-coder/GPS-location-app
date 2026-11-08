@@ -105,7 +105,8 @@ final class WatchDiagnosticsRecorder {
 
     /// One fix as it arrived ("fix"), or what the GPS distance did with it: the metres it added ("step") or that it
     /// was refused for implying an impossible speed ("refused"). A fix with no "step" or "refused" line was turned away
-    /// earlier, or arrived while Force Velocity ignores GPS.
+    /// earlier, or arrived while Force Velocity ignores GPS. Build 157: on foot, a "step" of 0 may be followed by "held"
+    /// or "replaced" with the metres it would have added (see WorkoutSession.gpsDistanceStep).
     func recordFix(_ location: FlightLocation, source: String, kind: String, step: Double? = nil) {
         guard let workoutStart else { return }
         if fixStream == nil {

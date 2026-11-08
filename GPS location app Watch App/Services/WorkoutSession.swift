@@ -327,6 +327,10 @@ class WorkoutSession: NSObject, ObservableObject {
         activityManager.startActivityUpdates(to: .main) { [weak self] activity in
             guard let self, let activity else { return }
             self.isVehicleByActivity = activity.automotive
+            // The classifier only ends "on foot" here; the watch's own steps start it (as replayed, build 157).
+            if activity.automotive || activity.cycling {
+                self.setOnFootForSpeedless(false, reason: activity.automotive ? "automotive" : "cycling")
+            }
             // Only a CONFIDENT stationary call, so a brief misclassification cannot zero a
             // genuinely moving vehicle.
             self.isStationaryByActivity = activity.stationary && activity.confidence != .low
@@ -902,6 +906,7 @@ class WorkoutSession: NSObject, ObservableObject {
                 guard let self = self else { return }
                 if stepCount > self.nativePedometerStepCount { self.lastNativeStepTime = Date() }
                 self.nativePedometerStepCount = stepCount
+                if self.isActive { self.noteStepCountForOnFoot(stepCount, at: Date()) }
                 self.nativePedometerDistanceMeters = max(0, distance)
                 guard self.isActive else { return }
                 self.currentMetrics.stepsCount = stepCount > 0 ? Double(stepCount) : nil
@@ -1051,6 +1056,7 @@ class WorkoutSession: NSObject, ObservableObject {
             flight = Flight(startDate: startDate)
             flight.workoutType = workoutType.rawValue
             gpsDistanceAnchor = nil; speedlessFixes.removeAll(); lastRealFixHadSatelliteSpeed = false
+            onFootForSpeedless = false; recentStepCounts = []; fastEngineTicksWatch = 0; gpsAnchorIsProvisional = false
             isActive = true
 
             // Reset location filtering statistics
@@ -1750,6 +1756,7 @@ class WorkoutSession: NSObject, ObservableObject {
 
     private func checkLocationArrival() {
         guard isActive && !isPaused else { return }
+        connectivityManager.retryIPhoneGPSRequestIfUnanswered()
 
         let currentCount = flight.locations.count
         let newLocations = currentCount - lastLocationCount
@@ -2644,6 +2651,7 @@ class WorkoutSession: NSObject, ObservableObject {
     /// only; no distance changes.
     private var loggedTotalDistance: Double?
     private func recordGPSRow(now: Date) {
+        fastEngineTicksWatch = 0
         let r = engineReadout
         let gpsFresh = now.timeIntervalSince(lastLocationTime) <= 5 && watchDiagnostics.latestGPSSpeed >= 0
         let total = currentMetrics.totalDistance
@@ -3242,6 +3250,16 @@ class WorkoutSession: NSObject, ObservableObject {
         currentMetrics.currentSpeed = motionFallbackSpeed
         currentMetrics.smoothedSpeed = motionFallbackSpeed
 
+        // Speed engines that keep reading vehicle speed end "on foot" (build 157); a hand for a few seconds does not.
+        let engineSource = accelSource.split(separator: "(").first.map(String.init) ?? accelSource
+        if ["NET", "STORE", "iPhone-DR", "DR"].contains(engineSource), motionFallbackSpeed > 5.5 {
+            fastEngineTicksWatch += 1
+            if fastEngineTicksWatch >= 10 {
+                setOnFootForSpeedless(false, reason: String(format: "%@ %.1f m/s for 10 ticks", engineSource, motionFallbackSpeed))
+            }
+        } else {
+            fastEngineTicksWatch = 0
+        }
         watchDiagnostics.record(.init(
             t: now,
             source: accelSource,
@@ -3705,13 +3723,27 @@ class WorkoutSession: NSObject, ObservableObject {
     private var speedlessFixes: [(lat: Double, lon: Double)] = []
     private let SPEEDLESS_MAX_SPEED = 30.0
 
-    private func setGPSDistanceAnchor(_ location: FlightLocation) {
+    // ON FOOT, A WI-FI POSITION MAY NOT OUTRUN A WALKER (build 157, the iPhone's GPSDistanceStepper rule). In a shop on
+    // 2026-11-07 the watch's own Wi-Fi position 178 m off ended a gap, and the next (iPhone-relayed, correct) position
+    // stepped the 178 m back; with a 74 m one before it, +293 m while standing still. On foot a fix without a satellite
+    // speed may add distance only at up to ON_FOOT_MAX_SPEED; a faster one stays on the route, adds nothing and leaves
+    // the anchor; an anchor laid on such a fix by a gap end is provisional, and a too-fast next fix replaces it.
+    // Replayed on the 9 watch fix logs (the replay reproduces every logged step): only walks and the shop change.
+    private let ON_FOOT_MAX_SPEED = 4.0
+    private var gpsAnchorIsProvisional = false
+    /// What gpsDistanceStep did with the last fix: nil = counted as usual.
+    private var lastHeldStep: (distance: Double, replaced: Bool)?
+
+    private func setGPSDistanceAnchor(_ location: FlightLocation, provisional: Bool = false) {
         gpsDistanceAnchor = (location.timestamp, location.latitude, location.longitude, location.speed)
         speedlessFixes.removeAll()
+        gpsAnchorIsProvisional = provisional
     }
 
     /// The distance this fix adds, or nil when a fix without a satellite speed implies an impossible one.
     private func gpsDistanceStep(for location: FlightLocation) -> Double? {
+        lastHeldStep = nil
+        let onFoot = onFootForSpeedless
         var lat = location.latitude, lon = location.longitude
         if location.speed >= 0 {
             speedlessFixes.removeAll()
@@ -3723,6 +3755,7 @@ class WorkoutSession: NSObject, ObservableObject {
         }
         guard let anchor = gpsDistanceAnchor else {
             gpsDistanceAnchor = (location.timestamp, lat, lon, location.speed)
+            gpsAnchorIsProvisional = onFoot && location.speed < 0
             return 0
         }
         let d = CLLocation(latitude: anchor.lat, longitude: anchor.lon).distance(from: CLLocation(latitude: lat, longitude: lon))
@@ -3731,11 +3764,49 @@ class WorkoutSession: NSObject, ObservableObject {
         if location.speed >= 0 {
             let v = anchor.speed >= 0 ? (location.speed + anchor.speed) / 2 : location.speed
             add = min(d, v * dt * 1.05 + 0.3)
-        } else if dt > 0, d / dt > SPEEDLESS_MAX_SPEED {
-            return nil
+            gpsAnchorIsProvisional = false
+        } else {
+            let provisionalOnFoot = onFoot && gpsAnchorIsProvisional
+            if dt > 0, d / dt > SPEEDLESS_MAX_SPEED, !provisionalOnFoot {
+                return nil
+            }
+            if onFoot, dt <= 0 || d / dt > ON_FOOT_MAX_SPEED {
+                if gpsAnchorIsProvisional {
+                    gpsDistanceAnchor = (location.timestamp, lat, lon, location.speed)
+                    lastHeldStep = (d, true)
+                } else {
+                    lastHeldStep = (d, false)
+                }
+                return 0
+            }
+            gpsAnchorIsProvisional = false
         }
         gpsDistanceAnchor = (location.timestamp, lat, lon, location.speed)
         return add
+    }
+
+    /// ON FOOT, FOR WI-FI POSITIONS (build 157). Set by the watch's own pedometer - ON_FOOT_STEPS steps within 10 s;
+    /// cleared by the activity classifier saying automotive or cycling, by a satellite fix faster
+    /// than 4.2 m/s, or by the speed engines reading over 5.5 m/s on 10 dead-reckoning ticks in a row. The vehicle
+    /// context does not clear it: in the 2026-11-07 shop the engines read a still hand as 19-27 km/h for 3 s and
+    /// switched the vehicle context on. Only the GPS distance reads it.
+    private var onFootForSpeedless = false
+    private var recentStepCounts: [(time: Date, count: Int)] = []
+    private var fastEngineTicksWatch = 0
+    private let ON_FOOT_STEPS = 8
+    private func setOnFootForSpeedless(_ value: Bool, reason: String) {
+        guard value != onFootForSpeedless else { return }
+        onFootForSpeedless = value
+        if !value { fastEngineTicksWatch = 0 }
+        print("⌚ 🚶 On foot for Wi-Fi positions: \(value ? "on" : "off") (\(reason))")
+    }
+    private func noteStepCountForOnFoot(_ count: Int, at now: Date) {
+        recentStepCounts.append((now, count))
+        recentStepCounts.removeAll { now.timeIntervalSince($0.time) > 15 }
+        if let then = recentStepCounts.first(where: { now.timeIntervalSince($0.time) <= 10 }),
+           count - then.count >= ON_FOOT_STEPS {
+            setOnFootForSpeedless(true, reason: "\(count - then.count) steps in 10 s")
+        }
     }
 
     private func fixContradictsItself(_ location: FlightLocation, previous: FlightLocation,
@@ -3784,6 +3855,9 @@ class WorkoutSession: NSObject, ObservableObject {
         watchDiagnostics.latestGPSLongitude = location.longitude
         watchDiagnostics.recordFix(location, source: source == .watchGPS ? "watch" : (source == .iphoneAssist ? "iphone-assist" : "iphone-fallback"),
                                    kind: "fix")
+        if onFootForSpeedless, location.speed > 4.2, location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 35 {
+            setOnFootForSpeedless(false, reason: String(format: "satellite %.1f m/s", location.speed))
+        }
 
         if forceMotionFallback {
             // ONE RECENT FIX AS THE ORIGIN, exactly as the iPhone does. Dead reckoning gives
@@ -3981,7 +4055,8 @@ class WorkoutSession: NSObject, ObservableObject {
             // GPS at both ends rather than left drifted.
             rubberSheetEstimatedGap(onto: location)
             flight.locations.append(location)
-            setGPSDistanceAnchor(location)
+            // On foot, a gap that ends on a Wi-Fi position leaves a provisional anchor (build 157).
+            setGPSDistanceAnchor(location, provisional: onFootForSpeedless && location.speed < 0)
             lastLocationTime = Date()
             // Real fix is back → clear the dead-reckoning status so the UI shows GPS OK.
             switch source {
@@ -4144,6 +4219,13 @@ class WorkoutSession: NSObject, ObservableObject {
         }
 
         watchDiagnostics.recordFix(location, source: sourceLabel, kind: "step", step: gpsStep)
+        // On foot, a Wi-Fi position faster than a walker stays on the route and adds nothing (build 157). Logged after
+        // its step row, so a fix stays next to its step in the fix log.
+        var location = location
+        if let held = lastHeldStep {
+            location.distanceHeld = held.replaced ? "replaced" : "held"
+            watchDiagnostics.recordFix(location, source: sourceLabel, kind: held.replaced ? "replaced" : "held", step: held.distance)
+        }
         lastRealFixHadSatelliteSpeed = location.speed >= 0
 
         // Add to flight (after GPS filtering passed)
@@ -4481,6 +4563,7 @@ class WorkoutSession: NSObject, ObservableObject {
         flight = Flight()
         currentMetrics = FlightMetrics()
         gpsDistanceAnchor = nil; speedlessFixes.removeAll(); lastRealFixHadSatelliteSpeed = false
+        onFootForSpeedless = false; recentStepCounts = []; fastEngineTicksWatch = 0; gpsAnchorIsProvisional = false
         locationManager.reset()
         pedometerManager.reset()
         isActive = false

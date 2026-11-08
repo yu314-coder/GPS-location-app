@@ -23,6 +23,11 @@ struct FlightLocation: Identifiable, Codable {
     var isFiltered: Bool
     var isValid: Bool
     var isEstimated: Bool
+    /// What the GPS distance did with this fix while the person was on foot (build 157, see GPSDistanceStepper):
+    /// nil counted as usual; "held" added nothing and left the distance anchor where it was (a Wi-Fi position faster
+    /// than a walker); "replaced" added nothing and became the anchor in place of a gap end's far position. Saved so a
+    /// recalculation of the route (Resend to Health, Recalculate) makes the same decisions the workout made.
+    var distanceHeld: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -40,6 +45,7 @@ struct FlightLocation: Identifiable, Codable {
         case isFiltered
         case isValid
         case isEstimated
+        case distanceHeld
     }
 
     init(from location: CLLocation, isFiltered: Bool = false, isValid: Bool = true, satelliteCount: Int? = nil, signalStrength: Double? = nil, pressure: Double? = nil, isEstimated: Bool = false) {
@@ -77,6 +83,7 @@ struct FlightLocation: Identifiable, Codable {
         isFiltered = try container.decodeIfPresent(Bool.self, forKey: .isFiltered) ?? false
         isValid = try container.decodeIfPresent(Bool.self, forKey: .isValid) ?? true
         isEstimated = try container.decodeIfPresent(Bool.self, forKey: .isEstimated) ?? false
+        distanceHeld = try container.decodeIfPresent(String.self, forKey: .distanceHeld)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -96,6 +103,7 @@ struct FlightLocation: Identifiable, Codable {
         try container.encode(isFiltered, forKey: .isFiltered)
         try container.encode(isValid, forKey: .isValid)
         try container.encode(isEstimated, forKey: .isEstimated)
+        try container.encodeIfPresent(distanceHeld, forKey: .distanceHeld)
     }
 
     // Convert back to CLLocation
@@ -139,10 +147,12 @@ struct FlightLocation: Identifiable, Codable {
         let newLat = latitude + north / 111_320.0
         let cosLat = Swift.max(cos(latitude * .pi / 180), 0.000001)
         let newLon = longitude + east / (111_320.0 * cosLat)
-        return FlightLocation(
+        var moved = FlightLocation(
             id: id, timestamp: timestamp, latitude: newLat, longitude: newLon, altitude: altitude,
             horizontalAccuracy: horizontalAccuracy, verticalAccuracy: verticalAccuracy,
             speed: speed, course: course, pressure: pressure, satelliteCount: satelliteCount,
             signalStrength: signalStrength, isFiltered: isFiltered, isValid: isValid, isEstimated: isEstimated)
+        moved.distanceHeld = distanceHeld
+        return moved
     }
 }

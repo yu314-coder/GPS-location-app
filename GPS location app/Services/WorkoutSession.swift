@@ -544,6 +544,23 @@ class WorkoutSession: ObservableObject {
     let sessionDiagnostics = SessionDiagnosticsRecorder()
     private var isDeviceStationaryByActivity = false
     private var activityIsAutomotive = false
+    /// ON FOOT, FOR WI-FI POSITIONS (build 157; see GPSDistanceStepper). Set when the activity classifier says walking or
+    /// running (not at low confidence); cleared by automotive or cycling, by a current satellite fix faster than
+    /// ON_FOOT_CLEAR_SAT_SPEED, or by the speed model reading over ON_FOOT_CLEAR_ENGINE_SPEED on
+    /// ON_FOOT_CLEAR_ENGINE_TICKS dead-reckoning ticks in a row. It deliberately survives the vehicle context: in the
+    /// 2026-11-07 shop the phone still held a vehicle context (evidence 110-240 s old) and the model read a hand's
+    /// movement as up to 10 km/h - neither may switch it off. Only the GPS distance reads it.
+    private var onFootForSpeedless = false
+    private var fastEngineTicks = 0
+    private let ON_FOOT_CLEAR_SAT_SPEED = 4.2
+    private let ON_FOOT_CLEAR_ENGINE_SPEED = 5.5
+    private let ON_FOOT_CLEAR_ENGINE_TICKS = 10
+    private func setOnFootForSpeedless(_ value: Bool, reason: String) {
+        guard value != onFootForSpeedless else { return }
+        onFootForSpeedless = value
+        if !value { fastEngineTicks = 0 }
+        sessionDiagnostics.recordEvent("on_foot", detail: (value ? "on: " : "off: ") + reason)
+    }
     private var fallbackPedometerDistance: Double?      // cumulative metres since fallback start
     private var fallbackPedometerPace: Double?          // seconds per metre (for smooth speed)
     private var fallbackPedometerSpeed: Double = 0      // m/s, smoothed from pedometer updates
@@ -2924,6 +2941,7 @@ class WorkoutSession: ObservableObject {
         flight = Flight(startDate: startDate)
         flight.workoutType = workoutType.rawValue
         gpsDistance.reset(); lastRealFixHadSatelliteSpeed = false
+        onFootForSpeedless = false; fastEngineTicks = 0
         pocketRideRotation = []; pocketRidePitch = []; pocketRideAbsRoll = []; learnedSpeed.tripKind = nil
         isActive = true
         lastRealLocationTime = startDate
@@ -5694,6 +5712,17 @@ class WorkoutSession: ObservableObject {
         } else {
             lastFlightAnswers = (nil, nil, nil)
         }
+        // A speed model that keeps reading vehicle speed ends "on foot" (build 157); a few seconds of a hand or a lift
+        // do not.
+        if estimatedFallbackSpeed > ON_FOOT_CLEAR_ENGINE_SPEED {
+            fastEngineTicks += 1
+            if fastEngineTicks >= ON_FOOT_CLEAR_ENGINE_TICKS {
+                setOnFootForSpeedless(false, reason: String(format: "speed model %.1f m/s for %d ticks",
+                                                            estimatedFallbackSpeed, fastEngineTicks))
+            }
+        } else {
+            fastEngineTicks = 0
+        }
         sessionDiagnostics.record(.init(
             t: now,
             source: sourceTag,
@@ -6103,6 +6132,11 @@ class WorkoutSession: ObservableObject {
                     self.lastVehicleEvidenceTime = Date()
                     self.lastAutomotiveClassificationTime = Date()
                 }
+                if activity.automotive || activity.cycling {
+                    self.setOnFootForSpeedless(false, reason: activity.automotive ? "automotive" : "cycling")
+                } else if activity.walking || activity.running, activity.confidence != .low {
+                    self.setOnFootForSpeedless(true, reason: activity.running ? "running" : "walking")
+                }
                 let label = Self.activityLabel(activity)
                 if label != self.lastLoggedActivity {
                     self.lastLoggedActivity = label
@@ -6131,6 +6165,7 @@ class WorkoutSession: ObservableObject {
         guard isUsingEstimatedLocationFallback else { return }
         print("📍 Estimated-location fallback ended: \(reason)")
         sessionDiagnostics.recordEvent("gap_end", detail: reason)
+        fastEngineTicks = 0
         lastLoggedActivity = nil
         isUsingEstimatedLocationFallback = false
         lastEstimatedFallbackTick = nil
@@ -6323,7 +6358,8 @@ class WorkoutSession: ObservableObject {
         // biggest accuracy win when GPS is available intermittently.
         rubberSheetEstimatedGap(onto: location)
         flight.locations.append(location); gpsFixesInRoute += 1
-        gpsDistance.reset(to: location)
+        // On foot, a gap that ends on a Wi-Fi position leaves a provisional anchor (build 157).
+        gpsDistance.reset(to: location, provisional: onFootForSpeedless && location.speed < 0)
         lastRealLocationTime = Date()
         NotificationCenter.default.post(
             name: .workoutLocationUpdated,
@@ -6766,6 +6802,10 @@ class WorkoutSession: ObservableObject {
             print("🚫 INVALID GPS (no satellite fix) - REJECTED")
             return
         }
+        if onFootForSpeedless, location.speed > ON_FOOT_CLEAR_SAT_SPEED,
+           Date().timeIntervalSince(location.timestamp) <= 5 {
+            setOnFootForSpeedless(false, reason: String(format: "satellite %.1f m/s", location.speed))
+        }
 
         // A slow satellite fix withdraws an unconfirmed takeoff (build 154, the watch's rule): a plane is past
         // 100 km/h 20 s into its roll. GPS mode only - Force Velocity decides nothing from GPS.
@@ -6856,9 +6896,16 @@ class WorkoutSession: ObservableObject {
 
         // The distance this fix adds, following its satellite speed (build 137); a fix without one that implies an
         // impossible speed is refused here, before it can bend the route.
-        guard let gpsStep = gpsDistance.step(location) else {
+        guard let gpsStep = gpsDistance.step(location, onFoot: onFootForSpeedless) else {
             print("🚫 Fix without satellite speed implies over \(Int(GPSDistanceStepper.speedlessMaxSpeed * 3.6)) km/h - REJECTED")
             return
+        }
+        // On foot, a Wi-Fi position faster than a walker stays on the route and adds nothing (build 157).
+        var location = location
+        if let held = gpsDistance.lastHeld {
+            location.distanceHeld = held.replaced ? "replaced" : "held"
+            sessionDiagnostics.recordEvent("wifi_step_held",
+                                           detail: String(format: "%@ %.0f m", held.replaced ? "replaced" : "held", held.distance))
         }
 
         lastRealFixHadSatelliteSpeed = location.speed >= 0
@@ -7128,6 +7175,7 @@ class WorkoutSession: ObservableObject {
         flight = Flight()
         currentMetrics = FlightMetrics()
         gpsDistance.reset(); lastRealFixHadSatelliteSpeed = false
+        onFootForSpeedless = false; fastEngineTicks = 0
         pocketRideRotation = []; pocketRidePitch = []; pocketRideAbsRoll = []; learnedSpeed.tripKind = nil
         locationManager.reset()
         endTransitionBackgroundTaskIfNeeded()

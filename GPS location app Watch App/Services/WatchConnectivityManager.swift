@@ -284,12 +284,37 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             return
         }
 
-        guard let session = session else {
+        guard session != nil else {
             print("⌚ ⚠️ WCSession unavailable for GPS fallback")
             return
         }
 
         isIPhoneGPSRequestPending = true
+        iPhoneGPSRetryInterval = 20
+        sendIPhoneGPSRequest()
+    }
+
+    // AN UNANSWERED REQUEST IS SENT AGAIN (build 157). The request goes once, at workout start: as a message only if the
+    // iPhone looks reachable at that moment, otherwise as the application context alone - which the watch's own status
+    // context replaces about once a second, so it can be lost. The request then stayed "pending" for the whole workout,
+    // and the GPS-failure path asks only when nothing is pending. On 2026-11-07 07:16 (and on four earlier watch logs) no
+    // iPhone fix arrived in 38 minutes although the iPhone's speed relay did. Now, while a request is pending and no
+    // iPhone fix has come, it is sent again after 20 s, then 40, 80 and every 120 s. The iPhone ignores a repeat
+    // ("already active").
+    private var lastIPhoneGPSRequestAt: Date?
+    private var iPhoneGPSRetryInterval: TimeInterval = 20
+
+    func retryIPhoneGPSRequestIfUnanswered() {
+        guard isIPhoneGPSRequestPending, !isUsingIPhoneGPS, let last = lastIPhoneGPSRequestAt,
+              Date().timeIntervalSince(last) >= iPhoneGPSRetryInterval else { return }
+        print("⌚ 🔁 No iPhone fix \(Int(Date().timeIntervalSince(last))) s after the request - asking again")
+        iPhoneGPSRetryInterval = min(iPhoneGPSRetryInterval * 2, 120)
+        sendIPhoneGPSRequest()
+    }
+
+    private func sendIPhoneGPSRequest() {
+        guard let session = session else { return }
+        lastIPhoneGPSRequestAt = Date()
         print("⌚ 🛰️ Requesting iPhone location fallback")
         let command = ["action": "requestGPS"]
 

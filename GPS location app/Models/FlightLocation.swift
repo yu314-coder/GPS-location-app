@@ -44,6 +44,11 @@ struct FlightLocation: Identifiable, Codable, Hashable {
     var speedAccuracy: Double? = nil
     var verticalSpeed: Double?             // m/s (barometric climb rate)
     var relativeAltitude: Double?          // m, barometric altitude change since start
+    /// What the GPS distance did with this fix while the person was on foot (build 157, see GPSDistanceStepper):
+    /// nil counted as usual; "held" added nothing and left the distance anchor where it was (a Wi-Fi position faster
+    /// than a walker); "replaced" added nothing and became the anchor in place of a gap end's far position. Saved so a
+    /// recalculation of the route (Resend to Health, Recalculate) makes the same decisions the workout made.
+    var distanceHeld: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -73,6 +78,7 @@ struct FlightLocation: Identifiable, Codable, Hashable {
         case rotationRate
         case verticalSpeed
         case relativeAltitude
+        case distanceHeld
     }
 
     init(from location: CLLocation, isFiltered: Bool = false, isValid: Bool = true, satelliteCount: Int? = nil, signalStrength: Double? = nil, pressure: Double? = nil, isEstimated: Bool = false) {
@@ -135,6 +141,7 @@ struct FlightLocation: Identifiable, Codable, Hashable {
         rotationRate = try container.decodeIfPresent(Double.self, forKey: .rotationRate)
         verticalSpeed = try container.decodeIfPresent(Double.self, forKey: .verticalSpeed)
         relativeAltitude = try container.decodeIfPresent(Double.self, forKey: .relativeAltitude)
+        distanceHeld = try container.decodeIfPresent(String.self, forKey: .distanceHeld)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -166,6 +173,7 @@ struct FlightLocation: Identifiable, Codable, Hashable {
         try container.encodeIfPresent(rotationRate, forKey: .rotationRate)
         try container.encodeIfPresent(verticalSpeed, forKey: .verticalSpeed)
         try container.encodeIfPresent(relativeAltitude, forKey: .relativeAltitude)
+        try container.encodeIfPresent(distanceHeld, forKey: .distanceHeld)
     }
 
     // Convert back to CLLocation
@@ -258,6 +266,7 @@ struct FlightLocation: Identifiable, Codable, Hashable {
         moved.speedAccuracy = speedAccuracy
         moved.verticalSpeed = verticalSpeed
         moved.relativeAltitude = relativeAltitude
+        moved.distanceHeld = distanceHeld
         return moved
     }
 }
