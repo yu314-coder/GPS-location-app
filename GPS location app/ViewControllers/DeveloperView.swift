@@ -14,6 +14,8 @@ struct DeveloperView: View {
     @State private var shareItems: [Any] = []
     @State private var showingShare = false
     @State private var showingDeleteConfirm = false
+    @State private var showingDeleteOriginals = false
+    @ObservedObject private var compactor = LogCompactor.shared
     @State private var modelSummary = ""
     // DEV ONLY - remove before the final release (the flight-map download below).
     @StateObject private var tiles = OfflineTileCache.shared
@@ -95,6 +97,21 @@ struct DeveloperView: View {
             }
             .onAppear { tileBytes = tiles.cacheSizeBytes() }
             .onChange(of: tiles.isDownloading) { _, busy in if !busy { tileBytes = tiles.cacheSizeBytes() } }
+
+            // Build 159: the originals the compression kept for the owner to check (LogCompactor.keepOriginals).
+            if compactor.originalsKept > 0 {
+                Section {
+                    Button(role: .destructive) { showingDeleteOriginals = true } label: {
+                        SettingsRow(symbol: "trash", tint: .red, title: "Delete originals",
+                                    subtitle: "\(LogCompactor.megabytes(compactor.originalsKept)) in Files → Before compression")
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("Compressed data")
+                } footer: {
+                    Text("Every log and saved route here was compressed, read back byte for byte and opened the way the app opens it. The uncompressed originals are kept until you delete them.")
+                }
+            }
 
             // Build 127: a workout from another phone's logs, a flight in it drawn again with this build.
             Section {
@@ -183,8 +200,14 @@ struct DeveloperView: View {
         }
         .navigationTitle("Developer")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear(perform: reload)
+        .onAppear { reload(); compactor.refreshOriginals() }
         .sheet(isPresented: $showingShare) { ShareSheet(items: shareItems) }
+        .alert("Delete the originals?", isPresented: $showingDeleteOriginals) {
+            Button("Delete", role: .destructive) { compactor.deleteOriginals() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Frees \(LogCompactor.megabytes(compactor.originalsKept)). The compressed copies stay and hold the same data.")
+        }
         .alert("Delete all session logs?", isPresented: $showingDeleteConfirm) {
             Button("Delete", role: .destructive) {
                 SessionDiagnosticsRecorder.deleteAllSavedLogs()

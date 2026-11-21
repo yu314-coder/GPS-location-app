@@ -172,7 +172,12 @@ enum LogCompression {
         } catch {
             try? output.close(); try? fm.removeItem(at: destination); throw error
         }
-        // Verify.
+        try verifyCompressed(destination, against: source)
+    }
+
+    /// Read `compressed` back and compare it with `source` byte for byte; throws (removing nothing) if they differ.
+    static func verifyCompressed(_ destination: URL, against source: URL) throws {
+        let fm = FileManager.default
         let plain = try FileHandle(forReadingFrom: source)
         defer { try? plain.close() }
         let reader = try ChunkReader(destination, compressed: true)

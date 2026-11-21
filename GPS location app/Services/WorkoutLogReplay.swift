@@ -142,8 +142,8 @@ enum WorkoutLogReplay {
 
     /// Lines of a text file, read a megabyte at a time (a four-hour raw log is about 200 MB); a .csv.gz is
     /// decompressed as it is read (build 158).
-    static func forEachLine(_ url: URL, _ body: (Substring) throws -> Bool) throws {
-        let reader = try LogCompression.ChunkReader(url)
+    static func forEachLine(_ url: URL, compressed: Bool? = nil, _ body: (Substring) throws -> Bool) throws {
+        let reader = try LogCompression.ChunkReader(url, compressed: compressed)
         var carry = Data()
         while true {
             guard let chunk = try reader.next(), !chunk.isEmpty else { break }

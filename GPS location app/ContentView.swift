@@ -114,11 +114,18 @@ struct ContentView: View {
         }
         .background(
             Color.clear.alert(item: $logCompactor.outcome) { r in
-                Alert(title: Text(r.stopped ? "Compression paused" : "Data compressed"),
-                      message: Text("\(r.files) files: \(LogCompactor.megabytes(r.before)) → \(LogCompactor.megabytes(r.after))."
-                                    + (r.failed > 0 ? " \(r.failed) left as they were (could not be checked)." : "")
-                                    + (r.stopped ? " The rest will be offered at a later launch (a workout started, or storage is short)." : "")),
-                      dismissButton: .default(Text("OK")))
+                let message = Text("\(r.files) files: \(LogCompactor.megabytes(r.before)) → \(LogCompactor.megabytes(r.after)), each read back and opened by the app."
+                                   + (r.failed > 0 ? " \(r.failed) left as they were (could not be checked)." : "")
+                                   + (r.stopped ? " The rest will be offered at a later launch (a workout started, or storage is short)." : "")
+                                   + (LogCompactor.keepOriginals && logCompactor.originalsKept > 0
+                                      ? " The originals (\(LogCompactor.megabytes(logCompactor.originalsKept))) are kept in Files → Before compression until you delete them." : ""))
+                if LogCompactor.keepOriginals && logCompactor.originalsKept > 0 {
+                    return Alert(title: Text(r.stopped ? "Compression paused" : "Data compressed"), message: message,
+                                 primaryButton: .destructive(Text("Delete originals")) { logCompactor.deleteOriginals() },
+                                 secondaryButton: .cancel(Text("Keep for now")))
+                }
+                return Alert(title: Text(r.stopped ? "Compression paused" : "Data compressed"), message: message,
+                             dismissButton: .default(Text("OK")))
             }
         )
         .onAppear {

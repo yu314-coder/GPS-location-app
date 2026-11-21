@@ -21,8 +21,41 @@ final class LogCompactor: ObservableObject {
     @Published var running = false
     @Published var progress: (done: Int, total: Int) = (0, 0)
     @Published var outcome: Outcome?
+    /// Bytes of originals waiting in Before compression for the owner to delete (keepOriginals).
+    @Published var originalsKept: Int64 = 0
+
+    func refreshOriginals() {
+        Task.detached(priority: .utility) {
+            let b = Self.originalsBytes()
+            await MainActor.run { self.originalsKept = b }
+        }
+    }
+
+    /// The owner's manual step: remove the kept originals (each one's compressed copy already passed the checks).
+    func deleteOriginals() {
+        Task.detached(priority: .utility) {
+            try? FileManager.default.removeItem(at: Self.originalsDirectory)
+            await MainActor.run { self.originalsKept = 0 }
+        }
+    }
+
+    nonisolated static func originalsBytes() -> Int64 {
+        guard let e = FileManager.default.enumerator(at: originalsDirectory, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let u as URL in e { total += Int64((try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        return total
+    }
 
     private static let askedKey = "logCompressionDeclinedAt"
+
+    /// KEEP THE ORIGINALS WHILE THE OWNER TESTS (owner, 2026-11-21): each converted original is moved, not deleted, into
+    /// Documents/Before compression (visible in Files), and removed only when the owner taps "Delete originals" (the
+    /// result alert or Settings → Developer). Turn off for the public release, which swaps directly.
+    static let keepOriginals = true
+    nonisolated static var originalsDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Before compression", isDirectory: true)
+    }
     private static let askAgainAfter: TimeInterval = 7 * 24 * 3600
 
     private var logDirectory: URL { SessionDiagnosticsRecorder.velocityLogDirectory }
@@ -103,7 +136,9 @@ final class LogCompactor: ObservableObject {
                 await MainActor.run { self.progress = (n, files.count) }
             }
             let result = Outcome(files: done, before: before, after: after, failed: failed, stopped: stopped)
+            let kept = Self.originalsBytes()
             await MainActor.run {
+                self.originalsKept = kept
                 self.running = false
                 self.outcome = result
                 if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
@@ -125,13 +160,19 @@ final class LogCompactor: ObservableObject {
         let dir = url.deletingLastPathComponent()
         let final = dir.appendingPathComponent(url.lastPathComponent + ".gz")
         let temp = dir.appendingPathComponent("." + url.lastPathComponent + ".gz.partial")
-        guard !fm.fileExists(atPath: final.path) else { return .failed }
         do {
-            let modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            try LogCompression.compressFile(url, to: temp)
-            if let modified { try? fm.setAttributes([.modificationDate: modified], ofItemAtPath: temp.path) }
-            try fm.moveItem(at: temp, to: final)
-            try fm.removeItem(at: url)
+            if fm.fileExists(atPath: final.path) {
+                // A conversion ended between its rename and putting the original away: check the copy, then finish.
+                try LogCompression.verifyCompressed(final, against: url)
+                try appWorks(final, original: url)
+            } else {
+                let modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                try LogCompression.compressFile(url, to: temp)          // byte for byte against the original
+                try appWorks(temp, original: url)                        // and read the way the app reads it
+                if let modified { try? fm.setAttributes([.modificationDate: modified], ofItemAtPath: temp.path) }
+                try fm.moveItem(at: temp, to: final)
+            }
+            try putAwayOriginal(url)
             let after = Int64((try? final.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
             return .done(size, after)
         } catch {
@@ -141,10 +182,55 @@ final class LogCompactor: ObservableObject {
         }
     }
 
+    /// CHECK THAT THE APP CAN USE THE COMPRESSED FILE, before the original goes anywhere. A log is read through the
+    /// reader Re-run and Import use (WorkoutLogReplay.forEachLine) and must give exactly the original's lines. A route
+    /// is decoded as the workout screen decodes it (FlightDataStore: gunzip, JSONDecoder, ISO 8601 dates). A route over
+    /// 64 MB is not decoded here - that can take a gigabyte of memory, too much for a background task - but it has
+    /// already been compared byte for byte with the original the app opened before, and must still open and close as
+    /// JSON.
+    nonisolated private static func appWorks(_ compressed: URL, original: URL) throws {
+        if original.pathExtension == "json" {
+            let size = (try? original.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if size <= 64_000_000 {
+                let data = try LogCompression.gunzipIfNeeded(Data(contentsOf: compressed))
+                let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+                _ = try decoder.decode(Flight.self, from: data)
+            } else {
+                let reader = try LogCompression.ChunkReader(compressed, compressed: true)
+                var first: UInt8?, last: UInt8?
+                while let c = try reader.next() {
+                    if first == nil { first = c.first(where: { $0 > 0x20 }) }
+                    if let l = c.last(where: { $0 > 0x20 }) { last = l }
+                }
+                guard first == UInt8(ascii: "{") || first == UInt8(ascii: "["),
+                      last == UInt8(ascii: "}") || last == UInt8(ascii: "]") else { throw CocoaError(.fileReadCorruptFile) }
+            }
+        } else {
+            var lines = 0
+            try WorkoutLogReplay.forEachLine(compressed, compressed: true) { _ in lines += 1; return true }
+            var originalLines = 0
+            try WorkoutLogReplay.forEachLine(original) { _ in originalLines += 1; return true }
+            guard lines == originalLines, lines > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        }
+    }
+
+    /// The checked original: kept in Before compression while the owner tests, deleted in the public release.
+    nonisolated private static func putAwayOriginal(_ url: URL) throws {
+        let fm = FileManager.default
+        guard keepOriginals else { try fm.removeItem(at: url); return }
+        var target = originalsDirectory
+        if url.deletingLastPathComponent().lastPathComponent == "VelocityLogs" { target.appendPathComponent("VelocityLogs") }
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        let dest = target.appendingPathComponent(url.lastPathComponent)
+        try? fm.removeItem(at: dest)
+        try fm.moveItem(at: url, to: dest)
+    }
+
     /// Temporary copies left by a conversion the system ended.
     nonisolated private static func removeLeftovers(in dir: URL) {
         let fm = FileManager.default
-        for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix(".") && name.hasSuffix(".gz.partial") {
+        for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        where name.hasPrefix(".") && name.hasSuffix(".gz.partial") {
             try? fm.removeItem(at: dir.appendingPathComponent(name))
         }
     }
