@@ -93,8 +93,9 @@ struct DeveloperView: View {
             } footer: {
                 Text("About 850 map tiles along the route, about 150 km either side, plus both airports. Download on Wi-Fi before the flight; in the air the live map draws from them. Zoomed in past them at sea, the map enlarges the nearest stored tile.")
             }
-            .onAppear { tileBytes = tiles.cacheSizeBytes() }
-            .onChange(of: tiles.isDownloading) { _, busy in if !busy { tileBytes = tiles.cacheSizeBytes() } }
+            // Summed off the main thread (build 160): a folder of map tiles listed at every appear.
+            .onAppear { refreshTileBytes() }
+            .onChange(of: tiles.isDownloading) { _, busy in if !busy { refreshTileBytes() } }
 
             // Build 127: a workout from another phone's logs, a flight in it drawn again with this build.
             Section {
@@ -207,8 +208,21 @@ struct DeveloperView: View {
         }
     }
 
+    /// The tile folder's size, read in the background (build 160).
+    private func refreshTileBytes() {
+        let tiles = self.tiles
+        Task {
+            let bytes = await Task.detached(priority: .userInitiated) { tiles.cacheSizeBytes() }.value
+            tileBytes = bytes
+        }
+    }
+
     private func reload() {
-        logs = SessionDiagnosticsRecorder.allSavedLogs()
+        // The ~750 logs are listed off the main thread (build 160); the list fills in when the listing is done.
+        Task {
+            let found = await Task.detached(priority: .userInitiated) { SessionDiagnosticsRecorder.allSavedLogs() }.value
+            logs = found
+        }
         let model = WorkoutSession.shared.learnedSpeed
         let calibration = model.calibration
         modelSummary = """

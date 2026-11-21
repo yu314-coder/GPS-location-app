@@ -86,24 +86,40 @@ struct PaperView: View {
 private struct PDFDocumentView: UIViewRepresentable {
     let url: URL
 
+    /// The file asked for last, so a parse that finishes after another file was asked for is dropped.
+    final class Coordinator { var requested: URL? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
-        view.document = PDFDocument(url: url)
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.backgroundColor = .systemGroupedBackground
-        // Fit the page width on first appearance rather than showing a page-sized thumbnail.
-        DispatchQueue.main.async {
-            view.scaleFactor = view.scaleFactorForSizeToFit
-            view.minScaleFactor = view.scaleFactorForSizeToFit
-        }
+        load(url, into: view, context.coordinator, fitWidth: true)
         return view
     }
 
     func updateUIView(_ view: PDFView, context: Context) {
-        if view.document?.documentURL != url {
-            view.document = PDFDocument(url: url)
+        if context.coordinator.requested != url {
+            load(url, into: view, context.coordinator, fitWidth: false)
+        }
+    }
+
+    /// The PDF is parsed off the main thread (build 160) instead of in makeUIView, which held the screen while the
+    /// paper opened; the same document is shown once it is read.
+    private func load(_ url: URL, into view: PDFView, _ coordinator: Coordinator, fitWidth: Bool) {
+        coordinator.requested = url
+        Task { @MainActor in
+            let document = await Task.detached(priority: .userInitiated) { PDFDocument(url: url) }.value
+            guard coordinator.requested == url else { return }
+            view.document = document
+            guard fitWidth else { return }
+            // Fit the page width on first appearance rather than showing a page-sized thumbnail.
+            DispatchQueue.main.async {
+                view.scaleFactor = view.scaleFactorForSizeToFit
+                view.minScaleFactor = view.scaleFactorForSizeToFit
+            }
         }
     }
 }

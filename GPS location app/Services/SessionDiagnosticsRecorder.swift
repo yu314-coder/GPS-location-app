@@ -580,12 +580,12 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     /// Every saved log, newest first, for the developer screen's browser.
     static func allSavedLogs() -> [(url: URL, size: Int, modified: Date)] {
         let dir = logDirectory
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
-        return names.compactMap { name -> (URL, Int, Date)? in
-            let url = dir.appendingPathComponent(name)
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-                  let size = attrs[.size] as? Int,
-                  let modified = attrs[.modificationDate] as? Date else { return nil }
+        // Size and date come with the listing (build 160): one call, not a stat per file for ~750 logs.
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]) else { return [] }
+        return urls.compactMap { url -> (URL, Int, Date)? in
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                  let size = values.fileSize,
+                  let modified = values.contentModificationDate else { return nil }
             return (url, size, modified)
         }
         .sorted { $0.2 > $1.2 }
@@ -619,15 +619,26 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     static func logStamp(for workoutStart: Date) -> String { stamp(for: workoutStart) }
     /// The moment a recording began, read back from its stamp (local time, as it was written).
     static func date(fromLogStamp stamp: String) -> Date? {
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd_HHmmss"
-        return df.date(from: stamp)
+        withStampFormatter { $0.date(from: stamp) }
     }
 
     private static func stamp(for workoutStart: Date) -> String {
+        withStampFormatter { $0.string(from: workoutStart) }
+    }
+
+    /// One stamp formatter, not one per call (build 160): Import/Re-run formatted every saved workout's start for
+    /// every recording, about a million formatters. It is rebuilt whenever the time zone or locale differs from the
+    /// one it was made with, so a stamp reads exactly as a fresh `DateFormatter()` would write it.
+    private static let stampLock = NSLock()
+    nonisolated(unsafe) private static var stampFormatter: (formatter: DateFormatter, zone: TimeZone, locale: Locale)?
+    private static func withStampFormatter<T>(_ body: (DateFormatter) -> T) -> T {
+        stampLock.lock(); defer { stampLock.unlock() }
+        let zone = TimeZone.current, locale = Locale.current
+        if let cached = stampFormatter, cached.zone == zone, cached.locale == locale { return body(cached.formatter) }
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd_HHmmss"
-        return df.string(from: workoutStart)
+        stampFormatter = (df, zone, locale)
+        return body(df)
     }
 
     /// Close a finished workout's files. Everything was written as it went, so this only flushes

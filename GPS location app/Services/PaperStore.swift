@@ -38,7 +38,11 @@ final class PaperStore: ObservableObject {
 
     @Published private(set) var status: Status = .bundled
     /// The best copy available right now. Never nil while the app is correctly built.
-    @Published private(set) var url: URL?
+    /// Announced only when it really changes (build 160): every appearance's check set it again to the same file,
+    /// which redrew the reader for nothing.
+    private(set) var url: URL? {
+        willSet { if newValue != url { objectWillChange.send() } }
+    }
 
     /// The release asset is re-uploaded in place (`gh release upload --clobber`), so this URL is
     /// stable across revisions and always serves the current paper. A tag rather than `latest`

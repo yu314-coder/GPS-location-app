@@ -1,5 +1,6 @@
 import Foundation
 import HealthKit
+import Combine
 
 /// DEVELOPER MODE: PUT A WORKOUT FROM ANOTHER PHONE ON THIS ONE (build 127).
 ///
@@ -65,6 +66,99 @@ final class WorkoutImporter: ObservableObject {
         var value: Bool { get { lock.lock(); defer { lock.unlock() }; return v } set { lock.lock(); v = newValue; lock.unlock() } } }
     private let cancelFlag = Flag()
 
+    /// The saved workouts looked up once (build 160), not sorted and stamped again for every recording and every
+    /// row: ~3,900 workouts x ~750 recordings was about a million date formatters on the main thread. Dropped
+    /// whenever the saved list changes, so a lookup always sees the list as it is now.
+    private var savedIndex: SavedIndex?
+    private var storeGeneration = 0
+    private var storeWatch: AnyCancellable?
+
+    init() {
+        storeWatch = FlightDataStore.shared.$savedFlights.sink { [weak self] _ in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.savedListChanged() }
+            } else {
+                DispatchQueue.main.async { self?.savedListChanged() }
+            }
+        }
+    }
+
+    private func savedListChanged() {
+        storeGeneration += 1
+        savedIndex = nil
+    }
+
+    private var index: SavedIndex {
+        if let savedIndex { return savedIndex }
+        let built = SavedIndex(FlightDataStore.shared.savedFlights)
+        savedIndex = built
+        return built
+    }
+
+    /// The same answers the linear searches gave, from one pass over the saved workouts.
+    struct SavedIndex: Sendable {
+        /// Workout by its log stamp; when two share one, the first in the old priority order (originals before
+        /// "Re-run with" workouts, each in the saved list's order) wins, as `first(where:)` on that order did.
+        private let byStamp: [String: Flight]
+        /// By start time (ties in saved-list order, as the stable sort gave), with each one's end and priority.
+        private let byStart: [(flight: Flight, end: Date, rank: Int)]
+        /// The latest end among byStart[0...i], so a search for overlaps can stop early.
+        private let maxEnd: [Date]
+
+        nonisolated init(_ flights: [Flight]) {
+            func isRerun(_ f: Flight) -> Bool { f.notes?.hasPrefix("Re-run with") == true }
+            var rank = [Int](repeating: 0, count: flights.count)
+            var order = flights.indices.filter { !isRerun(flights[$0]) }
+            order += flights.indices.filter { isRerun(flights[$0]) }
+            var stamps: [String: Flight] = [:]
+            stamps.reserveCapacity(flights.count)
+            for (r, i) in order.enumerated() {
+                rank[i] = r
+                let key = SessionDiagnosticsRecorder.logStamp(for: flights[i].startDate)
+                if stamps[key] == nil { stamps[key] = flights[i] }
+            }
+            byStamp = stamps
+            let sorted = flights.indices.sorted {
+                flights[$0].startDate != flights[$1].startDate ? flights[$0].startDate < flights[$1].startDate : $0 < $1
+            }
+            byStart = sorted.map { (flights[$0], WorkoutImporter.end(of: flights[$0]), rank[$0]) }
+            var running = Date.distantPast
+            maxEnd = byStart.map { running = max(running, $0.end); return running }
+        }
+
+        /// Number of workouts starting before `date` (binary search on byStart).
+        nonisolated private func startingBefore(_ date: Date) -> Int {
+            var lo = 0, hi = byStart.count
+            while lo < hi { let mid = (lo + hi) / 2; if byStart[mid].flight.startDate < date { lo = mid + 1 } else { hi = mid } }
+            return lo
+        }
+
+        /// Positions in byStart of workouts starting before `before` (or at it, `orAt`) and ending after `after`.
+        nonisolated private func positions(startBefore before: Date, orAt: Bool, endAfter after: Date) -> [Int] {
+            var i = startingBefore(before)
+            if orAt { while i < byStart.count, byStart[i].flight.startDate == before { i += 1 } }
+            var hits: [Int] = []
+            var j = i - 1
+            while j >= 0, maxEnd[j] > after {
+                if byStart[j].end > after { hits.append(j) }
+                j -= 1
+            }
+            return hits.reversed()
+        }
+
+        nonisolated func workout(forStamp stamp: String) -> Flight? {
+            if let same = byStamp[stamp] { return same }
+            guard let began = SessionDiagnosticsRecorder.date(fromLogStamp: stamp) else { return nil }
+            return positions(startBefore: began.addingTimeInterval(60), orAt: true, endAfter: began)
+                .min { byStart[$0].rank < byStart[$1].rank }
+                .map { byStart[$0].flight }
+        }
+
+        nonisolated func overlapping(_ start: Date, _ end: Date) -> [Flight] {
+            positions(startBefore: end, orAt: false, endAfter: start).map { byStart[$0].flight }
+        }
+    }
+
     /// The chosen files are copied here first: the picker's access to them ends, and a raw log is read for seconds.
     private let folder = FileManager.default.temporaryDirectory.appendingPathComponent("WorkoutImport", isDirectory: true)
 
@@ -115,12 +209,19 @@ final class WorkoutImporter: ObservableObject {
     /// saved workout beside them, so re-running it needs no AirDrop and no Files: list the recordings, newest
     /// first, and mark those whose workout is still saved.
     func loadOwnRecordings() {
+        // The saved list as it is now, indexed off the main thread with the listing (build 160).
+        let flights = FlightDataStore.shared.savedFlights
+        let generation = storeGeneration
         Task.detached(priority: .userInitiated) {
             let dir = SessionDiagnosticsRecorder.velocityLogDirectory
             let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
             let logs = WorkoutLogReplay.scan(files).logs
+            let built = SavedIndex(flights)
             await MainActor.run {
+                // Still the list it was built from: keep it; otherwise it is built again from the list as it is now.
+                if generation == self.storeGeneration { self.savedIndex = built }
                 self.ownSources = logs.map { .logs($0) }
+                self.ownIDs = Set(self.ownSources.map(\.id))
                 self.savedStamps = Set(logs.compactMap { self.savedWorkout(forStamp: $0.stamp) != nil ? $0.stamp : nil })
                 // A saved workout may have changed: its row is summed again.
                 self.summaries = self.summaries.filter { !$0.value.saved }
@@ -129,34 +230,31 @@ final class WorkoutImporter: ObservableObject {
         }
     }
 
-    func isOwn(_ source: Source) -> Bool { ownSources.contains(source) }
+    /// ownSources' ids, so a row's check is a set lookup, not a walk through ~750 recordings (build 160).
+    private var ownIDs: Set<String> = []
+    func isOwn(_ source: Source) -> Bool { ownIDs.contains(source.id) }
 
     /// The workout saved on this phone for one of its own recordings: the one it was recorded as (same stamp), or
     /// one whose time holds the moment it began (a re-run saved by build 127-128 could start minutes early). With
     /// re-runs kept beside it (build 130), the original comes first.
     private func savedWorkout(forStamp stamp: String) -> Flight? {
-        let saved = FlightDataStore.shared.savedFlights
-            .sorted { ($0.notes?.hasPrefix("Re-run with") == true ? 1 : 0) < ($1.notes?.hasPrefix("Re-run with") == true ? 1 : 0) }
-        if let same = saved.first(where: { SessionDiagnosticsRecorder.logStamp(for: $0.startDate) == stamp }) { return same }
-        guard let began = SessionDiagnosticsRecorder.date(fromLogStamp: stamp) else { return nil }
-        return saved.first { $0.startDate <= began.addingTimeInterval(60) && Self.end(of: $0) > began }
+        index.workout(forStamp: stamp)
     }
 
-    private static func end(of f: Flight) -> Date {
+    nonisolated private static func end(of f: Flight) -> Date {
         f.endDate ?? f.startDate.addingTimeInterval(max(f.metrics?.duration ?? 0, 0))
     }
 
     /// This phone's saved workouts that overlap a stretch of time.
-    private static func overlapping(_ start: Date, _ end: Date) -> [Flight] {
-        FlightDataStore.shared.savedFlights
-            .filter { $0.startDate < end && Self.end(of: $0) > start }
-            .sorted { $0.startDate < $1.startDate }
+    private func overlapping(_ start: Date, _ end: Date) -> [Flight] {
+        index.overlapping(start, end)
     }
 
     /// How many saved workouts share time with a recording whose row has been summed (0 until then).
+    /// A binary search on the index (build 160), not a filter and sort of every saved workout per row drawn.
     func overlapCount(_ source: Source) -> Int {
         guard let s = summaries[source.id], s.seconds > 0 else { return 0 }
-        return Self.overlapping(s.start, s.start.addingTimeInterval(s.seconds)).count
+        return overlapping(s.start, s.start.addingTimeInterval(s.seconds)).count
     }
 
     // MARK: - Row summaries
@@ -223,7 +321,7 @@ final class WorkoutImporter: ObservableObject {
                     }
                     // Everything saved here that shares any of its time: two workouts over the same stretch would count
                     // it twice, here and in Apple Health.
-                    var overlapping = Self.overlapping(rebuilt.startDate, Self.end(of: rebuilt))
+                    var overlapping = self.overlapping(rebuilt.startDate, Self.end(of: rebuilt))
                     if let original, !overlapping.contains(where: { $0.id == original.id }) {
                         overlapping.insert(original, at: 0)
                     }

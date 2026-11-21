@@ -205,9 +205,13 @@ final class OfflineTileCache: ObservableObject {
         }
     }
 
-    func cacheSizeBytes() -> Int64 {
+    /// Safe off the main thread (build 160): the Developer screen sums the tiles in the background. It names the
+    /// folder itself instead of touching the lazy `root`; a folder not made yet holds 0 bytes either way.
+    nonisolated func cacheSizeBytes() -> Int64 {
+        let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MapTiles", isDirectory: true)
         guard let items = try? FileManager.default.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+            at: folder, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
         return items.reduce(0) { sum, url in
             sum + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
