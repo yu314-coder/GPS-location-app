@@ -85,13 +85,17 @@ private struct TracksMapLayer: UIViewRepresentable, Equatable {
             && a.fitGeneration == b.fitGeneration
             && a.tracks.count == b.tracks.count
             && a.roadAlignedCoordinates.count == b.roadAlignedCoordinates.count
-            && (a.multiPolyline === b.multiPolyline)
+        // (build 160) The MKMultiPolyline that used to be compared here by identity was never
+        // drawn; it existed only for this check and cost a full basemap conversion on every load
+        // and alignment change. `geometries` is replaced in the same update that bumps
+        // dataVersion, so dataVersion is the version token for it.
     }
 
     let tracks: [WorkoutMapTrack]
+    /// (build 160) Built off the main thread in loadTracks, parallel to `tracks`.
+    let geometries: [TrackGeometry]
     let selectedTrackID: UUID?
     let roadAlignedCoordinates: [UUID: [CLLocationCoordinate2D]]
-    let multiPolyline: MKMultiPolyline?
     let satellite: Bool
     let dataVersion: Int                    // bumps when the track set changes
     let fitRegion: MKCoordinateRegion?
@@ -149,7 +153,7 @@ private struct TracksMapLayer: UIViewRepresentable, Equatable {
 
         // Still exactly one multi-polyline overlay, but now built from the tracks that are
         // actually on screen and thinned to a fixed segment budget. See Coordinator.
-        coordinator.setGeometries(from: tracks)
+        coordinator.setGeometries(geometries)
         coordinator.rebuildVisibleOverlay(on: map, force: true)
 
         // Highlight + endpoint pins for the selected route.
@@ -174,6 +178,27 @@ private struct TracksMapLayer: UIViewRepresentable, Equatable {
     struct TrackGeometry {
         let coords: [CLLocationCoordinate2D]
         let rect: MKMapRect
+        /// (build 160) Lat/lon box of `coords`, for rejecting a map tap without scanning segments.
+        let minLat: Double, maxLat: Double, minLon: Double, maxLon: Double
+
+        /// (build 160) Moved here from Coordinator.setGeometries, which ran it for every track on
+        /// the main thread inside updateUIView. Same conversion and same rect; loadTracks now
+        /// runs it on its background queue.
+        init(trackCoordinates: [CLLocationCoordinate2D]) {
+            let coords = trackCoordinates.forAppleBasemap
+            var rect = MKMapRect.null
+            var nLat = Double.greatestFiniteMagnitude, xLat = -Double.greatestFiniteMagnitude
+            var nLon = Double.greatestFiniteMagnitude, xLon = -Double.greatestFiniteMagnitude
+            for c in coords {
+                let p = MKMapPoint(c)
+                rect = rect.union(MKMapRect(x: p.x, y: p.y, width: 0, height: 0))
+                nLat = min(nLat, c.latitude); xLat = max(xLat, c.latitude)
+                nLon = min(nLon, c.longitude); xLon = max(xLon, c.longitude)
+            }
+            self.coords = coords
+            self.rect = rect
+            minLat = nLat; maxLat = xLat; minLon = nLon; maxLon = xLon
+        }
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
@@ -213,17 +238,10 @@ private struct TracksMapLayer: UIViewRepresentable, Equatable {
         }
 
         /// Cache geometry once per data change rather than per draw.
-        func setGeometries(from tracks: [WorkoutMapTrack]) {
-            geometries = tracks.compactMap { t in
-                let coords = t.coordinates.forAppleBasemap
-                guard coords.count > 1 else { return nil }
-                var rect = MKMapRect.null
-                for c in coords {
-                    let p = MKMapPoint(c)
-                    rect = rect.union(MKMapRect(x: p.x, y: p.y, width: 0, height: 0))
-                }
-                return TrackGeometry(coords: coords, rect: rect)
-            }
+        /// (build 160) Receives geometry already built off the main thread; only the
+        /// fewer-than-two-points filter is left here.
+        func setGeometries(_ newGeometries: [TrackGeometry]) {
+            geometries = newGeometries.filter { $0.coords.count > 1 }
             lastRenderedRect = .null
         }
 
@@ -353,9 +371,29 @@ struct WorkoutMapView: View {
     @State private var detailFlight: Flight?
     @State private var mapStyleSelection: MapStyleOption = .standard
     @State private var allTracksBounds: MapBounds?
-    @State private var allRoutesMultiPolyline: MKMultiPolyline?
+    /// (build 160) Overlay geometry per track, parallel to `tracks`, built off main in loadTracks.
+    @State private var trackGeometries: [TracksMapLayer.TrackGeometry] = []
+    /// (build 160) The chip row's (index, track) pairs and the header total, computed once per
+    /// load instead of on every body pass.
+    @State private var trackChips: [TrackChip] = []
+    @State private var totalDistance: Double = 0
+    /// (build 160) Whether the tab is on screen; saved-workout changes while hidden only mark
+    /// the tracks stale, and the reload happens on the next appearance.
+    @State private var isVisible = false
+    @State private var reloadPendingWhileHidden = false
+    /// (build 160) The "which Health workouts are missing" check was skipped because the saved
+    /// workouts were still loading from disk; it runs once FlightDataStore.isLoaded turns true.
+    @State private var pendingHealthCheckDeferred = false
+    /// (build 160) The workout whose full details are being read for "View Full Details".
+    @State private var loadingDetailsID: UUID?
     /// What the shown tracks were built from. See loadTracksIfChanged().
     @State private var tracksSource: TracksSource?
+
+    private struct TrackChip: Identifiable {
+        let index: Int
+        let track: WorkoutMapTrack
+        var id: UUID { track.id }
+    }
 
     /// The saved summaries a load read and which of them the period selected, in order. The same
     /// two give the same tracks: the tracks are built from those summaries and their route files,
@@ -439,9 +477,9 @@ struct WorkoutMapView: View {
                 // updates re-render the panels below but NOT this heavy map.
                 TracksMapLayer(
                     tracks: tracks,
+                    geometries: trackGeometries,
                     selectedTrackID: selectedTrackID,
                     roadAlignedCoordinates: roadAlignedCoordinates,
-                    multiPolyline: allRoutesMultiPolyline,
                     satellite: mapStyleSelection == .hybrid,
                     dataVersion: dataVersion,
                     fitRegion: fitRegion,
@@ -492,7 +530,17 @@ struct WorkoutMapView: View {
             .navigationDestination(item: $detailFlight) { flight in
                 WorkoutDetailView(flight: flight)
             }
-            .onAppear(perform: loadTracksIfChanged)
+            .onAppear {
+                isVisible = true
+                // (build 160) A change that arrived while hidden reloads now, as it would have then.
+                if reloadPendingWhileHidden {
+                    reloadPendingWhileHidden = false
+                    loadTracks()
+                } else {
+                    loadTracksIfChanged()
+                }
+            }
+            .onDisappear { isVisible = false }
             .onChange(of: selectedPeriod) { loadTracks() }
             .onChange(of: customStartDate) {
                 if selectedPeriod == .custom {
@@ -510,7 +558,18 @@ struct WorkoutMapView: View {
                 // I/O + a full map re-render — the main cause of lag/heat/crash.
                 // Skip reloads while downloading; loadTracks() runs once at the end.
                 guard !isDownloadingWorkouts else { return }
+                // (build 160) Hidden tab: don't re-read every route file now; reload on appear.
+                guard isVisible else {
+                    reloadPendingWhileHidden = true
+                    return
+                }
                 loadTracks()
+            }
+            .onChange(of: flightDataStore.isLoaded) {
+                // (build 160) Declared after the count handler: if that one just started a load,
+                // the load already did the Health check and cleared the deferred flag.
+                guard flightDataStore.isLoaded, isVisible, pendingHealthCheckDeferred else { return }
+                syncPendingHealthWorkouts(interval: selectedInterval())
             }
         }
     }
@@ -695,7 +754,10 @@ struct WorkoutMapView: View {
                                 .clipShape(Capsule())
                         }
 
-                        ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                        // (build 160) Precomputed pairs; same order, same ids as tracks.enumerated().
+                        ForEach(trackChips) { chip in
+                            let index = chip.index
+                            let track = chip.track
                             Button(action: {
                                 selectedTrackID = track.id
                                 focus(track)
@@ -785,7 +847,12 @@ struct WorkoutMapView: View {
                     Text("View Full Details")
                         .fontWeight(.semibold)
                     Spacer()
-                    Image(systemName: "chevron.right")
+                    // (build 160) Shown while the full details are read off the main thread.
+                    if loadingDetailsID == track.id {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "chevron.right")
+                    }
                 }
                 .font(.caption)
                 .padding(.vertical, 8)
@@ -795,6 +862,7 @@ struct WorkoutMapView: View {
                 .foregroundColor(.blue)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
+            .disabled(loadingDetailsID == track.id)
         }
         .padding(10)
         .background(Color(.secondarySystemGroupedBackground))
@@ -826,11 +894,24 @@ struct WorkoutMapView: View {
         return String(format: "%dm", minutes)
     }
 
+    /// (build 160) loadFlightDetails gunzips and decodes the whole workout (up to hundreds of MB)
+    /// and ran synchronously in the tap handler. Now read off main; the same flight (or the same
+    /// summary fallback) is presented when it is ready.
     private func openDetails(for track: WorkoutMapTrack) {
-        if let flight = FlightDataStore.shared.loadFlightDetails(id: track.id) {
-            detailFlight = flight
-        } else if let summary = flightDataStore.savedFlights.first(where: { $0.id == track.id }) {
-            detailFlight = summary
+        let id = track.id
+        loadingDetailsID = id
+        Task { @MainActor in
+            let flight = await Task.detached(priority: .userInitiated) {
+                FlightDataStore.shared.loadFlightDetails(id: id)
+            }.value
+            // Another "View Full Details" tap superseded this one.
+            guard loadingDetailsID == id else { return }
+            loadingDetailsID = nil
+            if let flight {
+                detailFlight = flight
+            } else if let summary = flightDataStore.savedFlights.first(where: { $0.id == id }) {
+                detailFlight = summary
+            }
         }
     }
 
@@ -845,10 +926,6 @@ struct WorkoutMapView: View {
         case .custom:
             return "Custom date range"
         }
-    }
-
-    private var totalDistance: Double {
-        tracks.map(\.distance).reduce(0, +)
     }
 
     /// Every appearance of the tab (a tab switch, or back from a workout) re-read every route file
@@ -866,7 +943,7 @@ struct WorkoutMapView: View {
         }
         if !roadAlignedCoordinates.isEmpty {
             roadAlignedCoordinates = [:]
-            rebuildMultiPolylineFromDisplay()
+            refreshOverlayAfterAlignmentChange()
         }
         roadAlignMessage = nil
         fitAllTracks()
@@ -883,12 +960,18 @@ struct WorkoutMapView: View {
         let interval = selectedInterval()
         let savedIDs = savedWorkoutIDs()
         let knownWithoutRoute = HealthWorkoutsWithoutRoute.shared.ids
+        // (build 160) Until the saved workouts have loaded from disk every Health workout looks
+        // missing; skip the check and let the isLoaded handler run it.
+        let storeLoaded = flightDataStore.isLoaded
+        pendingHealthCheckDeferred = !storeLoaded
 
         DispatchQueue.global(qos: .userInitiated).async {
             // Decode the HealthKit summary cache OFF the main thread (it was a
             // freeze source when opening the Map tab).
-            let pendingHKWorkouts = Self.pendingHealthWorkouts(in: interval, savedIDs: savedIDs,
-                                                               knownWithoutRoute: knownWithoutRoute)
+            let pendingHKWorkouts = storeLoaded
+                ? Self.pendingHealthWorkouts(in: interval, savedIDs: savedIDs,
+                                             knownWithoutRoute: knownWithoutRoute)
+                : []
 
             // Adaptive per-track detail: fewer vertices per route when there are
             // many, keeping the total vertex count (and GPU load) bounded even
@@ -939,17 +1022,18 @@ struct WorkoutMapView: View {
             }
             .sorted { $0.startDate > $1.startDate }
 
-            // Collapse ALL routes into ONE MKMultiPolyline overlay. MapKit renders
-            // a single multi-polyline far faster than thousands of separate
-            // overlays — this is what lets the map show every route smoothly.
-            let multi = MKMultiPolyline(loaded.map { track in
-                MKPolyline(coordinates: track.coordinates.forAppleBasemap, count: track.coordinates.count)
-            })
+            // (build 160) The overlay geometry (basemap shift + rect per track) is built here, off
+            // main, instead of in updateUIView; it replaces the unused all-routes MKMultiPolyline.
+            let geometries = loaded.map { TracksMapLayer.TrackGeometry(trackCoordinates: $0.coordinates) }
+            let chips = loaded.enumerated().map { TrackChip(index: $0.offset, track: $0.element) }
+            let total = loaded.map(\.distance).reduce(0, +)
 
             DispatchQueue.main.async {
                 tracks = loaded
+                trackGeometries = geometries
+                trackChips = chips
+                totalDistance = total
                 tracksSource = source
-                allRoutesMultiPolyline = loaded.isEmpty ? nil : multi
                 allTracksBounds = globalBounds
                 dataVersion += 1
                 roadAlignedCoordinates = [:]
@@ -973,7 +1057,7 @@ struct WorkoutMapView: View {
     /// File I/O and decoding: call off the main thread.
     private static func pendingHealthWorkouts(in interval: DateInterval?, savedIDs: Set<UUID>,
                                               knownWithoutRoute: Set<UUID>) -> [WorkoutSummary] {
-        WorkoutCacheStore.shared.loadWorkouts().filter { workout in
+        HealthSummaryCacheMemo.shared.workouts().filter { workout in
             guard !savedIDs.contains(workout.id) else { return false }
             guard !knownWithoutRoute.contains(workout.id) else { return false }
             if let interval, !interval.contains(workout.startDate) { return false }
@@ -983,6 +1067,12 @@ struct WorkoutMapView: View {
 
     /// The Health sync check at the end of a load, for an appearance that needed no load.
     private func syncPendingHealthWorkouts(interval: DateInterval?) {
+        // (build 160) See loadTracks: no missing-workout check against a store still loading.
+        guard flightDataStore.isLoaded else {
+            pendingHealthCheckDeferred = true
+            return
+        }
+        pendingHealthCheckDeferred = false
         let savedIDs = savedWorkoutIDs()
         let knownWithoutRoute = HealthWorkoutsWithoutRoute.shared.ids
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1194,18 +1284,43 @@ struct WorkoutMapView: View {
     }
 
     private func selectNearestTrack(to coordinate: CLLocationCoordinate2D) {
-        let candidates = tracks.compactMap { track -> (track: WorkoutMapTrack, distance: CLLocationDistance)? in
-            let coordinates = displayCoordinates(for: track)
-            guard coordinates.count > 1 else { return nil }
-            return (track, nearestDistance(from: coordinate, toPolyline: coordinates))
+        let tolerance: CLLocationDistance = 120
+        // (build 160) Every tap measured every segment of every track (with a CLLocation per
+        // segment) and basemap-converted every track again. Now a track whose lat/lon box,
+        // padded by twice the tolerance, does not contain the tap is skipped: no point inside
+        // that box can be within 120 m (the planar metric below is exact per degree, and the 2x
+        // pad also covers the great-circle fallback for zero-length segments). Skipped tracks
+        // could only have lost to the tolerance, and the first-minimum tie rule is kept, so the
+        // selected track is the same. Unaligned tracks reuse the already-converted geometry,
+        // which is exactly displayCoordinates(for:) for them.
+        let geometries = trackGeometries.count == tracks.count ? trackGeometries : nil
+        let latPad = tolerance * 2 / 111_320.0
+        let cosLat = cos(coordinate.latitude * .pi / 180)
+        let lonPad: Double? = cosLat > 0.01 ? tolerance * 2 / (111_320.0 * cosLat) : nil
+
+        var nearest: (id: UUID, distance: CLLocationDistance)?
+        for (index, track) in tracks.enumerated() {
+            let coordinates: [CLLocationCoordinate2D]
+            if roadAlignedCoordinates[track.id] == nil, let g = geometries?[index] {
+                if coordinate.latitude < g.minLat - latPad || coordinate.latitude > g.maxLat + latPad { continue }
+                if let lonPad,
+                   coordinate.longitude < g.minLon - lonPad || coordinate.longitude > g.maxLon + lonPad { continue }
+                coordinates = g.coords
+            } else {
+                coordinates = displayCoordinates(for: track)
+            }
+            guard coordinates.count > 1 else { continue }
+            let distance = nearestDistance(from: coordinate, toPolyline: coordinates)
+            if nearest == nil || distance < nearest!.distance {
+                nearest = (track.id, distance)
+            }
         }
 
-        guard let nearest = candidates.min(by: { $0.distance < $1.distance }),
-              nearest.distance <= 120 else {
+        guard let nearest, nearest.distance <= tolerance else {
             return
         }
 
-        selectedTrackID = nearest.track.id
+        selectedTrackID = nearest.id
     }
 
 
@@ -1222,10 +1337,11 @@ struct WorkoutMapView: View {
         roadAlignMessage = "Preparing road data…"
         roadAlignedCoordinates = [:]
 
-        Task {
-            var aligned: [UUID: [CLLocationCoordinate2D]] = [:]
-            // For the MKDirections fallback only — distribute a request budget.
-            let segmentLimits = alignmentSegmentLimits(for: tracksToAlign, requestBudget: roadAlignmentRequestBudget)
+        // For the MKDirections fallback only — distribute a request budget.
+        let segmentLimits = alignmentSegmentLimits(for: tracksToAlign, requestBudget: roadAlignmentRequestBudget)
+        let requestSpacing = roadAlignmentRequestSpacingNanoseconds
+
+        Task { @MainActor in
 
             // PRIMARY: on-device HMM map matching against locally cached OSM roads.
             // Road tiles download once (the only online step); afterwards alignment
@@ -1251,62 +1367,33 @@ struct WorkoutMapView: View {
                 roadAlignMessage = "Aligning \(tracksToAlign.count) routes (\(engineName))…"
             }
 
-            for track in tracksToAlign {
-                guard track.canRoadAlign else {
-                    await MainActor.run { roadAlignProgress += 1 }
-                    continue
-                }
+            // (build 160) The per-track loop (route file read + HMM matching) used to run on the
+            // main actor, and every track assigned roadAlignedCoordinates, which rebuilt the
+            // map's overlays up to 60 times. It now runs detached; the progress counter still
+            // ticks per track, while the aligned routes reach the map at most every 2 s and once
+            // at the end. The final routes are the same.
+            let aligned = await Task.detached(priority: .userInitiated) {
+                await alignTracksToRoads(
+                    tracksToAlign,
+                    offlineIndex: offlineIndex,
+                    useValhalla: useValhalla,
+                    segmentLimits: segmentLimits,
+                    requestSpacingNanoseconds: requestSpacing,
+                    onTrackDone: { snapshot in
+                        await MainActor.run {
+                            roadAlignProgress += 1
+                            if let snapshot { roadAlignedCoordinates = snapshot }
+                        }
+                    }
+                )
+            }.value
 
-                // Always match on the full-resolution route (up to ~400 pts from the
-                // cache), not the down-sampled render coords.
-                let fullCoords = FlightDataStore.shared.loadRouteCoordinates(id: track.id)
-                let coordsToAlign = fullCoords.count > track.coordinates.count ? fullCoords : track.coordinates
-
-                // Cascade: on-device HMM vs cached OSM roads (OFFLINE, primary)
-                // → Valhalla (optional key) → Apple Maps → offline smoother.
-                var corrected: [CLLocationCoordinate2D]?
-                var usedNetwork = false
-                if let offlineIndex {
-                    corrected = OfflineMapMatcher.match(coordinates: coordsToAlign, index: offlineIndex)
-                }
-                if corrected == nil, useValhalla {
-                    corrected = await MapMatchingService.matchRoute(coordinates: coordsToAlign, costing: track.costing)
-                    usedNetwork = true
-                }
-                if corrected == nil, offlineIndex == nil {
-                    let maxSegments = segmentLimits[track.id] ?? 1
-                    corrected = await roadAlignedRoute(
-                        coordinates: coordsToAlign,
-                        canRoadAlign: track.canRoadAlign,
-                        transportType: track.transportType,
-                        maxSegments: maxSegments,
-                        requestDelayNanoseconds: roadAlignmentRequestSpacingNanoseconds
-                    )
-                    if corrected != nil { usedNetwork = true }
-                }
-                if corrected == nil {
-                    // Off-road workout (trail/field) or no data → clean the trace offline.
-                    corrected = RouteSmoother.smooth(coordsToAlign)
-                }
-
-                if let corrected { aligned[track.id] = corrected }
-
-                await MainActor.run {
-                    roadAlignProgress += 1
-                    roadAlignedCoordinates = aligned
-                }
-
-                // Only pace when we actually hit the network.
-                if usedNetwork {
-                    try? await Task.sleep(nanoseconds: useValhalla ? 250_000_000 : roadAlignmentRequestSpacingNanoseconds)
-                }
-            }
-
-            await MainActor.run {
+            do {
+                roadAlignedCoordinates = aligned
                 isRoadAligning = false
                 let correctedCount = aligned.count
                 roadAlignMessage = "Aligned \(correctedCount) of \(tracksToAlign.count) routes (\(engineName)). Shown on this map only."
-                rebuildMultiPolylineFromDisplay()   // reflect aligned geometry in the overlay
+                refreshOverlayAfterAlignmentChange()   // reflect aligned geometry in the overlay
                 if let selectedTrack {
                     focus(selectedTrack)
                 } else {
@@ -1316,22 +1403,18 @@ struct WorkoutMapView: View {
         }
     }
 
-    /// Rebuild the single overlay from the current display coordinates (aligned
-    /// where available, raw otherwise) so corrected geometry is shown.
-    private func rebuildMultiPolylineFromDisplay() {
-        let polylines = tracks.compactMap { track -> MKPolyline? in
-            let coords = displayCoordinates(for: track)
-            guard coords.count > 1 else { return nil }
-            return MKPolyline(coordinates: coords, count: coords.count)
-        }
-        allRoutesMultiPolyline = polylines.isEmpty ? nil : MKMultiPolyline(polylines)
+    /// Forces the map layer to rebuild its overlays after the road alignment changed.
+    /// (build 160) This used to also build an MKMultiPolyline of every track's display
+    /// coordinates on the main thread, but that object was never drawn (the layer draws
+    /// `geometries`); only the dataVersion bump below ever changed what is on screen.
+    private func refreshOverlayAfterAlignmentChange() {
         dataVersion += 1
     }
 
     private func resetRoadAlignment() {
         roadAlignedCoordinates = [:]
         roadAlignMessage = nil
-        rebuildMultiPolylineFromDisplay()
+        refreshOverlayAfterAlignmentChange()
         if let selectedTrack {
             focus(selectedTrack)
         } else {
@@ -1518,6 +1601,11 @@ struct WorkoutMapView: View {
         let pageSize = 200
         var allCandidates: [HKWorkout] = []
         var beforeDate: Date? = nil
+        // (build 160) The saved workouts load in the background at launch; listing "missing"
+        // workouts against a store still loading would re-download everything.
+        while !(await MainActor.run { FlightDataStore.shared.isLoaded }) {
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
         let existingIDs = await MainActor.run {
             Set(flightDataStore.savedFlights.map(\.id))
                 .union(Set(flightDataStore.savedFlights.compactMap(\.workoutUUID)))
@@ -1593,6 +1681,122 @@ struct WorkoutMapView: View {
             return false
         }
     }
+}
+
+/// (build 160) The body of the old per-track alignment loop, unchanged in what it computes, moved
+/// out of the view so it runs off the main actor. `onTrackDone` is called after every track with
+/// a snapshot of the routes so far at most every 2 s (nil otherwise).
+private func alignTracksToRoads(
+    _ tracksToAlign: [WorkoutMapTrack],
+    offlineIndex: RoadNetworkStore.RoadIndex?,
+    useValhalla: Bool,
+    segmentLimits: [UUID: Int],
+    requestSpacingNanoseconds: UInt64,
+    onTrackDone: @escaping ([UUID: [CLLocationCoordinate2D]]?) async -> Void
+) async -> [UUID: [CLLocationCoordinate2D]] {
+    var aligned: [UUID: [CLLocationCoordinate2D]] = [:]
+    var lastPublished = Date.distantPast
+    var alignedCountAtLastPublish = 0
+
+    for track in tracksToAlign {
+        guard track.canRoadAlign else {
+            await onTrackDone(nil)
+            continue
+        }
+
+        // Always match on the full-resolution route (up to ~400 pts from the
+        // cache), not the down-sampled render coords.
+        let fullCoords = FlightDataStore.shared.loadRouteCoordinates(id: track.id)
+        let coordsToAlign = fullCoords.count > track.coordinates.count ? fullCoords : track.coordinates
+
+        // Cascade: on-device HMM vs cached OSM roads (OFFLINE, primary)
+        // → Valhalla (optional key) → Apple Maps → offline smoother.
+        var corrected: [CLLocationCoordinate2D]?
+        var usedNetwork = false
+        if let offlineIndex {
+            corrected = OfflineMapMatcher.match(coordinates: coordsToAlign, index: offlineIndex)
+        }
+        if corrected == nil, useValhalla {
+            corrected = await MapMatchingService.matchRoute(coordinates: coordsToAlign, costing: track.costing)
+            usedNetwork = true
+        }
+        if corrected == nil, offlineIndex == nil {
+            let maxSegments = segmentLimits[track.id] ?? 1
+            corrected = await roadAlignedRoute(
+                coordinates: coordsToAlign,
+                canRoadAlign: track.canRoadAlign,
+                transportType: track.transportType,
+                maxSegments: maxSegments,
+                requestDelayNanoseconds: requestSpacingNanoseconds
+            )
+            if corrected != nil { usedNetwork = true }
+        }
+        if corrected == nil {
+            // Off-road workout (trail/field) or no data → clean the trace offline.
+            corrected = RouteSmoother.smooth(coordsToAlign)
+        }
+
+        if let corrected { aligned[track.id] = corrected }
+
+        let now = Date()
+        if aligned.count != alignedCountAtLastPublish, now.timeIntervalSince(lastPublished) >= 2 {
+            lastPublished = now
+            alignedCountAtLastPublish = aligned.count
+            await onTrackDone(aligned)
+        } else {
+            await onTrackDone(nil)
+        }
+
+        // Only pace when we actually hit the network.
+        if usedNetwork {
+            try? await Task.sleep(nanoseconds: useValhalla ? 250_000_000 : requestSpacingNanoseconds)
+        }
+    }
+    return aligned
+}
+
+/// (build 160) The Health summary cache was decoded from JSON on every appearance of the Map tab.
+/// Kept in memory and decoded again only when the file's modification date or size changes, so
+/// the result is whatever the file currently holds. Path mirrors WorkoutCacheStore's private one.
+private final class HealthSummaryCacheMemo {
+    static let shared = HealthSummaryCacheMemo()
+    private let lock = NSLock()
+    private var key: (Date, Int)?
+    private var cached: [WorkoutSummary] = []
+
+    private var fileURL: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("WorkoutCache", isDirectory: true)
+            .appendingPathComponent("healthkit_workouts_cache.json")
+    }
+
+    func workouts() -> [WorkoutSummary] {
+        guard let url = fileURL,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modified = attrs[.modificationDate] as? Date else {
+            return WorkoutCacheStore.shared.loadWorkouts()
+        }
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? -1
+        lock.lock()
+        if let key, key.0 == modified, key.1 == size {
+            let hit = cached
+            lock.unlock()
+            return hit
+        }
+        lock.unlock()
+        let loaded = WorkoutCacheStore.shared.loadWorkouts()
+        lock.lock()
+        key = (modified, size)
+        cached = loaded
+        lock.unlock()
+        return loaded
+    }
+}
+
+// TEMP until merge: FlightDataStore.isLoaded is being added in FlightDataStore.swift by another
+// change; delete this extension when that lands (it will then be a redeclaration).
+extension FlightDataStore {
+    var isLoaded: Bool { true }
 }
 
 private func roadAlignedRoute(
@@ -1802,7 +2006,8 @@ private func distanceFrom(
     toSegmentStart start: CLLocationCoordinate2D,
     end: CLLocationCoordinate2D
 ) -> CLLocationDistance {
-    let origin = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+    // (build 160) The CLLocation is now made only for the zero-length case that uses it, not
+    // for every segment of every track on each map tap. Same arithmetic, same result.
     let metersPerDegreeLatitude = 111_320.0
     let metersPerDegreeLongitude = metersPerDegreeLatitude * cos(coordinate.latitude * .pi / 180)
 
@@ -1816,6 +2021,7 @@ private func distanceFrom(
     let segmentLengthSquared = segmentX * segmentX + segmentY * segmentY
 
     guard segmentLengthSquared > 0 else {
+        let origin = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         return origin.distance(from: CLLocation(latitude: start.latitude, longitude: start.longitude))
     }
 
