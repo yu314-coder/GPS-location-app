@@ -21,6 +21,10 @@ final class LogCompactor: ObservableObject {
     @Published var offer: Offer?
     @Published var running = false
     @Published var progress: (done: Int, total: Int) = (0, 0)
+    private enum ContinuedState { case none, waiting, started, fellBack }
+    private var continuedState = ContinuedState.none
+    /// Share of the bytes done (build 162): moves within a large file.
+    @Published var percent = 0
     @Published var outcome: Outcome?
     /// Bytes of originals waiting in Before compression for the owner to delete (keepOriginals).
     @Published var originalsKept: Int64 = 0
@@ -194,6 +198,7 @@ final class LogCompactor: ObservableObject {
         guard !running else { return }
         running = true
         progress = (0, offer.files.count)
+        percent = 0
         UserDefaults.standard.removeObject(forKey: Self.askedKey)
         if #available(iOS 26.0, *) {
             Self.pendingFiles = offer.files
@@ -210,7 +215,17 @@ final class LogCompactor: ObservableObject {
             request.strategy = .fail
             do {
                 try BGTaskScheduler.shared.submit(request)
-                return                                   // runContinued(_:) does the work
+                // runContinued(_:) does the work - unless iOS has not started it 20 s later, then the app does
+                // (build 162); a task that starts after that ends at once, so the two never run together.
+                continuedState = .waiting
+                let files = offer.files
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                    guard self.continuedState == .waiting else { return }
+                    NSLog("📦 background task did not start within 20 s; running in the app")
+                    self.continuedState = .fellBack
+                    self.runInApp(files)
+                }
+                return
             } catch {
                 NSLog("📦 background task not accepted: %@", error.localizedDescription)
             }
@@ -227,8 +242,10 @@ final class LogCompactor: ObservableObject {
             stop.set(); UIApplication.shared.endBackgroundTask(task); task = .invalid
         }
         Task.detached(priority: .utility) {
-            let result = Self.runAll(files, stop: stop) { done, total, _, _ in
-                Task { @MainActor in self.progress = (done, total) }
+            let total = files.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+            let result = Self.runAll(files, stop: stop) { done, count, bytesDone, _ in
+                let pct = Int(Double(bytesDone) / Double(max(total, 1)) * 100)
+                Task { @MainActor in self.progress = (done, count); self.percent = pct }
             }
             await self.finish(result)
             await MainActor.run { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
@@ -237,25 +254,43 @@ final class LogCompactor: ObservableObject {
 
     @available(iOS 26.0, *)
     private func runContinued(_ task: BGContinuedProcessingTask) {
+        guard continuedState == .waiting else {
+            NSLog("📦 background task started late; the app is already compressing")
+            task.setTaskCompleted(success: false); return
+        }
+        continuedState = .started
         NSLog("📦 compression running as a background task (%@)", task.identifier)
         var files = Self.pendingFiles
         Self.pendingFiles = []
         if files.isEmpty { files = Self.plainLogs(in: logDirectory).map { $0.0 } }   // e.g. relaunched by the system
         running = true
         progress = (0, files.count)
-        let stop = StopFlag()
-        task.expirationHandler = { stop.set() }
+        let stop = StopFlag(), expired = StopFlag()
+        task.expirationHandler = {
+            NSLog("📦 background compression task expired by iOS")
+            expired.set(); stop.set()
+        }
         let totalBytes = files.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
         task.progress.totalUnitCount = max(totalBytes, 1)
         task.progress.completedUnitCount = 0
         Task.detached(priority: .utility) {
             let result = Self.runAll(files, stop: stop) { done, total, bytesDone, freed in
                 task.progress.completedUnitCount = bytesDone
+                let pct = Int(Double(bytesDone) / Double(max(totalBytes, 1)) * 100)
                 task.updateTitle("Compressing stored data",
-                                 subtitle: "\(done) of \(total) files · \(Self.megabytes(freed)) freed")
-                Task { @MainActor in self.progress = (done, total) }
+                                 subtitle: "\(done) of \(total) files · \(pct)% · \(Self.megabytes(freed)) freed")
+                Task { @MainActor in self.progress = (done, total); self.percent = pct }
             }
             task.setTaskCompleted(success: !result.stopped)
+            // iOS ended the background task while the app is open: carry on here instead of stopping (build 162).
+            if expired.isSet, await MainActor.run(body: { UIApplication.shared.applicationState == .active }) {
+                let rest = Self.plainLogs(in: await self.logDirectory).map { $0.0 }
+                if !rest.isEmpty {
+                    NSLog("📦 continuing in the app with %d files", rest.count)
+                    await MainActor.run { self.runInApp(rest) }
+                    return
+                }
+            }
             await self.finish(result)
         }
     }
@@ -263,6 +298,7 @@ final class LogCompactor: ObservableObject {
     private func finish(_ result: Outcome) async {
         let kept = Self.originalsBytes()
         await MainActor.run {
+            self.continuedState = .none
             self.originalsKept = kept
             self.running = false
             self.outcome = result
@@ -290,6 +326,7 @@ final class LogCompactor: ObservableObject {
         var done = 0, failed = 0, finished = 0
         var before: Int64 = 0, after: Int64 = 0, bytesDone: Int64 = 0
         var stopped = false
+        var lastReport = Date.distantPast
         for (url, size) in sized {
             queue.addOperation {
                 lock.lock(); let skip = stopped; lock.unlock()
@@ -297,14 +334,26 @@ final class LogCompactor: ObservableObject {
                 if DispatchQueue.main.sync(execute: { WorkoutSession.shared.isActive }) {
                     lock.lock(); stopped = true; lock.unlock(); return
                 }
-                let r = compress(url)
+                var counted: Int64 = 0
+                let r = compress(url) { chunk in
+                    // Progress every megabyte (build 162): iOS ends a continued-processing task that looks stalled,
+                    // and with the largest files first a whole-file report could be a minute away.
+                    lock.lock()
+                    counted += chunk; bytesDone += chunk
+                    let now = Date()
+                    let due = now.timeIntervalSince(lastReport) >= 0.5
+                    if due { lastReport = now }
+                    let snapshot = (finished, bytesDone, before - after)
+                    lock.unlock()
+                    if due { report(snapshot.0, sized.count, snapshot.1, snapshot.2) }
+                }
                 lock.lock()
                 switch r {
                 case .done(let b, let a): done += 1; before += b; after += a
                 case .failed: failed += 1
                 case .noSpace: stopped = true
                 }
-                finished += 1; bytesDone += size
+                finished += 1; bytesDone += max(0, size - counted)
                 let snapshot = (finished, bytesDone, before - after)
                 lock.unlock()
                 report(snapshot.0, sized.count, snapshot.1, snapshot.2)
@@ -316,7 +365,7 @@ final class LogCompactor: ObservableObject {
 
     private enum Result { case done(Int64, Int64), failed, noSpace }
 
-    nonisolated private static func compress(_ url: URL) -> Result {
+    nonisolated private static func compress(_ url: URL, progress: ((Int64) -> Void)? = nil) -> Result {
         let fm = FileManager.default
         let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         // Room for the compressed copy (under half the original) and a margin, before anything is written.
@@ -335,7 +384,7 @@ final class LogCompactor: ObservableObject {
                 try appWorks(final, original: url)
             } else {
                 let modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-                try LogCompression.compressFile(url, to: temp)          // byte for byte against the original
+                try LogCompression.compressFile(url, to: temp, progress: progress)   // byte for byte against the original
                 try appWorks(temp, original: url)                        // and read the way the app reads it
                 if let modified { try? fm.setAttributes([.modificationDate: modified], ofItemAtPath: temp.path) }
                 try fm.moveItem(at: temp, to: final)

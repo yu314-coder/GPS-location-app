@@ -220,7 +220,7 @@ struct SettingsView: View {
                     SettingsRow(symbol: "archivebox", tint: .teal,
                                 title: compactor.running ? "Compressing stored data…" : "Compress stored data",
                                 subtitle: compactor.running
-                                    ? "\(compactor.progress.done) of \(compactor.progress.total) files"
+                                    ? "\(compactor.progress.done) of \(compactor.progress.total) files · \(compactor.percent)%"
                                     : "\(compactor.pending.count) files, \(LogCompactor.megabytes(compactor.pending.bytes)) uncompressed")
                 }
                 .buttonStyle(.plain)

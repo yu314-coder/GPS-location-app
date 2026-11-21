@@ -104,7 +104,7 @@ struct ContentView: View {
             if logCompactor.running {
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("Compressing logs \(logCompactor.progress.done) of \(logCompactor.progress.total)")
+                    Text("Compressing \(logCompactor.progress.done) of \(logCompactor.progress.total) files · \(logCompactor.percent)%")
                         .font(.footnote)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8)

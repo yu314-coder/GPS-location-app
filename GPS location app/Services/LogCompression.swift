@@ -152,7 +152,8 @@ enum LogCompression {
 
     /// Compress `source` (a plain log) into `destination` (.csv.gz), then read the result back and compare it with the
     /// source byte for byte. Throws, leaving the source alone, if anything differs.
-    static func compressFile(_ source: URL, to destination: URL) throws {
+    /// `progress` gets the bytes of the original done after each 1 MB (build 162), so a long file shows movement.
+    static func compressFile(_ source: URL, to destination: URL, progress: ((Int64) -> Void)? = nil) throws {
         let fm = FileManager.default
         try? fm.removeItem(at: destination)
         guard fm.createFile(atPath: destination.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
@@ -165,6 +166,7 @@ enum LogCompression {
                     let member = gzipMember(chunk)
                     guard !member.isEmpty else { throw CocoaError(.fileWriteUnknown) }
                     try output.write(contentsOf: member)
+                    progress?(Int64(chunk.count))
                 }
             }
             try output.synchronize()
