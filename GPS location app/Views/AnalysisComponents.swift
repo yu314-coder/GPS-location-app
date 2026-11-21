@@ -19,11 +19,10 @@ struct MonthChip: View {
     let isSelected: Bool
     let action: () -> Void
 
+    /// Shared formatter (build 160), same text as a fresh one.
     private var monthName: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM"
         let date = Calendar.current.date(from: DateComponents(month: month))!
-        return formatter.string(from: date)
+        return AnalyticsDateFormat.string("MMM", from: date)
     }
 
     var body: some View {

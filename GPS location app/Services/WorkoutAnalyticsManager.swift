@@ -63,10 +63,8 @@ struct AnalyticsMonthlyDistance: Identifiable {
     var cumulativeKm: Double { cumulative / 1000.0 }
 
     var monthName: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM"
         let date = Calendar.current.date(from: DateComponents(month: month))!
-        return formatter.string(from: date).uppercased()
+        return AnalyticsDateFormat.string("MMM", from: date).uppercased()
     }
 }
 
@@ -92,9 +90,7 @@ struct AnalyticsAllTimeMonthlyDistance: Identifiable {
     var cumulativeKm: Double { cumulative / 1000.0 }
 
     var monthLabel: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM yyyy"
-        return formatter.string(from: monthStart)
+        AnalyticsDateFormat.string("MMM yyyy", from: monthStart)
     }
 }
 
@@ -111,9 +107,40 @@ struct AnalyticsAllTimeDailyDistance: Identifiable {
     var cumulativeKm: Double { cumulative / 1000.0 }
 
     var dayLabel: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d, yyyy"
-        return formatter.string(from: dayStart)
+        AnalyticsDateFormat.string("MMM d, yyyy", from: dayStart)
+    }
+}
+
+// MARK: - Shared label formatters
+
+/// One formatter per format for the Analysis labels (build 160), instead of a new DateFormatter for every label
+/// drawn: the yearly chart's drag alone made up to twelve per tick. Each is made exactly as before (a plain
+/// `DateFormatter()` with the format) and dropped when the locale or time zone changes, so labels read the same.
+enum AnalyticsDateFormat {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var formatters: [String: DateFormatter] = [:]
+    nonisolated(unsafe) private static var madeFor: (zone: TimeZone, locale: Locale)?
+    nonisolated(unsafe) private static var observers: [NSObjectProtocol] = []
+
+    static func string(_ format: String, from date: Date) -> String {
+        lock.lock(); defer { lock.unlock() }
+        if observers.isEmpty {
+            let center = NotificationCenter.default
+            for name in [NSLocale.currentLocaleDidChangeNotification, Notification.Name.NSSystemTimeZoneDidChange] {
+                observers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in
+                    lock.lock(); formatters = [:]; lock.unlock()
+                })
+            }
+        }
+        // Also compared on use, in case a label is drawn before the notification arrives.
+        let zone = TimeZone.current, locale = Locale.current
+        if let madeFor, madeFor.zone != zone || madeFor.locale != locale { formatters = [:] }
+        madeFor = (zone, locale)
+        if let f = formatters[format] { return f.string(from: date) }
+        let f = DateFormatter()
+        f.dateFormat = format
+        formatters[format] = f
+        return f.string(from: date)
     }
 }
 
@@ -172,10 +199,8 @@ class WorkoutAnalyticsManager: ObservableObject {
     }
 
     var monthName: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM"
         let date = Calendar.current.date(from: DateComponents(month: selectedMonth))!
-        return formatter.string(from: date).uppercased()
+        return AnalyticsDateFormat.string("MMM", from: date).uppercased()
     }
 
     var daysInSelectedMonth: Int {
@@ -310,16 +335,10 @@ class WorkoutAnalyticsManager: ObservableObject {
             return
         }
 
-        let group = DispatchGroup()
-
-        var fetchedDaily: [AnalyticsDailyDistance] = []
-        var fetchedYearly: [AnalyticsMonthlyDistance] = []
-        var fetchedLastYear: Double = 0
-        var fetchedTwoYearsAgo: Double = 0
-        var fetchedLastYearSameMonth: Double = 0
-
-        // Daily distances for selected month
-        group.enter()
+        // ONE QUERY, NOT FIVE (build 160). The month, its year, last year, the same month last year and the year
+        // before were five HealthKit queries, each loading its workouts in full, overlapping each other. Now one
+        // query covers the whole span and each figure is summed here over exactly the window its own query had:
+        // `.strictStartDate` is `startDate >= start AND startDate < end`, so the same workouts land in each.
         let monthStart = calendar.date(from: DateComponents(year: selectedYear, month: selectedMonth, day: 1))!
         let monthEnd: Date
         if isCurrentMonth {
@@ -328,56 +347,95 @@ class WorkoutAnalyticsManager: ObservableObject {
             let nextMonthStart = calendar.date(from: DateComponents(year: selectedYear, month: selectedMonth + 1, day: 1))!
             monthEnd = nextMonthStart.addingTimeInterval(-1)
         }
-        fetchDailyDistances(from: monthStart, to: monthEnd, isCurrentMonth: isCurrentMonth) { data in
-            fetchedDaily = data
-            group.leave()
-        }
-
-        // Yearly monthly distances
-        group.enter()
         let yearStart = calendar.date(from: DateComponents(year: selectedYear))!
         let yearEnd = (selectedYear == currentActualYear) ? now : calendar.date(from: DateComponents(year: selectedYear + 1))!.addingTimeInterval(-1)
-        fetchMonthlyDistances(from: yearStart, to: yearEnd) { data in
-            fetchedYearly = data
-            group.leave()
-        }
-
-        // Last year total (whole year)
-        group.enter()
         let lastYearStart = calendar.date(from: DateComponents(year: selectedYear - 1))!
         let lastYearEnd = calendar.date(byAdding: .second, value: -1, to: yearStart)!
-        fetchTotalDistance(from: lastYearStart, to: lastYearEnd) { distance in
-            fetchedLastYear = distance
-            group.leave()
-        }
-
-        // Same month last year (for month-over-month comparison)
-        group.enter()
         let sameMonthLastYearStart = calendar.date(from: DateComponents(year: selectedYear - 1, month: selectedMonth, day: 1))!
         let sameMonthLastYearEnd = calendar.date(from: DateComponents(year: selectedYear - 1, month: selectedMonth + 1, day: 1))!.addingTimeInterval(-1)
-        fetchTotalDistance(from: sameMonthLastYearStart, to: sameMonthLastYearEnd) { distance in
-            fetchedLastYearSameMonth = distance
-            group.leave()
-        }
-
-        // Two years ago total
-        group.enter()
         let twoYearsStart = calendar.date(from: DateComponents(year: selectedYear - 2))!
         let twoYearsEnd = calendar.date(byAdding: .second, value: -1, to: lastYearStart)!
-        fetchTotalDistance(from: twoYearsStart, to: twoYearsEnd) { distance in
-            fetchedTwoYearsAgo = distance
-            group.leave()
-        }
 
-        group.notify(queue: .main) { [weak self] in
-            self?.dailyDistances = fetchedDaily
-            self?.yearlyDistances = fetchedYearly
-            self?.lastYearTotal = fetchedLastYear
-            self?.twoYearsAgoTotal = fetchedTwoYearsAgo
-            self?.lastYearSameMonthTotal = fetchedLastYearSameMonth
-            self?.isLoading = false
-            self?.fetchCompleted(key, failuresAtStart: failuresAtStart)
+        let spanStart = min(monthStart, yearStart, lastYearStart, sameMonthLastYearStart, twoYearsStart)
+        let spanEnd = max(monthEnd, yearEnd, lastYearEnd, sameMonthLastYearEnd, twoYearsEnd)
+        let filter = activityFilter
+
+        let query = HKSampleQuery(
+            sampleType: HKObjectType.workoutType(),
+            predicate: HKQuery.predicateForSamples(withStart: spanStart, end: spanEnd, options: .strictStartDate),
+            limit: HKObjectQueryNoLimit,
+            sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
+        ) { [weak self] _, samples, error in
+            guard let workouts = samples as? [HKWorkout], error == nil else {
+                self?.noteQueryFailure()
+                DispatchQueue.main.async {
+                    // What the five failed queries each gave: no days, no months, zero totals.
+                    self?.dailyDistances = []
+                    self?.yearlyDistances = []
+                    self?.lastYearTotal = 0
+                    self?.twoYearsAgoTotal = 0
+                    self?.lastYearSameMonthTotal = 0
+                    self?.isLoading = false
+                    self?.fetchCompleted(key, failuresAtStart: failuresAtStart)
+                }
+                return
+            }
+            // Workouts of the chosen kind that carry a distance, oldest first (as the old queries were sorted).
+            let measured: [(start: Date, metres: Double)] = workouts.compactMap { workout in
+                guard filter.matches(workout), let d = workout.totalDistance?.doubleValue(for: .meter()) else { return nil }
+                return (workout.startDate, d)
+            }
+            func within(_ from: Date, _ to: Date) -> [(start: Date, metres: Double)] {
+                measured.filter { $0.start >= from && $0.start < to }
+            }
+            func total(_ from: Date, _ to: Date) -> Double {
+                within(from, to).map(\.metres).reduce(0, +)
+            }
+
+            // Daily distances for the selected month
+            var dailyByDay: [Int: Double] = [:]
+            for w in within(monthStart, monthEnd) {
+                dailyByDay[calendar.component(.day, from: w.start), default: 0] += w.metres
+            }
+            let daysInMonth = calendar.range(of: .day, in: .month, for: monthStart)?.count ?? 31
+            let lastDay = isCurrentMonth ? min(calendar.component(.day, from: monthEnd), daysInMonth) : daysInMonth
+            var fetchedDaily: [AnalyticsDailyDistance] = []
+            var dailyCumulative: Double = 0
+            for day in 1...lastDay {
+                let distance = dailyByDay[day] ?? 0
+                dailyCumulative += distance
+                fetchedDaily.append(AnalyticsDailyDistance(day: day, distance: distance, cumulative: dailyCumulative))
+            }
+
+            // Monthly distances for the selected year
+            var monthlyByMonth: [Int: Double] = [:]
+            for w in within(yearStart, yearEnd) {
+                monthlyByMonth[calendar.component(.month, from: w.start), default: 0] += w.metres
+            }
+            let lastMonth = calendar.component(.month, from: yearEnd)
+            var fetchedYearly: [AnalyticsMonthlyDistance] = []
+            var monthlyCumulative: Double = 0
+            for month in 1...lastMonth {
+                let distance = monthlyByMonth[month] ?? 0
+                monthlyCumulative += distance
+                fetchedYearly.append(AnalyticsMonthlyDistance(month: month, distance: distance, cumulative: monthlyCumulative))
+            }
+
+            let fetchedLastYear = total(lastYearStart, lastYearEnd)
+            let fetchedLastYearSameMonth = total(sameMonthLastYearStart, sameMonthLastYearEnd)
+            let fetchedTwoYearsAgo = total(twoYearsStart, twoYearsEnd)
+
+            DispatchQueue.main.async {
+                self?.dailyDistances = fetchedDaily
+                self?.yearlyDistances = fetchedYearly
+                self?.lastYearTotal = fetchedLastYear
+                self?.twoYearsAgoTotal = fetchedTwoYearsAgo
+                self?.lastYearSameMonthTotal = fetchedLastYearSameMonth
+                self?.isLoading = false
+                self?.fetchCompleted(key, failuresAtStart: failuresAtStart)
+            }
         }
+        healthStore.execute(query)
     }
 
     // MARK: - HealthKit Queries
@@ -558,120 +616,6 @@ class WorkoutAnalyticsManager: ObservableObject {
                 self.isLoading = false
                 self.fetchCompleted(key, failuresAtStart: failuresAtStart)
             }
-        }
-
-        healthStore.execute(query)
-    }
-
-    private func fetchDailyDistances(from startDate: Date, to endDate: Date, isCurrentMonth: Bool, completion: @escaping ([AnalyticsDailyDistance]) -> Void) {
-        let calendar = Calendar.current
-        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
-        let filter = activityFilter
-
-        let query = HKSampleQuery(
-            sampleType: HKObjectType.workoutType(),
-            predicate: predicate,
-            limit: HKObjectQueryNoLimit,
-            sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
-        ) { _, samples, error in
-            guard let workouts = samples as? [HKWorkout], error == nil else {
-                self.noteQueryFailure()
-                completion([])
-                return
-            }
-
-            var dailyDistances: [Int: Double] = [:]
-            for workout in workouts.filter({ filter.matches($0) }) {
-                if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
-                    let day = calendar.component(.day, from: workout.startDate)
-                    dailyDistances[day, default: 0] += distance
-                }
-            }
-
-            let daysInMonth = calendar.range(of: .day, in: .month, for: startDate)?.count ?? 31
-            let lastDay: Int
-            if isCurrentMonth {
-                lastDay = min(calendar.component(.day, from: endDate), daysInMonth)
-            } else {
-                lastDay = daysInMonth
-            }
-
-            var result: [AnalyticsDailyDistance] = []
-            var cumulative: Double = 0
-            for day in 1...lastDay {
-                let distance = dailyDistances[day] ?? 0
-                cumulative += distance
-                result.append(AnalyticsDailyDistance(day: day, distance: distance, cumulative: cumulative))
-            }
-
-            completion(result)
-        }
-
-        healthStore.execute(query)
-    }
-
-    private func fetchMonthlyDistances(from startDate: Date, to endDate: Date, completion: @escaping ([AnalyticsMonthlyDistance]) -> Void) {
-        let calendar = Calendar.current
-        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
-        let filter = activityFilter
-
-        let query = HKSampleQuery(
-            sampleType: HKObjectType.workoutType(),
-            predicate: predicate,
-            limit: HKObjectQueryNoLimit,
-            sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
-        ) { _, samples, error in
-            guard let workouts = samples as? [HKWorkout], error == nil else {
-                self.noteQueryFailure()
-                completion([])
-                return
-            }
-
-            var monthlyDistances: [Int: Double] = [:]
-            for workout in workouts.filter({ filter.matches($0) }) {
-                if let distance = workout.totalDistance?.doubleValue(for: .meter()) {
-                    let month = calendar.component(.month, from: workout.startDate)
-                    monthlyDistances[month, default: 0] += distance
-                }
-            }
-
-            let currentMonth = calendar.component(.month, from: endDate)
-            var result: [AnalyticsMonthlyDistance] = []
-            var cumulative: Double = 0
-            for month in 1...currentMonth {
-                let distance = monthlyDistances[month] ?? 0
-                cumulative += distance
-                result.append(AnalyticsMonthlyDistance(month: month, distance: distance, cumulative: cumulative))
-            }
-
-            completion(result)
-        }
-
-        healthStore.execute(query)
-    }
-
-    private func fetchTotalDistance(from startDate: Date, to endDate: Date, completion: @escaping (Double) -> Void) {
-        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
-        let filter = activityFilter
-
-        let query = HKSampleQuery(
-            sampleType: HKObjectType.workoutType(),
-            predicate: predicate,
-            limit: HKObjectQueryNoLimit,
-            sortDescriptors: nil
-        ) { _, samples, error in
-            guard let workouts = samples as? [HKWorkout], error == nil else {
-                self.noteQueryFailure()
-                completion(0)
-                return
-            }
-
-            let totalDistance = workouts
-                .filter { filter.matches($0) }
-                .compactMap { $0.totalDistance?.doubleValue(for: .meter()) }
-                .reduce(0, +)
-
-            completion(totalDistance)
         }
 
         healthStore.execute(query)

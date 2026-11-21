@@ -23,7 +23,8 @@ struct VelocityMethodView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: AppTheme.sectionSpacing) {
+                // Lazy (build 160): the sections and their charts are built as they scroll in, not all on open.
+                LazyVStack(alignment: .leading, spacing: AppTheme.sectionSpacing) {
                     intro.id("intro")
                     overview.id("overview")
                     stageOne

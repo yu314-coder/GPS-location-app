@@ -319,6 +319,10 @@ struct AllTimeDistanceChartView: View {
                 let maxSelectedValue = analytics.allTimeDailyDistances.map { selectedYearValueKm(for: $0) }.max() ?? 0
                 let maxY = max(maxSelectedValue * 1.25, 1)
                 let chartColor = selectedYearChartMode.color
+                // The selected day, found once per redraw (build 160) instead of three calendar comparisons for
+                // each of the ~365 days. The selection is always one of these days (nearestDay), so matching its
+                // entry is the same test as `isDate(_:equalTo:toGranularity: .day)`.
+                let selectedDayID = selectedDailyData?.id
 
                 Chart {
                     ForEach(analytics.allTimeDailyDistances) { data in
@@ -343,22 +347,14 @@ struct AllTimeDistanceChartView: View {
                         .foregroundStyle(chartColor)
                         .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
 
-                        if data.distance > 0 ||
-                            selectedMonth.map({ Calendar.current.isDate(data.dayStart, equalTo: $0, toGranularity: .day) }) == true {
+                        let isSelected = data.id == selectedDayID
+                        if data.distance > 0 || isSelected {
                             PointMark(
                                 x: .value("Day", data.dayStart, unit: .day),
                                 y: .value(selectedYearChartMode.rawValue, selectedYearValueKm(for: data))
                             )
-                            .foregroundStyle(
-                                selectedMonth.map { Calendar.current.isDate(data.dayStart, equalTo: $0, toGranularity: .day) } == true
-                                ? Color.orange
-                                : chartColor
-                            )
-                            .symbolSize(
-                                selectedMonth.map { Calendar.current.isDate(data.dayStart, equalTo: $0, toGranularity: .day) } == true
-                                ? 90
-                                : 18
-                            )
+                            .foregroundStyle(isSelected ? Color.orange : chartColor)
+                            .symbolSize(isSelected ? 90 : 18)
                         }
                     }
 
@@ -415,8 +411,10 @@ struct AllTimeDistanceChartView: View {
                             .gesture(
                                 DragGesture(minimumDistance: 0)
                                     .onChanged { value in
+                                        // Only when the day changes (build 160): every drag tick redrew the 365-day chart.
                                         if let date: Date = proxy.value(atX: value.location.x) {
-                                            selectedMonth = nearestDay(to: date)
+                                            let day = nearestDay(to: date)
+                                            if day != selectedMonth { selectedMonth = day }
                                         }
                                     }
                                     .onEnded { _ in
@@ -445,6 +443,8 @@ struct AllTimeDistanceChartView: View {
                 let maxSelectedValue = analytics.allTimeMonthlyDistances.map { fullAllTimeValueKm(for: $0) }.max() ?? 1
                 let maxY = max(maxSelectedValue * 1.15, 1)
                 let chartColor = fullAllTimeChartMode.color
+                // The selected month, found once per redraw (build 160); see selectedDayID.
+                let selectedMonthID = selectedData?.id
 
                 Chart {
                     ForEach(analytics.allTimeMonthlyDistances) { data in
@@ -469,22 +469,14 @@ struct AllTimeDistanceChartView: View {
                         .foregroundStyle(chartColor)
                         .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
 
-                        if data.distance > 0 ||
-                            selectedMonth.map({ Calendar.current.isDate(data.monthStart, equalTo: $0, toGranularity: .month) }) == true {
+                        let isSelected = data.id == selectedMonthID
+                        if data.distance > 0 || isSelected {
                             PointMark(
                                 x: .value("Month", data.monthStart, unit: .month),
                                 y: .value(fullAllTimeChartMode.rawValue, fullAllTimeValueKm(for: data))
                             )
-                            .foregroundStyle(
-                                selectedMonth.map { Calendar.current.isDate(data.monthStart, equalTo: $0, toGranularity: .month) } == true
-                                ? Color.orange
-                                : chartColor
-                            )
-                            .symbolSize(
-                                selectedMonth.map { Calendar.current.isDate(data.monthStart, equalTo: $0, toGranularity: .month) } == true
-                                ? 90
-                                : 18
-                            )
+                            .foregroundStyle(isSelected ? Color.orange : chartColor)
+                            .symbolSize(isSelected ? 90 : 18)
                         }
                     }
 
@@ -541,8 +533,10 @@ struct AllTimeDistanceChartView: View {
                             .gesture(
                                 DragGesture(minimumDistance: 0)
                                     .onChanged { value in
+                                        // Only when the month changes (build 160).
                                         if let date: Date = proxy.value(atX: value.location.x) {
-                                            selectedMonth = nearestMonth(to: date)
+                                            let month = nearestMonth(to: date)
+                                            if month != selectedMonth { selectedMonth = month }
                                         }
                                     }
                                     .onEnded { _ in
