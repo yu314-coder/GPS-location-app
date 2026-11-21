@@ -186,14 +186,15 @@ final class WatchDiagnosticsRecorder {
     private static func fileURL(for workoutStart: Date) -> URL {
         let df = DateFormatter()
         df.dateFormat = "yyyyMMdd_HHmmss"
-        return logDirectory.appendingPathComponent("watch_velocity_debug_\(df.string(from: workoutStart)).csv")
+        return logDirectory.appendingPathComponent("watch_velocity_debug_\(df.string(from: workoutStart)).csv.gz")
     }
 
-    /// The same workout's fixes, beside it: watch_velocity_fixes_<start>.csv.
+    /// The same workout's fixes, beside it: watch_velocity_fixes_<start>.csv.gz. Both are gzip since build 158 (see
+    /// LogCompression): a quarter of the bytes to send to the iPhone over the watch link.
     private static func fixFileURL(for workoutStart: Date) -> URL {
         let df = DateFormatter()
         df.dateFormat = "yyyyMMdd_HHmmss"
-        return logDirectory.appendingPathComponent("watch_velocity_fixes_\(df.string(from: workoutStart)).csv")
+        return logDirectory.appendingPathComponent("watch_velocity_fixes_\(df.string(from: workoutStart)).csv.gz")
     }
 
     /// The workout has ended: close its file and hand it to the iPhone, with any earlier file that
@@ -225,7 +226,7 @@ final class WatchDiagnosticsRecorder {
         guard let files = try? fm.contentsOfDirectory(at: logDirectory,
                                                       includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         let inFlight = Set(WatchConnectivityManager.shared.outstandingDiagnosticsLogNames())
-        for file in files where file.pathExtension == "csv" {
+        for file in files where ["csv", "gz"].contains(file.pathExtension) {
             if current.contains(where: { $0.lastPathComponent == file.lastPathComponent }) || inFlight.contains(file.lastPathComponent) { continue }
             let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
             guard Date().timeIntervalSince(modified) >= untouchedFor else { continue }

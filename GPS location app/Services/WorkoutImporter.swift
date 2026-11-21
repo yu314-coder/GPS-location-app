@@ -79,7 +79,7 @@ final class WorkoutImporter: ObservableObject {
             try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
             var copied = 0
             func wanted(_ name: String) -> Bool {
-                (name.hasPrefix("velocity_") && name.hasSuffix(".csv")) || (name.hasPrefix("flight_details_") && name.hasSuffix(".json"))
+                (name.hasPrefix("velocity_") && (name.hasSuffix(".csv") || name.hasSuffix(".csv.gz"))) || (name.hasPrefix("flight_details_") && name.hasSuffix(".json"))
             }
             func copy(_ u: URL) {
                 guard wanted(u.lastPathComponent) else { return }

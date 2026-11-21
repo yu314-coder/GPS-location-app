@@ -63,6 +63,8 @@ struct ContentView: View {
         return .home
     }()
     @State private var showLiveSession = false
+    /// Offers once to compress the logs written before build 158 (see LogCompactor).
+    @ObservedObject private var logCompactor = LogCompactor.shared
 
     @State private var rootWidth: CGFloat = 0
 
@@ -89,8 +91,39 @@ struct ContentView: View {
                 .presentationDetents([.large]) // Full screen for stability
                 .presentationDragIndicator(.hidden) // Hide drag indicator since it can't be dismissed
         }
+        .alert(item: $logCompactor.offer) { offer in
+            Alert(title: Text("Compress old logs?"),
+                  message: Text("\(offer.files.count) workout logs from before this version take \(LogCompactor.megabytes(offer.bytes)). "
+                                + "Compressed they take about \(LogCompactor.megabytes(offer.bytes * 38 / 100)), with nothing lost: "
+                                + "each file is checked before its original is removed. They stay in Files → VelocityLogs as .csv.gz. "
+                                + "It takes a few minutes and is best done while charging; it pauses if a workout starts."),
+                  primaryButton: .default(Text("Compress")) { logCompactor.start(offer) },
+                  secondaryButton: .cancel(Text("Not now")) { logCompactor.decline() })
+        }
+        .overlay(alignment: .bottom) {
+            if logCompactor.running {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Compressing logs \(logCompactor.progress.done) of \(logCompactor.progress.total)")
+                        .font(.footnote)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(.thinMaterial, in: Capsule())
+                .padding(.bottom, 60)
+            }
+        }
+        .background(
+            Color.clear.alert(item: $logCompactor.outcome) { r in
+                Alert(title: Text(r.stopped ? "Compression paused" : "Logs compressed"),
+                      message: Text("\(r.files) logs: \(LogCompactor.megabytes(r.before)) → \(LogCompactor.megabytes(r.after))."
+                                    + (r.failed > 0 ? " \(r.failed) left as they were (could not be checked)." : "")
+                                    + (r.stopped ? " The rest will be offered at a later launch (a workout started, or storage is short)." : "")),
+                      dismissButton: .default(Text("OK")))
+            }
+        )
         .onAppear {
             print("✅ ContentView appeared successfully")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { logCompactor.offerIfNeeded() }
             // Prompt for Motion & Fitness at launch. Without it CMPedometer and
             // CMMotionActivityManager silently return nothing, which disables walking distance
             // and the stationary/automotive detection the dead reckoning relies on.

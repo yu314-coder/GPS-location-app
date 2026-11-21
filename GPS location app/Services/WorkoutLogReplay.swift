@@ -71,8 +71,10 @@ enum WorkoutLogReplay {
 
     /// velocity_<kind>_<stamp>[_partN].csv -> (kind, stamp, part); the watch's logs are not this phone's workout.
     static func parseName(_ name: String) -> (String, String, Int)? {
-        guard name.hasPrefix("velocity_"), name.hasSuffix(".csv") else { return nil }
-        var rest = String(name.dropFirst("velocity_".count).dropLast(4))
+        // .csv.gz since build 158; older logs and other phones' are plain.
+        let base = name.hasSuffix(".csv.gz") ? String(name.dropLast(3)) : name
+        guard base.hasPrefix("velocity_"), base.hasSuffix(".csv") else { return nil }
+        var rest = String(base.dropFirst("velocity_".count).dropLast(4))
         guard let us = rest.firstIndex(of: "_") else { return nil }
         let kind = String(rest[..<us])
         guard ["debug", "events", "raw50hz"].contains(kind) else { return nil }
@@ -138,14 +140,13 @@ enum WorkoutLogReplay {
 
     // MARK: - Reading
 
-    /// Lines of a text file, read a megabyte at a time (a four-hour raw log is about 200 MB).
+    /// Lines of a text file, read a megabyte at a time (a four-hour raw log is about 200 MB); a .csv.gz is
+    /// decompressed as it is read (build 158).
     static func forEachLine(_ url: URL, _ body: (Substring) throws -> Bool) throws {
-        let h = try FileHandle(forReadingFrom: url)
-        defer { try? h.close() }
+        let reader = try LogCompression.ChunkReader(url)
         var carry = Data()
         while true {
-            let chunk = try h.read(upToCount: 1 << 20) ?? Data()
-            if chunk.isEmpty { break }
+            guard let chunk = try reader.next(), !chunk.isEmpty else { break }
             carry.append(chunk)
             var start = carry.startIndex
             while let nl = carry[start...].firstIndex(of: 0x0A) {

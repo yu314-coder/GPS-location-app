@@ -294,7 +294,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         if rows.count > capacity + 1000 { rows.removeFirst(rows.count - capacity) }
         rowCount = rows.count
         if debugStream == nil, let stamp {
-            debugStream = CSVStream(url: Self.logDirectory.appendingPathComponent("velocity_debug_\(stamp).csv"),
+            debugStream = CSVStream(url: Self.logURL("velocity_debug_\(stamp)"),
                                     header: Self.debugHeader, flushEvery: 30)
         }
         debugStream?.append(Self.line(row))
@@ -330,7 +330,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
     private func appendEvent(time: Date, kind: String, fields: [String], detail: String) {
         guard loggingEnabled, let stamp else { return }
         if eventStream == nil {
-            eventStream = CSVStream(url: Self.logDirectory.appendingPathComponent("velocity_events_\(stamp).csv"),
+            eventStream = CSVStream(url: Self.logURL("velocity_events_\(stamp)"),
                                     header: Self.eventHeader, flushEvery: 30)
         }
         var line = Self.isoFormatter.string(from: time) + "," + String(format: "%.3f", time.timeIntervalSince1970)
@@ -503,18 +503,18 @@ final class SessionDiagnosticsRecorder: ObservableObject {
                 // t_seconds inside the old one.
                 var url: URL
                 if let stamp {
-                    url = dir.appendingPathComponent("velocity_raw50hz_\(stamp).csv")
+                    url = dir.appendingPathComponent("velocity_raw50hz_\(stamp).csv.gz")
                     var part = 2
-                    while FileManager.default.fileExists(atPath: url.path) {
-                        url = dir.appendingPathComponent("velocity_raw50hz_\(stamp)_part\(part).csv")
+                    while Self.logExists(url) {
+                        url = dir.appendingPathComponent("velocity_raw50hz_\(stamp)_part\(part).csv.gz")
                         part += 1
                     }
                 } else {
                     let df = DateFormatter()
                     df.dateFormat = "yyyyMMdd_HHmmss"
-                    url = dir.appendingPathComponent("velocity_raw50hz_\(df.string(from: rawStart ?? Date())).csv")
+                    url = dir.appendingPathComponent("velocity_raw50hz_\(df.string(from: rawStart ?? Date())).csv.gz")
                 }
-                FileManager.default.createFile(atPath: url.path, contents: Self.rawHeader().data(using: .utf8))
+                FileManager.default.createFile(atPath: url.path, contents: LogCompression.gzipMember(Data(Self.rawHeader().utf8)))
                 rawFileHandle = try FileHandle(forWritingTo: url)
                 rawFileHandle?.seekToEndOfFile()
                 rawFileURL = url
@@ -545,7 +545,8 @@ final class SessionDiagnosticsRecorder: ObservableObject {
                 chunk += String(format: ",%.6f,%.6f,%.6f,%.2f", s.roll, s.pitch, s.yaw, s.motionHeading)
                 chunk += String(format: ",%.3f,%.3f,%.3f,%d\n", s.magX, s.magY, s.magZ, s.magAccuracy)
             }
-            if let data = chunk.data(using: .utf8) { handle.write(data) }
+            // One gzip member per batch (build 158), compressed here on the utility queue, off the main thread.
+            handle.write(LogCompression.gzipMember(Data(chunk.utf8)))
         }
     }
 
@@ -595,6 +596,17 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         for log in allSavedLogs() { try? FileManager.default.removeItem(at: log.url) }
     }
 
+    /// A log's file (build 158): `.csv.gz`, unless this workout already has a plain `.csv` (a workout restored after a
+    /// relaunch that began on an older build), which carries on as it was.
+    private static func logURL(_ base: String) -> URL {
+        let plain = logDirectory.appendingPathComponent(base + ".csv")
+        return FileManager.default.fileExists(atPath: plain.path) ? plain : logDirectory.appendingPathComponent(base + ".csv.gz")
+    }
+    private static func logExists(_ gz: URL) -> Bool {
+        FileManager.default.fileExists(atPath: gz.path)
+            || FileManager.default.fileExists(atPath: gz.deletingPathExtension().path)
+    }
+
     private static var logDirectory: URL {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("VelocityLogs", isDirectory: true)
@@ -636,7 +648,7 @@ final class SessionDiagnosticsRecorder: ObservableObject {
         // A trace opened before the workout's stamp was known is named by its first sample; give
         // it the workout's name, unless one is already taken.
         if let streamed, !streamed.lastPathComponent.contains(s) {
-            let target = Self.logDirectory.appendingPathComponent("velocity_raw50hz_\(s).csv")
+            let target = Self.logDirectory.appendingPathComponent("velocity_raw50hz_\(s).csv.gz")
             if !FileManager.default.fileExists(atPath: target.path) {
                 try? FileManager.default.moveItem(at: streamed, to: target)
             }

@@ -22,7 +22,7 @@ final class WatchLogsModel: ObservableObject {
     func refresh() {
         let files = (try? FileManager.default.contentsOfDirectory(
             at: WatchDiagnosticsRecorder.logDirectory, includingPropertiesForKeys: [.fileSizeKey])) ?? []
-        let logs = files.filter { $0.pathExtension == "csv" }
+        let logs = files.filter { ["csv", "gz"].contains($0.pathExtension) }
         let count = logs.count
         let size = logs.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
         let transfers = WatchConnectivityManager.shared.outstandingDiagnosticsTransfers()
