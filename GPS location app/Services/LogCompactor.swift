@@ -14,7 +14,7 @@ import UIKit
 final class LogCompactor: ObservableObject {
     static let shared = LogCompactor()
 
-    struct Offer: Identifiable { let id = UUID(); let files: [URL]; let bytes: Int64 }
+    struct Offer: Identifiable { let id = UUID(); let files: [URL]; let bytes: Int64; let estimate: Int64; let routes: Int }
     struct Outcome: Identifiable { let id = UUID(); let files: Int; let before: Int64; let after: Int64; let failed: Int; let stopped: Bool }
 
     @Published var offer: Offer?
@@ -27,14 +27,19 @@ final class LogCompactor: ObservableObject {
 
     private var logDirectory: URL { SessionDiagnosticsRecorder.velocityLogDirectory }
 
-    /// Plain logs that may be compressed: this phone's and the watch's, none written in the last ten minutes.
+    /// Plain files that may be compressed, none written in the last ten minutes: this phone's and the watch's logs, and
+    /// the saved workouts' full routes (flight_details_*.json, beside VelocityLogs in Documents; build 158 writes them
+    /// as .json.gz, see FlightDataStore).
     nonisolated static func plainLogs(in dir: URL) -> [(URL, Int64)] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
-        let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys)) ?? []
+        let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys)) ?? [])
+            + ((try? fm.contentsOfDirectory(at: dir.deletingLastPathComponent(), includingPropertiesForKeys: keys)) ?? [])
         return files.compactMap { url in
             let name = url.lastPathComponent
-            guard name.hasSuffix(".csv"), name.hasPrefix("velocity_") || name.hasPrefix("watch_velocity_"),
+            let isLog = name.hasSuffix(".csv") && (name.hasPrefix("velocity_") || name.hasPrefix("watch_velocity_"))
+            let isRoute = name.hasPrefix("flight_details_") && name.hasSuffix(".json")
+            guard isLog || isRoute,
                   let v = try? url.resourceValues(forKeys: Set(keys)),
                   let modified = v.contentModificationDate, Date().timeIntervalSince(modified) > 600 else { return nil }
             return (url, Int64(v.fileSize ?? 0))
@@ -49,12 +54,16 @@ final class LogCompactor: ObservableObject {
         let dir = logDirectory
         Task.detached(priority: .utility) {
             Self.removeLeftovers(in: dir)
+            Self.removeLeftovers(in: dir.deletingLastPathComponent())
             let logs = Self.plainLogs(in: dir)
             guard !logs.isEmpty else { return }
             let bytes = logs.reduce(Int64(0)) { $0 + $1.1 }
+            // Measured: logs to ~38%, route JSON to ~15%.
+            let estimate = logs.reduce(Int64(0)) { $0 + ($1.0.pathExtension == "json" ? $1.1 * 15 / 100 : $1.1 * 38 / 100) }
+            let routes = logs.filter { $0.0.pathExtension == "json" }.count
             await MainActor.run {
                 guard !WorkoutSession.shared.isActive else { return }
-                self.offer = Offer(files: logs.map { $0.0 }, bytes: bytes)
+                self.offer = Offer(files: logs.map { $0.0 }, bytes: bytes, estimate: estimate, routes: routes)
             }
         }
     }
@@ -138,6 +147,13 @@ final class LogCompactor: ObservableObject {
         for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix(".") && name.hasSuffix(".gz.partial") {
             try? fm.removeItem(at: dir.appendingPathComponent(name))
         }
+    }
+
+    /// "151 workout logs and 3,859 saved routes", naming only what is there.
+    static func describe(logs: Int, routes: Int) -> String {
+        let l = logs == 1 ? "1 workout log" : "\(logs.formatted()) workout logs"
+        let r = routes == 1 ? "1 saved route" : "\(routes.formatted()) saved routes"
+        return logs > 0 && routes > 0 ? "\(l) and \(r)" : (routes > 0 ? r : l)
     }
 
     static func megabytes(_ bytes: Int64) -> String {

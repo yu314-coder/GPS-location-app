@@ -1,6 +1,7 @@
 import Foundation
 import HealthKit
 import CoreLocation
+import UIKit
 
 class FlightDataStore: ObservableObject {
     static let shared = FlightDataStore()
@@ -25,8 +26,21 @@ class FlightDataStore: ObservableObject {
         documentsDirectory.appendingPathComponent(syncMetadataFileName)
     }
 
+    // SAVED ROUTES ARE GZIP (build 158). The full route files had grown to 7.2 GB on the owner's iPhone (3,859
+    // flight_details_*.json, 2026-11-21). The same JSON is now stored gzip-compressed as .json.gz - 15% of the bytes
+    // at level 6, nothing changed inside - and a plain .json from an older build is still read (and compressed when the
+    // owner accepts the offer, see LogCompactor). Watch checkpoints, which rewrite the whole file each time, use level 1.
     private func flightDetailsURL(for id: UUID) -> URL {
+        let gz = compressedDetailsURL(for: id)
+        if FileManager.default.fileExists(atPath: gz.path) { return gz }
+        let plain = plainDetailsURL(for: id)
+        return FileManager.default.fileExists(atPath: plain.path) ? plain : gz
+    }
+    private func plainDetailsURL(for id: UUID) -> URL {
         documentsDirectory.appendingPathComponent("\(detailsFilePrefix)\(id.uuidString).json")
+    }
+    private func compressedDetailsURL(for id: UUID) -> URL {
+        documentsDirectory.appendingPathComponent("\(detailsFilePrefix)\(id.uuidString).json.gz")
     }
 
     private func routeCacheURL(for id: UUID) -> URL {
@@ -184,7 +198,6 @@ class FlightDataStore: ObservableObject {
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = .prettyPrinted
             let data = try encoder.encode(snapshot)
             try data.write(to: fileURL, options: .atomic)
         } catch {
@@ -251,8 +264,9 @@ class FlightDataStore: ObservableObject {
         var updatedFlight = flight
         updatedFlight.metrics = metrics
 
-        // Save full details to disk (overwrites previous version with updated data)
-        persistFlightDetails(updatedFlight)
+        // Save full details to disk (overwrites previous version with updated data); fast compression, as this
+        // runs at every watch checkpoint.
+        persistFlightDetails(updatedFlight, level: 1)
 
         // Update summary in memory
         let summary = summarizedFlight(from: updatedFlight)
@@ -263,9 +277,41 @@ class FlightDataStore: ObservableObject {
                 self.savedFlights.insert(summary, at: 0)
             }
 
-            // Persist summaries
-            self.persistFlights()
+            // Persist summaries - coalesced (build 158): this runs at every watch checkpoint.
+            self.schedulePersistFlights()
         }
+    }
+
+    // THE WORKOUT LIST IS WRITTEN AT MOST EVERY 30 s DURING A WATCH WORKOUT (build 158). Each watch checkpoint (about 75
+    // a day) re-encoded all ~3,900 summaries on the main thread and rewrote flights.json (3.6 MB, pretty-printed).
+    // Checkpoints now mark it dirty; one write follows 30 s later, encoded off the main thread, and a pending write is
+    // made at once when the app goes to the background. Every other save (a finished workout, an edit, a deletion)
+    // still writes straight away. Losing at most 30 s of a running watch workout's summary to a crash is harmless:
+    // its full route is saved at every checkpoint and the final file rewrites the summary.
+    private var persistFlightsPending: DispatchWorkItem?
+    private let persistQueue = DispatchQueue(label: "euleryu.gps.flights-json", qos: .utility)
+    private var backgroundObserver: NSObjectProtocol?
+
+    private func schedulePersistFlights() {
+        guard persistFlightsPending == nil else { return }
+        if backgroundObserver == nil {
+            backgroundObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.flushPendingPersistFlights()
+            }
+        }
+        let work = DispatchWorkItem { [weak self] in self?.flushPendingPersistFlights() }
+        persistFlightsPending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
+    }
+
+    /// On the main thread: write a pending coalesced list now (the snapshot is encoded off the main thread).
+    private func flushPendingPersistFlights() {
+        guard let pending = persistFlightsPending else { return }
+        pending.cancel()
+        persistFlightsPending = nil
+        let snapshot = savedFlights
+        persistQueue.async { [weak self] in self?.persistFlightsSnapshot(snapshot) }
     }
 
     /// THE WATCH'S FLIGHT, KEPT BETWEEN CHECKPOINTS (build 127). When the watch can reach the phone it sends each
@@ -466,10 +512,10 @@ class FlightDataStore: ObservableObject {
     // MARK: - Private Methods
 
     private func persistFlights() {
+        persistFlightsPending?.cancel(); persistFlightsPending = nil
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = .prettyPrinted
             let data = try encoder.encode(savedFlights)
             try data.write(to: fileURL, options: .atomic)
             print("✅ Saved \(savedFlights.count) flights to storage")
@@ -478,8 +524,8 @@ class FlightDataStore: ObservableObject {
         }
     }
 
-    private func persistFlightDetails(_ flight: Flight) {
-        let detailsURL = flightDetailsURL(for: flight.id)
+    private func persistFlightDetails(_ flight: Flight, level: Int32 = LogCompression.level) {
+        let detailsURL = compressedDetailsURL(for: flight.id)
 
         // SAFETY: Validate data before attempting to encode
         guard !flight.id.uuidString.isEmpty else {
@@ -510,7 +556,11 @@ class FlightDataStore: ObservableObject {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(flight)
-            try data.write(to: detailsURL, options: .atomic)
+            let packed = LogCompression.gzipMember(data, level: level)
+            guard !packed.isEmpty else { throw CocoaError(.fileWriteUnknown) }
+            try packed.write(to: detailsURL, options: .atomic)
+            // An older plain copy of this route is now superseded.
+            try? FileManager.default.removeItem(at: plainDetailsURL(for: flight.id))
             print("✅ Saved flight details for \(flight.id)")
             print("   📁 File: \(detailsURL.lastPathComponent)")
             print("   📍 Locations: \(flight.locations.count)")
@@ -535,7 +585,7 @@ class FlightDataStore: ObservableObject {
         guard FileManager.default.fileExists(atPath: detailsURL.path) else { return nil }
 
         do {
-            let data = try Data(contentsOf: detailsURL, options: .mappedIfSafe)
+            let data = try LogCompression.gunzipIfNeeded(Data(contentsOf: detailsURL, options: .mappedIfSafe))
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             return try decoder.decode(Flight.self, from: data)
@@ -547,7 +597,8 @@ class FlightDataStore: ObservableObject {
 
     private func deleteFlightDetails(for id: UUID) {
         deleteRouteCache(for: id)
-        let detailsURL = flightDetailsURL(for: id)
+        try? FileManager.default.removeItem(at: plainDetailsURL(for: id))
+        let detailsURL = compressedDetailsURL(for: id)
         guard FileManager.default.fileExists(atPath: detailsURL.path) else { return }
 
         do {
@@ -641,7 +692,6 @@ class FlightDataStore: ObservableObject {
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = .prettyPrinted
             let metadata: [String: Date] = ["lastSyncDate": Date()]
             let data = try encoder.encode(metadata)
             try data.write(to: syncMetadataURL, options: .atomic)

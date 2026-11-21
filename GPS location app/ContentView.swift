@@ -92,10 +92,10 @@ struct ContentView: View {
                 .presentationDragIndicator(.hidden) // Hide drag indicator since it can't be dismissed
         }
         .alert(item: $logCompactor.offer) { offer in
-            Alert(title: Text("Compress old logs?"),
-                  message: Text("\(offer.files.count) workout logs from before this version take \(LogCompactor.megabytes(offer.bytes)). "
-                                + "Compressed they take about \(LogCompactor.megabytes(offer.bytes * 38 / 100)), with nothing lost: "
-                                + "each file is checked before its original is removed. They stay in Files → VelocityLogs as .csv.gz. "
+            Alert(title: Text("Compress stored data?"),
+                  message: Text("\(LogCompactor.describe(logs: offer.files.count - offer.routes, routes: offer.routes)) from before this version take \(LogCompactor.megabytes(offer.bytes)). "
+                                + "Compressed they take about \(LogCompactor.megabytes(offer.estimate)), with nothing lost: "
+                                + "each file is checked before its original is removed. Logs stay in Files → VelocityLogs as .csv.gz. "
                                 + "It takes a few minutes and is best done while charging; it pauses if a workout starts."),
                   primaryButton: .default(Text("Compress")) { logCompactor.start(offer) },
                   secondaryButton: .cancel(Text("Not now")) { logCompactor.decline() })
@@ -114,8 +114,8 @@ struct ContentView: View {
         }
         .background(
             Color.clear.alert(item: $logCompactor.outcome) { r in
-                Alert(title: Text(r.stopped ? "Compression paused" : "Logs compressed"),
-                      message: Text("\(r.files) logs: \(LogCompactor.megabytes(r.before)) → \(LogCompactor.megabytes(r.after))."
+                Alert(title: Text(r.stopped ? "Compression paused" : "Data compressed"),
+                      message: Text("\(r.files) files: \(LogCompactor.megabytes(r.before)) → \(LogCompactor.megabytes(r.after))."
                                     + (r.failed > 0 ? " \(r.failed) left as they were (could not be checked)." : "")
                                     + (r.stopped ? " The rest will be offered at a later launch (a workout started, or storage is short)." : "")),
                       dismissButton: .default(Text("OK")))

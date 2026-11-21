@@ -54,7 +54,7 @@ enum WorkoutLogReplay {
         var saved: [URL] = []
         for f in files {
             let name = f.lastPathComponent
-            if name.hasPrefix("flight_details_"), name.hasSuffix(".json") { saved.append(f); continue }
+            if name.hasPrefix("flight_details_"), name.hasSuffix(".json") || name.hasSuffix(".json.gz") { saved.append(f); continue }
             guard let (kind, stamp, part) = parseName(name) else { continue }
             var s = sets[stamp] ?? LogSet(stamp: stamp)
             switch kind {

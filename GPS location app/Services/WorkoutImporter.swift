@@ -79,7 +79,7 @@ final class WorkoutImporter: ObservableObject {
             try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
             var copied = 0
             func wanted(_ name: String) -> Bool {
-                (name.hasPrefix("velocity_") && (name.hasSuffix(".csv") || name.hasSuffix(".csv.gz"))) || (name.hasPrefix("flight_details_") && name.hasSuffix(".json"))
+                (name.hasPrefix("velocity_") && (name.hasSuffix(".csv") || name.hasSuffix(".csv.gz"))) || (name.hasPrefix("flight_details_") && (name.hasSuffix(".json") || name.hasSuffix(".json.gz")))
             }
             func copy(_ u: URL) {
                 guard wanted(u.lastPathComponent) else { return }
@@ -244,7 +244,7 @@ final class WorkoutImporter: ObservableObject {
         switch source {
         case .saved(let url):
             let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-            let theirs = try decoder.decode(Flight.self, from: Data(contentsOf: url))
+            let theirs = try decoder.decode(Flight.self, from: LogCompression.gunzipIfNeeded(Data(contentsOf: url)))
             var f = Flight(id: UUID(), startDate: theirs.startDate)
             f.endDate = theirs.endDate; f.locations = theirs.locations; f.metrics = theirs.metrics
             f.origin = theirs.origin; f.destination = theirs.destination; f.effort = theirs.effort

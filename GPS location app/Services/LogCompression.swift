@@ -19,8 +19,9 @@ enum LogCompression {
     /// `name.csv.gz` is compressed, anything else plain.
     static func isCompressed(_ url: URL) -> Bool { url.pathExtension.lowercased() == "gz" }
 
-    /// One complete gzip member holding `data`.
-    static func gzipMember(_ data: Data) -> Data {
+    /// One complete gzip member holding `data`. `level` 1 for frequent rewrites (watch checkpoints of a saved route:
+    /// 16.5% of the JSON at ~3x the speed of level 6's 14.6%).
+    static func gzipMember(_ data: Data, level: Int32 = LogCompression.level) -> Data {
         var stream = z_stream()
         guard deflateInit2_(&stream, level, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY,
                             ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return Data() }
@@ -111,6 +112,42 @@ enum LogCompression {
             out.count = produced
             return produced > 0 ? out : nil
         }
+    }
+
+    /// `data` itself, or decompressed when it is gzip (starts 1f 8b): a saved route written by build 158 or later.
+    static func gunzipIfNeeded(_ data: Data) throws -> Data {
+        guard data.count >= 2, data[data.startIndex] == 0x1f, data[data.startIndex + 1] == 0x8b else { return data }
+        var stream = z_stream()
+        guard inflateInit2_(&stream, 15 + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        defer { inflateEnd(&stream) }
+        var out = Data()
+        let chunk = 1 << 20
+        var buffer = [UInt8](repeating: 0, count: chunk)
+        try data.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+            var offset = 0
+            while offset < data.count {
+                stream.next_in = UnsafeMutablePointer(mutating: src.bindMemory(to: Bytef.self).baseAddress! + offset)
+                stream.avail_in = uInt(data.count - offset)
+                var status: Int32 = Z_OK
+                repeat {
+                    let produced: Int = buffer.withUnsafeMutableBufferPointer { b in
+                        stream.next_out = b.baseAddress
+                        stream.avail_out = uInt(chunk)
+                        status = inflate(&stream, Z_NO_FLUSH)
+                        return chunk - Int(stream.avail_out)
+                    }
+                    if produced > 0 { out.append(contentsOf: buffer[0..<produced]) }
+                } while status == Z_OK && stream.avail_out == 0
+                let consumed = (data.count - offset) - Int(stream.avail_in)
+                offset += consumed
+                if status == Z_STREAM_END { inflateReset(&stream); continue }    // another member may follow
+                if status != Z_OK && status != Z_BUF_ERROR { throw CocoaError(.fileReadCorruptFile) }
+                if consumed == 0 { break }                                          // cut off: keep what was read
+            }
+        }
+        return out
     }
 
     /// Compress `source` (a plain log) into `destination` (.csv.gz), then read the result back and compare it with the
