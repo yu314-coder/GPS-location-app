@@ -90,7 +90,7 @@ final class LogCompactor: ObservableObject {
     /// KEEP THE ORIGINALS WHILE THE OWNER TESTS (owner, 2026-11-21): each converted original is moved, not deleted, into
     /// Documents/Before compression (visible in Files), and removed only when the owner taps "Delete originals" (the
     /// result alert or Settings → Developer). Turn off for the public release, which swaps directly.
-    static let keepOriginals = true
+    static let keepOriginals = false   // public build: direct swap (owner, 2026-11-22); true in test builds
     nonisolated static var originalsDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Before compression", isDirectory: true)
