@@ -917,3 +917,89 @@ struct Split: Codable, Identifiable, Hashable {
         return String(format: "%d:%02d", minutes, seconds)
     }
 }
+
+// OLDER SAVED ROUTES STILL OPEN (build 160). The synthesized decoder required every non-optional field, so a route
+// saved before a field existed failed whole: 23 of 30 sampled routes on the owner's phone lacked accuracySampleCount
+// (a non-optional Int with a default) and could not be opened, or checked for compression. Each field is now taken
+// when present and otherwise keeps its default; encoding is unchanged (still synthesized).
+extension FlightMetrics {
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        totalDistance = try c.decodeIfPresent(Double.self, forKey: .totalDistance) ?? totalDistance
+        averageSpeed = try c.decodeIfPresent(Double.self, forKey: .averageSpeed) ?? averageSpeed
+        maxSpeed = try c.decodeIfPresent(Double.self, forKey: .maxSpeed) ?? maxSpeed
+        currentSpeed = try c.decodeIfPresent(Double.self, forKey: .currentSpeed) ?? currentSpeed
+        smoothedSpeed = try c.decodeIfPresent(Double.self, forKey: .smoothedSpeed) ?? smoothedSpeed
+        currentAcceleration = try c.decodeIfPresent(Double.self, forKey: .currentAcceleration)
+        maxAcceleration = try c.decodeIfPresent(Double.self, forKey: .maxAcceleration)
+        maxDeceleration = try c.decodeIfPresent(Double.self, forKey: .maxDeceleration)
+        averageAcceleration = try c.decodeIfPresent(Double.self, forKey: .averageAcceleration)
+        currentMotionAcceleration = try c.decodeIfPresent(Double.self, forKey: .currentMotionAcceleration)
+        maxMotionAcceleration = try c.decodeIfPresent(Double.self, forKey: .maxMotionAcceleration)
+        averageMotionAcceleration = try c.decodeIfPresent(Double.self, forKey: .averageMotionAcceleration)
+        verticalSpeedSampleCount = try c.decodeIfPresent(Int.self, forKey: .verticalSpeedSampleCount)
+        currentMotionAccelerationX = try c.decodeIfPresent(Double.self, forKey: .currentMotionAccelerationX)
+        currentMotionAccelerationY = try c.decodeIfPresent(Double.self, forKey: .currentMotionAccelerationY)
+        currentMotionAccelerationZ = try c.decodeIfPresent(Double.self, forKey: .currentMotionAccelerationZ)
+        currentPitch = try c.decodeIfPresent(Double.self, forKey: .currentPitch)
+        currentRoll = try c.decodeIfPresent(Double.self, forKey: .currentRoll)
+        currentYaw = try c.decodeIfPresent(Double.self, forKey: .currentYaw)
+        currentRotationRate = try c.decodeIfPresent(Double.self, forKey: .currentRotationRate)
+        maxRotationRate = try c.decodeIfPresent(Double.self, forKey: .maxRotationRate)
+        currentRotationRateX = try c.decodeIfPresent(Double.self, forKey: .currentRotationRateX)
+        currentRotationRateY = try c.decodeIfPresent(Double.self, forKey: .currentRotationRateY)
+        currentRotationRateZ = try c.decodeIfPresent(Double.self, forKey: .currentRotationRateZ)
+        currentCompassHeading = try c.decodeIfPresent(Double.self, forKey: .currentCompassHeading)
+        maxAltitude = try c.decodeIfPresent(Double.self, forKey: .maxAltitude) ?? maxAltitude
+        minAltitude = try c.decodeIfPresent(Double.self, forKey: .minAltitude) ?? minAltitude
+        currentAltitude = try c.decodeIfPresent(Double.self, forKey: .currentAltitude) ?? currentAltitude
+        totalAltitudeGain = try c.decodeIfPresent(Double.self, forKey: .totalAltitudeGain) ?? totalAltitudeGain
+        totalAltitudeLoss = try c.decodeIfPresent(Double.self, forKey: .totalAltitudeLoss) ?? totalAltitudeLoss
+        currentBarometricRelativeAltitude = try c.decodeIfPresent(Double.self, forKey: .currentBarometricRelativeAltitude)
+        maxBarometricRelativeAltitude = try c.decodeIfPresent(Double.self, forKey: .maxBarometricRelativeAltitude)
+        minBarometricRelativeAltitude = try c.decodeIfPresent(Double.self, forKey: .minBarometricRelativeAltitude)
+        barometricAltitudeGain = try c.decodeIfPresent(Double.self, forKey: .barometricAltitudeGain)
+        barometricAltitudeLoss = try c.decodeIfPresent(Double.self, forKey: .barometricAltitudeLoss)
+        currentVerticalSpeed = try c.decodeIfPresent(Double.self, forKey: .currentVerticalSpeed)
+        maxClimbRate = try c.decodeIfPresent(Double.self, forKey: .maxClimbRate)
+        maxDescentRate = try c.decodeIfPresent(Double.self, forKey: .maxDescentRate)
+        averageVerticalSpeed = try c.decodeIfPresent(Double.self, forKey: .averageVerticalSpeed)
+        currentPressure = try c.decodeIfPresent(Double.self, forKey: .currentPressure)
+        duration = try c.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? duration
+        caloriesBurned = try c.decodeIfPresent(Double.self, forKey: .caloriesBurned) ?? caloriesBurned
+        restingEnergyBurned = try c.decodeIfPresent(Double.self, forKey: .restingEnergyBurned) ?? restingEnergyBurned
+        stepsCount = try c.decodeIfPresent(Double.self, forKey: .stepsCount)
+        nativeStepDistance = try c.decodeIfPresent(Double.self, forKey: .nativeStepDistance)
+        currentHeartRate = try c.decodeIfPresent(Double.self, forKey: .currentHeartRate)
+        averageHeartRate = try c.decodeIfPresent(Double.self, forKey: .averageHeartRate)
+        maxHeartRate = try c.decodeIfPresent(Double.self, forKey: .maxHeartRate)
+        minHeartRate = try c.decodeIfPresent(Double.self, forKey: .minHeartRate)
+        heartRateSamples = try c.decodeIfPresent([Double].self, forKey: .heartRateSamples) ?? heartRateSamples
+        speedHistory = try c.decodeIfPresent([SpeedSample].self, forKey: .speedHistory) ?? speedHistory
+        tenSecondAverageSpeed = try c.decodeIfPresent(Double.self, forKey: .tenSecondAverageSpeed) ?? tenSecondAverageSpeed
+        accelerationHistory = try c.decodeIfPresent([AccelerationSample].self, forKey: .accelerationHistory)
+        motionAccelerationHistory = try c.decodeIfPresent([MotionAccelerationSample].self, forKey: .motionAccelerationHistory)
+        attitudeHistory = try c.decodeIfPresent([AttitudeSample].self, forKey: .attitudeHistory)
+        rotationRateHistory = try c.decodeIfPresent([RotationRateSample].self, forKey: .rotationRateHistory)
+        compassHeadingHistory = try c.decodeIfPresent([HeadingSample].self, forKey: .compassHeadingHistory)
+        altitudeHistory = try c.decodeIfPresent([AltitudeSample].self, forKey: .altitudeHistory) ?? altitudeHistory
+        barometricAltitudeHistory = try c.decodeIfPresent([BarometricAltitudeSample].self, forKey: .barometricAltitudeHistory)
+        pressureHistory = try c.decodeIfPresent([PressureSample].self, forKey: .pressureHistory) ?? pressureHistory
+        splits = try c.decodeIfPresent([Split].self, forKey: .splits) ?? splits
+        currentSplitDistance = try c.decodeIfPresent(Double.self, forKey: .currentSplitDistance) ?? currentSplitDistance
+        currentSplitStartTime = try c.decodeIfPresent(Date.self, forKey: .currentSplitStartTime)
+        splitCheckTime = try c.decodeIfPresent(Date.self, forKey: .splitCheckTime)
+        splitCheckDistance = try c.decodeIfPresent(Double.self, forKey: .splitCheckDistance)
+        totalPoints = try c.decodeIfPresent(Int.self, forKey: .totalPoints) ?? totalPoints
+        validPoints = try c.decodeIfPresent(Int.self, forKey: .validPoints) ?? validPoints
+        averageAccuracy = try c.decodeIfPresent(Double.self, forKey: .averageAccuracy) ?? averageAccuracy
+        accuracySampleCount = try c.decodeIfPresent(Int.self, forKey: .accuracySampleCount) ?? accuracySampleCount
+        signalCoverage = try c.decodeIfPresent(Double.self, forKey: .signalCoverage) ?? signalCoverage
+        currentGPSQualityScore = try c.decodeIfPresent(Double.self, forKey: .currentGPSQualityScore)
+        averageGPSQualityScore = try c.decodeIfPresent(Double.self, forKey: .averageGPSQualityScore)
+        bestGPSQualityScore = try c.decodeIfPresent(Double.self, forKey: .bestGPSQualityScore)
+        worstGPSQualityScore = try c.decodeIfPresent(Double.self, forKey: .worstGPSQualityScore)
+        gpsQualityHistory = try c.decodeIfPresent([GPSQualitySample].self, forKey: .gpsQualityHistory)
+    }
+}

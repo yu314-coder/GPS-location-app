@@ -7,6 +7,30 @@ class FlightDataStore: ObservableObject {
     static let shared = FlightDataStore()
 
     @Published var savedFlights: [Flight] = []
+    /// THE WORKOUT LIST LOADS OFF THE MAIN THREAD (build 160). With ~3,900 workouts the app's first screen waited for
+    /// flights.json to be decoded on the main thread (FlightDataStore.shared is first touched by Home). It now loads in
+    /// the background; until it has, nothing writes flights.json (a list without the saved workouts would replace the
+    /// file), and anything saved meanwhile is merged into the loaded list, not overwritten by it.
+    @Published private(set) var isLoaded = false
+    private var persistAfterLoad = false
+    private var loadInFlight = false
+    private var loadWaiters: [CheckedContinuation<Void, Never>] = []
+    private let loadQueue = DispatchQueue(label: "euleryu.gps.flights-load", qos: .userInitiated)
+
+    /// Returns once the list has been loaded from disk (immediately after the first load).
+    func waitUntilLoaded() async {
+        if await MainActor.run(body: { self.isLoaded }) { return }
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async {
+                if self.isLoaded { c.resume() } else { self.loadWaiters.append(c) }
+            }
+        }
+    }
+
+    /// In memory, the sampled route of each workout the Map has drawn (build 160): the Map re-read and re-decoded all
+    /// ~3,900 route_<id>.json files on every period change. Cleared per workout when its route is rewritten or deleted.
+    private var routeMemory: [UUID: [CLLocationCoordinate2D]] = [:]
+    private let routeMemoryLock = NSLock()
     @Published var isLoading = false
     @Published var lastSyncDate: Date?
 
@@ -59,14 +83,19 @@ class FlightDataStore: ObservableObject {
     /// the lightweight cache and building it on first use. Runs file I/O on the
     /// calling thread — call off the main thread.
     func loadRouteCoordinates(id: UUID) -> [CLLocationCoordinate2D] {
+        routeMemoryLock.lock()
+        if let held = routeMemory[id] { routeMemoryLock.unlock(); return held }
+        routeMemoryLock.unlock()
         // 1) Fast path: compact cache file.
         let cacheURL = routeCacheURL(for: id)
         if let data = try? Data(contentsOf: cacheURL, options: .mappedIfSafe),
            let entry = try? JSONDecoder().decode(RouteCacheEntry.self, from: data) {
-            return entry.coords.compactMap { pair in
+            let coords = entry.coords.compactMap { pair -> CLLocationCoordinate2D? in
                 guard pair.count == 2 else { return nil }
                 return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
             }
+            routeMemoryLock.lock(); routeMemory[id] = coords; routeMemoryLock.unlock()
+            return coords
         }
 
         // 2) Build cache from the full detail (one-time cost per flight).
@@ -80,6 +109,7 @@ class FlightDataStore: ObservableObject {
     }
 
     func writeRouteCache(id: UUID, coordinates: [CLLocationCoordinate2D]) {
+        routeMemoryLock.lock(); routeMemory[id] = coordinates; routeMemoryLock.unlock()
         let entry = RouteCacheEntry(coords: coordinates.map { [$0.latitude, $0.longitude] })
         if let data = try? JSONEncoder().encode(entry) {
             try? data.write(to: routeCacheURL(for: id), options: .atomic)
@@ -87,6 +117,7 @@ class FlightDataStore: ObservableObject {
     }
 
     private func deleteRouteCache(for id: UUID) {
+        routeMemoryLock.lock(); routeMemory[id] = nil; routeMemoryLock.unlock()
         try? FileManager.default.removeItem(at: routeCacheURL(for: id))
     }
 
@@ -109,6 +140,29 @@ class FlightDataStore: ObservableObject {
     private init() {
         loadFlights()
         loadSyncMetadata()
+    }
+
+    /// The first load (and any later reload) has finished: merge what was saved meanwhile, mark loaded, write if a save
+    /// was held back.
+    private func finishLoad(_ decoded: [Flight]?) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        loadInFlight = false
+        if let decoded {
+            let loadedIDs = Set(decoded.map { $0.id })
+            let savedMeanwhile = savedFlights.filter { !loadedIDs.contains($0.id) }
+            var merged = decoded
+            // A workout saved or updated in memory before the load finished is newer than its copy on disk.
+            let inMemory = Dictionary(savedFlights.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            if isLoaded || !savedFlights.isEmpty {
+                for i in merged.indices { if let m = inMemory[merged[i].id] { merged[i] = m } }
+            }
+            savedFlights = savedMeanwhile + merged
+        }
+        let first = !isLoaded
+        isLoaded = true
+        if first, persistAfterLoad { persistAfterLoad = false; persistFlights() }
+        let waiters = loadWaiters; loadWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     private func runOnMain(_ work: @escaping () -> Void) {
@@ -163,6 +217,8 @@ class FlightDataStore: ObservableObject {
     /// Returns once all writes complete.
     func saveDownloadedFlights(_ flights: [Flight]) async {
         guard !flights.isEmpty else { return }
+        // Decided against the loaded list only (build 160): before it loads, every Health workout looks new.
+        await waitUntilLoaded()
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .utility).async {
@@ -174,13 +230,24 @@ class FlightDataStore: ObservableObject {
                 }
 
                 DispatchQueue.main.async {
-                    // Merge summaries into the in-memory array (single update)
+                    // Merge summaries into the in-memory array (single update). Looked up by id through a dictionary
+                    // (build 160; a firstIndex scan per summary made a full download quadratic), and a Health workout
+                    // already saved under another id is not added twice.
+                    var index = Dictionary(self.savedFlights.indices.map { (self.savedFlights[$0].id, $0) }, uniquingKeysWith: { a, _ in a })
+                    let healthIDs = Set(self.savedFlights.compactMap { $0.workoutUUID })
+                    var inserted: [Flight] = []
                     for summary in summaries {
-                        if let index = self.savedFlights.firstIndex(where: { $0.id == summary.id }) {
-                            self.savedFlights[index] = summary
+                        if let i = index[summary.id] {
+                            self.savedFlights[i] = summary
+                        } else if let w = summary.workoutUUID, healthIDs.contains(w) {
+                            continue
                         } else {
-                            self.savedFlights.insert(summary, at: 0)
+                            inserted.append(summary)
                         }
+                    }
+                    if !inserted.isEmpty {
+                        self.savedFlights.insert(contentsOf: inserted.reversed(), at: 0)
+                        index.removeAll()
                     }
 
                     // Single disk write for the summaries file, off main thread
@@ -195,6 +262,7 @@ class FlightDataStore: ObservableObject {
     }
 
     private func persistFlightsSnapshot(_ snapshot: [Flight]) {
+        // Snapshots are taken on main after waitUntilLoaded / from a loaded list (build 160).
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
@@ -310,6 +378,7 @@ class FlightDataStore: ObservableObject {
         guard let pending = persistFlightsPending else { return }
         pending.cancel()
         persistFlightsPending = nil
+        guard isLoaded else { persistAfterLoad = true; return }
         let snapshot = savedFlights
         persistQueue.async { [weak self] in self?.persistFlightsSnapshot(snapshot) }
     }
@@ -361,7 +430,55 @@ class FlightDataStore: ObservableObject {
         let metrics = mergedFlight.metrics ?? checkpoint.metrics
         mergedFlight.metrics = metrics
         checkpointFlight = checkpoint.isFinal ? nil : mergedFlight
-        saveFlightIncremental(mergedFlight, metrics: metrics)
+        // THE ROUTE FILE AT MOST EVERY 2 MINUTES DURING A WATCH WORKOUT (build 160). Each checkpoint re-encoded the whole
+        // growing route as JSON and rewrote it - the work grows with the workout, at every checkpoint. The merged flight
+        // stays in memory between writes, the summary still updates at once, the final checkpoint and the app going to
+        // the background always write, and the watch keeps its own copy until its final file has arrived.
+        let now = Date()
+        if checkpoint.isFinal || checkpointPersistedFlightID != checkpoint.flightID
+            || now.timeIntervalSince(checkpointPersistedAt) >= 120 {
+            checkpointPersistedAt = now
+            checkpointPersistedFlightID = checkpoint.isFinal ? nil : checkpoint.flightID
+            checkpointUnsaved = nil
+            saveFlightIncremental(mergedFlight, metrics: metrics)
+        } else {
+            checkpointUnsaved = mergedFlight
+            updateSummaryOnly(mergedFlight, metrics: metrics)
+            observeBackgroundForCheckpoints()
+        }
+    }
+
+    private var checkpointPersistedAt = Date.distantPast
+    private var checkpointPersistedFlightID: UUID?
+    private var checkpointUnsaved: Flight?
+    private var checkpointBackgroundObserver: NSObjectProtocol?
+
+    private func updateSummaryOnly(_ flight: Flight, metrics: FlightMetrics) {
+        var updated = flight
+        updated.metrics = metrics
+        let summary = summarizedFlight(from: updated)
+        runOnMain {
+            if let index = self.savedFlights.firstIndex(where: { $0.id == flight.id }) {
+                self.savedFlights[index] = summary
+            } else {
+                self.savedFlights.insert(summary, at: 0)
+            }
+            self.schedulePersistFlights()
+        }
+    }
+
+    private func observeBackgroundForCheckpoints() {
+        guard checkpointBackgroundObserver == nil else { return }
+        checkpointBackgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { [weak self] _ in
+            guard let self else { return }
+            self.checkpointLock.lock(); defer { self.checkpointLock.unlock() }
+            if let pending = self.checkpointUnsaved, let m = pending.metrics {
+                self.checkpointUnsaved = nil
+                self.checkpointPersistedAt = Date()
+                self.saveFlightIncremental(pending, metrics: m)
+            }
+        }
     }
 
     private func mergeMetrics(existing: FlightMetrics?, checkpoint: FlightMetrics) -> FlightMetrics {
@@ -420,13 +537,19 @@ class FlightDataStore: ObservableObject {
     }
 
     func loadFlights() {
+        runOnMain {
+            guard !self.loadInFlight else { return }
+            self.loadInFlight = true
+            self.loadQueue.async { self.loadFlightsFromDisk() }
+        }
+    }
+
+    private func loadFlightsFromDisk() {
         print("📂 Loading flights from local storage...")
 
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             print("   No saved flights file found")
-            runOnMain {
-                self.savedFlights = []
-            }
+            runOnMain { self.finishLoad([]) }
             return
         }
 
@@ -452,9 +575,8 @@ class FlightDataStore: ObservableObject {
                     needsSummaryUpdate = true
                 }
             }
-            runOnMain {
-                self.savedFlights = decodedFlights
-            }
+            let loadedList = decodedFlights
+            runOnMain { self.finishLoad(loadedList) }
 
             if needsSummaryUpdate {
                 runOnMain {
@@ -483,8 +605,9 @@ class FlightDataStore: ObservableObject {
 
             // Save if we fixed any flights
             if needsUpdate {
+                let fixed = Dictionary(decodedFlights.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
                 runOnMain {
-                    self.savedFlights = decodedFlights
+                    for i in self.savedFlights.indices { if let f = fixed[self.savedFlights[i].id] { self.savedFlights[i] = f } }
                     self.persistFlights()
                 }
                 print("✅ Updated flights with recalculated max speeds")
@@ -502,10 +625,12 @@ class FlightDataStore: ObservableObject {
                 print("   ... and \(decodedFlights.count - 5) more")
             }
         } catch {
+            // Kept aside (build 160), not overwritten by the next save as before: the next write starts a new list.
             print("❌ Failed to load flights: \(error.localizedDescription)")
-            runOnMain {
-                self.savedFlights = []
-            }
+            let aside = fileURL.deletingLastPathComponent()
+                .appendingPathComponent("flights.unreadable-\(Int(Date().timeIntervalSince1970)).json")
+            try? FileManager.default.copyItem(at: fileURL, to: aside)
+            runOnMain { self.finishLoad(nil) }
         }
     }
 
@@ -513,6 +638,7 @@ class FlightDataStore: ObservableObject {
 
     private func persistFlights() {
         persistFlightsPending?.cancel(); persistFlightsPending = nil
+        guard isLoaded else { persistAfterLoad = true; return }
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
