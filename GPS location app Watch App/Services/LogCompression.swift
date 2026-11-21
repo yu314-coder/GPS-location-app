@@ -153,7 +153,11 @@ enum LogCompression {
     /// Compress `source` (a plain log) into `destination` (.csv.gz), then read the result back and compare it with the
     /// source byte for byte. Throws, leaving the source alone, if anything differs.
     /// `progress` gets the bytes of the original done after each 1 MB (build 162), so a long file shows movement.
-    static func compressFile(_ source: URL, to destination: URL, progress: ((Int64) -> Void)? = nil) throws {
+    /// `level` 3 for converting old files (build 164): measured 74 MB/s on a log and 140 MB/s on route JSON per core
+    /// against 25 and 64 at level 6, for 40.0% / 27.7% of the original against 36.4% / 25.9%.
+    static let conversionLevel: Int32 = 3
+    static func compressFile(_ source: URL, to destination: URL, level: Int32 = LogCompression.level,
+                             progress: ((Int64) -> Void)? = nil) throws {
         let fm = FileManager.default
         try? fm.removeItem(at: destination)
         guard fm.createFile(atPath: destination.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
@@ -163,7 +167,7 @@ enum LogCompression {
         do {
             while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
                 try autoreleasepool {
-                    let member = gzipMember(chunk)
+                    let member = gzipMember(chunk, level: level)
                     guard !member.isEmpty else { throw CocoaError(.fileWriteUnknown) }
                     try output.write(contentsOf: member)
                     progress?(Int64(chunk.count))

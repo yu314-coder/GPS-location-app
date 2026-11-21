@@ -318,10 +318,12 @@ final class LogCompactor: ObservableObject {
                                            report: @escaping (Int, Int, Int64, Int64) -> Void) -> Outcome {
         let sized = files.map { ($0, Int64((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)) }
             .sorted { $0.1 > $1.1 }
-        let workers = max(1, min(4, ProcessInfo.processInfo.activeProcessorCount - 2))
+        // Up to five workers at user-initiated priority (build 164): the owner starts this and waits for it; at
+        // utility priority iOS kept it on the efficiency cores.
+        let workers = max(1, min(5, ProcessInfo.processInfo.activeProcessorCount - 1))
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = workers
-        queue.qualityOfService = .utility
+        queue.qualityOfService = .userInitiated
         let lock = NSLock()
         var done = 0, failed = 0, finished = 0
         var before: Int64 = 0, after: Int64 = 0, bytesDone: Int64 = 0
@@ -384,7 +386,8 @@ final class LogCompactor: ObservableObject {
                 try appWorks(final, original: url)
             } else {
                 let modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-                try LogCompression.compressFile(url, to: temp, progress: progress)   // byte for byte against the original
+                try LogCompression.compressFile(url, to: temp, level: LogCompression.conversionLevel,
+                                                progress: progress)   // byte for byte against the original
                 try appWorks(temp, original: url)                        // and read the way the app reads it
                 if let modified { try? fm.setAttributes([.modificationDate: modified], ofItemAtPath: temp.path) }
                 try fm.moveItem(at: temp, to: final)
@@ -407,28 +410,27 @@ final class LogCompactor: ObservableObject {
     /// JSON.
     nonisolated private static let decodeGate = DispatchSemaphore(value: 1)
     nonisolated private static func appWorks(_ compressed: URL, original: URL) throws {
-        if original.pathExtension == "json" {
-            let size = (try? original.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            if size <= 64_000_000 {
-                // One route decode at a time across the workers (build 161): a large route can take hundreds of MB
-                // decoded, and four at once could get the app ended for memory in the background.
-                decodeGate.wait(); defer { decodeGate.signal() }
-                let data = try LogCompression.gunzipIfNeeded(Data(contentsOf: compressed))
-                let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-                _ = try decoder.decode(Flight.self, from: data)
-            } else {
-                let reader = try LogCompression.ChunkReader(compressed, compressed: true)
-                var first: UInt8?, last: UInt8?
-                while let c = try reader.next() {
-                    if first == nil { first = c.first(where: { $0 > 0x20 }) }
-                    if let l = c.last(where: { $0 > 0x20 }) { last = l }
-                }
-                guard first == UInt8(ascii: "{") || first == UInt8(ascii: "["),
-                      last == UInt8(ascii: "}") || last == UInt8(ascii: "]") else { throw CocoaError(.fileReadCorruptFile) }
-            }
+        guard original.pathExtension == "json" else { return }   // a log: the byte-for-byte read-back is the check
+        // FASTER (build 164). Every route has already been read back through the app's own reader and matched the
+        // original byte for byte. Decoding it as a workout as well took as long as compressing it, one at a time, and
+        // proves nothing about the compression (the bytes are the original's). So: the original must open and close
+        // as JSON (read from its first and last bytes), and 1 route in 25 is still decoded in full as a spot check.
+        let h = try FileHandle(forReadingFrom: original)
+        defer { try? h.close() }
+        let head = try h.read(upToCount: 64) ?? Data()
+        let end = try h.seekToEnd()
+        try h.seek(toOffset: end > 64 ? end - 64 : 0)
+        let tail = try h.read(upToCount: 64) ?? Data()
+        let first = head.first(where: { $0 > 0x20 }), last = tail.last(where: { $0 > 0x20 })
+        guard first == UInt8(ascii: "{") || first == UInt8(ascii: "["),
+              last == UInt8(ascii: "}") || last == UInt8(ascii: "]") else { throw CocoaError(.fileReadCorruptFile) }
+        let spotCheck = abs(original.lastPathComponent.hashValue) % 25 == 0
+        if spotCheck, end <= 64_000_000 {
+            decodeGate.wait(); defer { decodeGate.signal() }
+            let data = try LogCompression.gunzipIfNeeded(Data(contentsOf: compressed))
+            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+            _ = try decoder.decode(Flight.self, from: data)
         }
-        // A log: compressFile has already read the copy back through ChunkReader - the reader Re-run and Import use - and
-        // matched the original byte for byte, so it gives the same lines (build 161: no separate count).
     }
 
     /// The checked original: kept in Before compression while the owner tests, deleted in the public release.
