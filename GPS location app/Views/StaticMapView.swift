@@ -10,14 +10,21 @@ struct StaticMapView: View {
 
     @State private var position: MapCameraPosition
 
-    init(locations: [FlightLocation]) {
+    /// `routeCoordinates`, when given, must be `locations` converted exactly as below. The workout screen passes the
+    /// ones it computed once off the main thread (build 160): this view is rebuilt on every parent body pass, and
+    /// converting a long route here each time was the cost.
+    init(locations: [FlightLocation], routeCoordinates: [CLLocationCoordinate2D]? = nil) {
         self.locations = locations
-        self.routeCoordinates = locations.map { $0.toCLLocation().coordinate.forAppleBasemap }
+        if let routeCoordinates, routeCoordinates.count == locations.count {
+            self.routeCoordinates = routeCoordinates
+        } else {
+            self.routeCoordinates = locations.map { $0.toCLLocation().coordinate.forAppleBasemap }
+        }
 
         // Calculate initial region to fit all locations
-        if let first = locations.first {
+        if let first = self.routeCoordinates.first {
             _position = State(initialValue: .region(MKCoordinateRegion(
-                center: first.toCLLocation().coordinate.forAppleBasemap,
+                center: first,
                 span: MKCoordinateSpan(latitudeDelta: 1.0, longitudeDelta: 1.0)
             )))
         } else {
