@@ -31,6 +31,38 @@ struct WorkoutDetailView: View {
     @State private var hasSavedLogs = false
     /// Its recording's stamp, found with the logs (build 129: by time when the start differs).
     @State private var recordingStamp: String?
+    /// ROUTE-DERIVED VALUES COMPUTED ONCE (build 160). The map converted every route point, each chart thinned its
+    /// history and the HealthKit badge filtered the whole route on EVERY body pass. After the route loads they are
+    /// computed once off the main thread and read from here; until then (and if this is stale) the body falls back
+    /// to computing them as before, so what is drawn is the same either way.
+    @State private var derived: WorkoutDetailDerived?
+    /// Bumped whenever `detailedFlight` is replaced, so `derived` knows which version of the route it belongs to.
+    @State private var detailVersion = 0
+    @State private var splitsGeneration = 0
+    @State private var savedLogsGeneration = 0
+
+    private func setDetailedFlight(_ newValue: Flight?) {
+        detailedFlight = newValue
+        detailVersion &+= 1
+    }
+
+    /// `derived` only when it was built from the route now shown.
+    private var currentDerived: WorkoutDetailDerived? {
+        guard let derived, derived.version == detailVersion, derived.flightID == flight.id else { return nil }
+        return derived
+    }
+
+    private func refreshDerived() {
+        let version = detailVersion
+        let source = activeFlight
+        Task.detached(priority: .userInitiated) {
+            let result = WorkoutDetailDerived(version: version, flight: source)
+            await MainActor.run {
+                guard version == detailVersion else { return }
+                derived = result
+            }
+        }
+    }
 
     /// Composed here rather than when the HealthKit query returns, so the GPS/total counts read
     /// the flight AFTER its details have finished loading asynchronously.
@@ -43,7 +75,7 @@ struct WorkoutDetailView: View {
         // twice, so state the fact rather than argue about it. The count comes from this app's
         // own record: a CLLocation carries no flag saying where it came from, so the HealthKit
         // copy physically cannot answer the question.
-        let fromGPS = activeFlight.locations.filter { !$0.isEstimated }.count
+        let fromGPS = currentDerived?.gpsPointCount ?? activeFlight.locations.filter { !$0.isEstimated }.count
         let total = activeFlight.locations.count
         // Always state the series count. It was previously only shown when above one, which is
         // exactly the case that needed to be visible, and a cropped screenshot hid it.
@@ -114,7 +146,8 @@ struct WorkoutDetailView: View {
                 // Route Map (if available)
                 if !activeFlight.locations.isEmpty {
                     ZStack(alignment: .topTrailing) {
-                        StaticMapView(locations: activeFlight.locations)
+                        StaticMapView(locations: activeFlight.locations,
+                                      routeCoordinates: currentDerived?.routeCoordinates)
                             .frame(height: 300)
 
                         // Map stats overlay
@@ -402,7 +435,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        SpeedChartView(speedHistory: metrics.speedHistory, maxSpeed: metrics.maxSpeed)
+                                        SpeedChartView(speedHistory: currentDerived?.speed ?? metrics.speedHistory, maxSpeed: metrics.maxSpeed)
                                             .frame(height: 200)
                                             .padding(.horizontal)
                                     }
@@ -420,7 +453,7 @@ struct WorkoutDetailView: View {
 
                                     if #available(iOS 16.0, *) {
                                         AccelerationChartView(
-                                            accelerationHistory: accelerationHistory,
+                                            accelerationHistory: currentDerived?.acceleration ?? accelerationHistory,
                                             maxAcceleration: metrics.maxAcceleration ?? 0,
                                             maxDeceleration: metrics.maxDeceleration ?? 0
                                         )
@@ -440,7 +473,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        MotionAccelerationChartView(motionAccelerationHistory: motionAccelerationHistory)
+                                        MotionAccelerationChartView(motionAccelerationHistory: currentDerived?.motionAcceleration ?? motionAccelerationHistory)
                                             .frame(height: 600)
                                             .padding(.horizontal)
                                     }
@@ -456,7 +489,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        AttitudeChartView(attitudeHistory: attitudeHistory)
+                                        AttitudeChartView(attitudeHistory: currentDerived?.attitude ?? attitudeHistory)
                                             .frame(height: 450)
                                             .padding(.horizontal)
                                     }
@@ -472,7 +505,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        RotationRateChartView(rotationRateHistory: rotationRateHistory)
+                                        RotationRateChartView(rotationRateHistory: currentDerived?.rotationRate ?? rotationRateHistory)
                                             .frame(height: 600)
                                             .padding(.horizontal)
                                     }
@@ -488,7 +521,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        CompassHeadingChartView(compassHeadingHistory: compassHeadingHistory)
+                                        CompassHeadingChartView(compassHeadingHistory: currentDerived?.compassHeading ?? compassHeadingHistory)
                                             .frame(height: 160)
                                             .padding(.horizontal)
                                     }
@@ -506,7 +539,7 @@ struct WorkoutDetailView: View {
 
                                     if #available(iOS 16.0, *) {
                                         AltitudeChartView(
-                                            altitudeHistory: metrics.altitudeHistory,
+                                            altitudeHistory: currentDerived?.altitude ?? metrics.altitudeHistory,
                                             maxAltitude: metrics.maxAltitude,
                                             minAltitude: metrics.minAltitude
                                         )
@@ -526,7 +559,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        BarometricAltitudeChartView(barometricAltitudeHistory: barometricAltitudeHistory)
+                                        BarometricAltitudeChartView(barometricAltitudeHistory: currentDerived?.barometricAltitude ?? barometricAltitudeHistory)
                                             .frame(height: 200)
                                             .padding(.horizontal)
                                     }
@@ -543,7 +576,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        PressureChartView(pressureHistory: metrics.pressureHistory)
+                                        PressureChartView(pressureHistory: currentDerived?.pressure ?? metrics.pressureHistory)
                                             .frame(height: 200)
                                             .padding(.horizontal)
                                     }
@@ -560,7 +593,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        GPSQualityChartView(gpsQualityHistory: gpsQualityHistory)
+                                        GPSQualityChartView(gpsQualityHistory: currentDerived?.gpsQuality ?? gpsQualityHistory)
                                             .frame(height: 200)
                                             .padding(.horizontal)
                                     }
@@ -577,7 +610,7 @@ struct WorkoutDetailView: View {
                                         .padding(.horizontal)
 
                                     if #available(iOS 16.0, *) {
-                                        PaceChartView(speedHistory: metrics.speedHistory, activityType: workoutActivityType)
+                                        PaceChartView(speedHistory: currentDerived?.speed ?? metrics.speedHistory, activityType: workoutActivityType)
                                             .frame(height: 200)
                                             .padding(.horizontal)
                                     }
@@ -900,6 +933,7 @@ struct WorkoutDetailView: View {
             loadHealthKitRouteSummary()
             refreshSavedLogs()
             refreshSplits()
+            refreshDerived()
         }
         .onChange(of: activeFlight.startDate) {
             refreshSavedLogs()
@@ -907,8 +941,11 @@ struct WorkoutDetailView: View {
         .onChange(of: activeFlight.locations.count) {
             refreshSplits()
         }
+        .onChange(of: detailVersion) {
+            refreshDerived()
+        }
         .onDisappear {
-            detailedFlight = nil
+            setDetailedFlight(nil)
         }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingShareSheet) {
@@ -919,16 +956,40 @@ struct WorkoutDetailView: View {
     }
 
     private func refreshSplits() {
+        splitsGeneration += 1
         guard let metrics = activeFlight.metrics else { shownSplits = nil; return }
-        shownSplits = FlightMetrics.retimedSplits(metrics.splits, route: activeFlight.locations,
-                                                  recordedDistance: metrics.totalDistance, start: activeFlight.startDate)
+        let saved = metrics.splits
+        // retimedSplits hands saved splits straight back unless every one is 0 s (a pre-148 workout); only that case
+        // walks the whole route (GPSDistanceStepper.cumulative), so only it leaves the main thread (build 160).
+        guard !saved.isEmpty, saved.allSatisfy({ $0.duration == 0 }) else { shownSplits = saved; return }
+        let generation = splitsGeneration
+        let route = activeFlight.locations
+        let recordedDistance = metrics.totalDistance
+        let start = activeFlight.startDate
+        Task.detached(priority: .userInitiated) {
+            let splits = FlightMetrics.retimedSplits(saved, route: route, recordedDistance: recordedDistance, start: start)
+            await MainActor.run {
+                guard generation == splitsGeneration else { return }
+                shownSplits = splits
+            }
+        }
     }
 
     private func refreshSavedLogs() {
-        hasSavedLogs = !SessionDiagnosticsRecorder.savedLogs(forWorkoutStart: activeFlight.startDate, end: activeFlight.endDate).isEmpty
-        recordingStamp = hasSavedLogs
-            ? SessionDiagnosticsRecorder.recordingStamp(forWorkoutStart: activeFlight.startDate, end: activeFlight.endDate)
-            : nil
+        // Lists the log folder, off the main thread (build 160); the buttons appear when it answers.
+        savedLogsGeneration += 1
+        let generation = savedLogsGeneration
+        let start = activeFlight.startDate
+        let end = activeFlight.endDate
+        Task.detached(priority: .utility) {
+            let hasLogs = !SessionDiagnosticsRecorder.savedLogs(forWorkoutStart: start, end: end).isEmpty
+            let stamp = hasLogs ? SessionDiagnosticsRecorder.recordingStamp(forWorkoutStart: start, end: end) : nil
+            await MainActor.run {
+                guard generation == savedLogsGeneration else { return }
+                hasSavedLogs = hasLogs
+                recordingStamp = stamp
+            }
+        }
     }
 
     private func formatTimeRange() -> String {
@@ -994,7 +1055,7 @@ struct WorkoutDetailView: View {
                     FlightDataStore.shared.updateWorkoutUUID(for: activeFlight.id, workoutUUID: workout.uuid)
                     if var detail = self.detailedFlight {
                         detail.workoutUUID = workout.uuid
-                        self.detailedFlight = detail
+                        self.setDetailedFlight(detail)
                     }
                 }
 
@@ -1119,7 +1180,7 @@ struct WorkoutDetailView: View {
                 self.isRecalculating = false
 
                 // Update the detailed flight with new metrics
-                self.detailedFlight = updatedFlight
+                self.setDetailedFlight(updatedFlight)
 
                 if difference > 100.0 { // More than 100m difference
                     self.recalculateMessage = """
@@ -1175,10 +1236,52 @@ struct WorkoutDetailView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let details = FlightDataStore.shared.loadFlightDetails(id: flight.id)
             DispatchQueue.main.async {
-                self.detailedFlight = details
+                self.setDetailedFlight(details)
                 self.isLoadingDetails = false
             }
         }
+    }
+}
+
+// MARK: - Derived route values (build 160)
+
+/// What the detail screen derives from a route, computed once off the main thread. Each value is produced by exactly
+/// the call the view used to make in its body: the map's coordinate conversion, the badge's GPS count, and each chart's
+/// ChartThinning.thin with the same limit and key. A chart re-thins in its init, which returns an already-thinned
+/// series unchanged (it never exceeds the limit), so the charts draw the same samples.
+struct WorkoutDetailDerived {
+    let version: Int
+    let flightID: UUID
+    let routeCoordinates: [CLLocationCoordinate2D]
+    let gpsPointCount: Int
+    let speed: [SpeedSample]
+    let acceleration: [AccelerationSample]?
+    let motionAcceleration: [MotionAccelerationSample]?
+    let attitude: [AttitudeSample]?
+    let rotationRate: [RotationRateSample]?
+    let compassHeading: [HeadingSample]?
+    let altitude: [AltitudeSample]
+    let barometricAltitude: [BarometricAltitudeSample]?
+    let pressure: [PressureSample]
+    let gpsQuality: [GPSQualitySample]?
+
+    init(version: Int, flight: Flight) {
+        self.version = version
+        self.flightID = flight.id
+        let locations = flight.locations
+        routeCoordinates = locations.map { $0.toCLLocation().coordinate.forAppleBasemap }
+        gpsPointCount = locations.filter { !$0.isEstimated }.count
+        let m = flight.metrics
+        speed = ChartThinning.thin(m?.speedHistory ?? []) { $0.speed }
+        acceleration = m?.accelerationHistory.map { ChartThinning.thin($0) { $0.acceleration } }
+        motionAcceleration = m?.motionAccelerationHistory.map { ChartThinning.thin($0, limit: 12_000) { $0.acceleration } }
+        attitude = m?.attitudeHistory.map { ChartThinning.thin($0, limit: 12_000) { $0.pitch } }
+        rotationRate = m?.rotationRateHistory.map { ChartThinning.thin($0, limit: 12_000) { $0.magnitude } }
+        compassHeading = m?.compassHeadingHistory.map { ChartThinning.thin($0, limit: 12_000) { $0.heading } }
+        altitude = ChartThinning.thin(m?.altitudeHistory ?? []) { $0.altitude }
+        barometricAltitude = m?.barometricAltitudeHistory.map { ChartThinning.thin($0) { $0.relativeAltitude } }
+        pressure = ChartThinning.thin(m?.pressureHistory ?? []) { $0.pressure }
+        gpsQuality = m?.gpsQualityHistory.map { ChartThinning.thin($0) { $0.score } }
     }
 }
 

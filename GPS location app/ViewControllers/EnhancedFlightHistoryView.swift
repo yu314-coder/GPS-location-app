@@ -73,23 +73,59 @@ struct EnhancedFlightHistoryView: View {
     // Search
     @State private var searchText = ""
 
-    private var linkedWorkoutIDs: Set<UUID> {
-        let workoutIDs = Set(workouts.map { $0.id })
-        var linked: Set<UUID> = []
-        for flight in flightDataStore.savedFlights {
-            if let workoutUUID = flight.workoutUUID {
-                linked.insert(workoutUUID)
-            } else if workoutIDs.contains(flight.id) {
-                linked.insert(flight.id)
-            }
-        }
-        return linked
+    // LIST BUILT ONCE PER CHANGE (build 160). With ~3,900 saved workouts every body pass used to re-walk them
+    // 4-5 times (linked set, visible list, both filters, the jump list, the month index with a date format per
+    // item) and the grouped section re-sorted ~4,000 rows. Now one off-main pass builds everything when an input
+    // changes; the body only reads this snapshot. Same code paths as before, so same rows, order and numbers.
+    @State private var listSnapshot = ActivityListSnapshot()
+    @State private var listGeneration = 0
+    @State private var listTask: Task<Void, Never>?
+    @State private var flightSearchKeys: [UUID: ActivitySearchKey] = [:]
+    @State private var workoutSearchKeys: [UUID: ActivitySearchKey] = [:]
+
+    private var listInputs: ActivityListInputs {
+        ActivityListInputs(
+            savedFlights: flightDataStore.savedFlights,
+            workouts: workouts,
+            cachedWorkouts: cachedWorkouts,
+            activityType: selectedActivityType,
+            searchText: searchText,
+            sortOption: sortOption,
+            manualLoadEnabled: manualLoadEnabled
+        )
     }
 
-    private var visibleWorkouts: [WorkoutSummary] {
-        // Built once, not once per workout: the computed set walks every saved flight.
-        let linked = linkedWorkoutIDs
-        return workouts.filter { !linked.contains($0.id) }
+    /// Rebuilds the list snapshot off the main thread; a newer request supersedes an older one.
+    private func scheduleListRebuild() {
+        listGeneration += 1
+        let generation = listGeneration
+        let inputs = listInputs
+        let fKeys = flightSearchKeys
+        let wKeys = workoutSearchKeys
+        listTask?.cancel()
+        listTask = Task.detached(priority: .userInitiated) {
+            let result = ActivityListBuilder.build(inputs, flightKeys: fKeys, workoutKeys: wKeys)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                guard generation == listGeneration else { return }
+                applyListResult(result)
+            }
+        }
+    }
+
+    /// Synchronous rebuild for actions that scroll straight to a row they just revealed.
+    private func rebuildListNow() {
+        listGeneration += 1
+        listTask?.cancel()
+        applyListResult(ActivityListBuilder.build(listInputs, flightKeys: flightSearchKeys, workoutKeys: workoutSearchKeys))
+    }
+
+    private func applyListResult(_ result: ActivityListBuilder.Result) {
+        var snapshot = result.snapshot
+        snapshot.token = listSnapshot.token &+ 1
+        listSnapshot = snapshot
+        flightSearchKeys = result.flightKeys
+        workoutSearchKeys = result.workoutKeys
     }
 
     var body: some View {
@@ -190,8 +226,11 @@ struct EnhancedFlightHistoryView: View {
             if !hasLoadedInitialData {
                 hasLoadedInitialData = true
                 isLoading = true
+                // The store now loads itself in the background at launch (build 160); decoding the 3.6 MB file
+                // again here republished every screen, so only ask when it has not loaded yet.
+                let storeLoaded = flightDataStore.isLoaded
                 DispatchQueue.global(qos: .userInitiated).async {
-                    flightDataStore.loadFlights()                       // decode off main
+                    if !storeLoaded { flightDataStore.loadFlights() }   // decode off main
                     let cached = WorkoutCacheStore.shared.loadWorkouts() // decode off main
                     DispatchQueue.main.async {
                         if !cached.isEmpty {
@@ -236,6 +275,21 @@ struct EnhancedFlightHistoryView: View {
             // Clear cache when leaving the view
             print("👋 Flights tab disappeared - clearing cache")
             workoutDetailsCache.removeAll()
+        }
+        // The list snapshot's inputs (build 160). Array == short-circuits on shared storage, so an unchanged
+        // array costs nothing per render; any real change rebuilds the snapshot once.
+        .task { scheduleListRebuild() }
+        .onChange(of: flightDataStore.savedFlights) { scheduleListRebuild() }
+        .onChange(of: workouts) { scheduleListRebuild() }
+        .onChange(of: cachedWorkouts) { scheduleListRebuild() }
+        .onChange(of: selectedActivityType) { scheduleListRebuild() }
+        .onChange(of: searchText) { scheduleListRebuild() }
+        .onChange(of: sortOption) { scheduleListRebuild() }
+        .onChange(of: manualLoadEnabled) { scheduleListRebuild() }
+        .onChange(of: flightDataStore.isLoaded) { _, loaded in
+            // Saved flights arrive after the cached workouts when the store loads in the background (build 160):
+            // run the distance-mismatch resync then, not against an empty list.
+            if loaded && manualLoadEnabled { autoResyncIfNeeded() }
         }
     }
 
@@ -302,7 +356,7 @@ struct EnhancedFlightHistoryView: View {
             // are all still here, one tap away under Tools.
             EnhancedStatsSection(
                 flights: flightDataStore.savedFlights,
-                healthKitWorkouts: statsWorkouts
+                healthKitWorkouts: listSnapshot.statsWorkouts
             )
             .equatable()
 
@@ -406,9 +460,8 @@ struct EnhancedFlightHistoryView: View {
 
             // Grouped Workouts
             GroupedWorkoutsSection(
-                flights: filteredFlights,
-                workouts: filteredWorkouts,
-                sortOption: sortOption,
+                rows: listSnapshot.rows,
+                token: listSnapshot.token,
                 onWorkoutTap: loadWorkoutDetails,
                 onWorkoutRecalculate: { workout in
                     recalculateAndResyncWorkout(workout)
@@ -427,7 +480,7 @@ struct EnhancedFlightHistoryView: View {
 
             // No results from search
             if !searchText.trimmingCharacters(in: .whitespaces).isEmpty
-                && filteredFlights.isEmpty && filteredWorkouts.isEmpty {
+                && listSnapshot.filteredFlightCount == 0 && listSnapshot.filteredWorkoutCount == 0 {
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.title)
@@ -441,8 +494,8 @@ struct EnhancedFlightHistoryView: View {
             }
 
             // Subtle loaded-count footer
-            if !visibleWorkouts.isEmpty {
-                Text("\(visibleWorkouts.count) workouts loaded")
+            if listSnapshot.visibleWorkoutCount > 0 {
+                Text("\(listSnapshot.visibleWorkoutCount) workouts loaded")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .padding(.top, 8)
@@ -538,7 +591,7 @@ struct EnhancedFlightHistoryView: View {
                 Spacer(minLength: 0)
 
                 Menu {
-                    ForEach(monthIndex, id: \.id) { entry in
+                    ForEach(listSnapshot.monthIndex, id: \.id) { entry in
                         Button(entry.label) {
                             if entry.id.hasPrefix("w_") {
                                 let idString = String(entry.id.dropFirst(2))
@@ -562,156 +615,9 @@ struct EnhancedFlightHistoryView: View {
 
     // MARK: - Filtered & Sorted Data
 
-    private var filteredFlights: [Flight] {
-        var result = flightDataStore.savedFlights
-        if selectedActivityType != .all {
-            result = result.filter { flight in
-                guard let workoutTypeRaw = flight.workoutType,
-                      let workoutType = HKWorkoutActivityType(rawValue: workoutTypeRaw) else { return false }
-                return selectedActivityType.matches(workoutType)
-            }
-        }
-        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return result }
-        return result.filter { flight in
-            let typeName = flight.workoutType
-                .flatMap { HKWorkoutActivityType(rawValue: $0) }
-                .map { activityDisplayName($0) } ?? "workout"
-            let distanceKm = String(format: "%.1f", (flight.metrics?.totalDistance ?? 0) / 1000)
-            return matchesSearch(query: query, date: flight.startDate, typeName: typeName, distanceKm: distanceKm)
-        }
-    }
-
-    private var filteredWorkouts: [WorkoutSummary] {
-        var result = visibleWorkouts
-        if selectedActivityType != .all {
-            result = result.filter { workout in
-                guard let type = workout.activityType else { return false }
-                return selectedActivityType.matches(type)
-            }
-        }
-        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return result }
-        return result.filter { workout in
-            let typeName = workout.activityType.map { activityDisplayName($0) } ?? "workout"
-            let distanceKm = String(format: "%.1f", workout.totalDistance / 1000)
-            return matchesSearch(query: query, date: workout.startDate, typeName: typeName, distanceKm: distanceKm)
-        }
-    }
-
-    private func activityDisplayName(_ type: HKWorkoutActivityType) -> String {
-        switch type {
-        case .running: return "Running"
-        case .walking: return "Walking"
-        case .cycling: return "Cycling"
-        case .hiking: return "Hiking"
-        default: return "Workout"
-        }
-    }
-
-    /// One formatter per pattern, not two per item per keystroke. DateFormatter construction is expensive.
-    private static let searchLongDateFormatter: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "EEEE MMMM d yyyy"; return f
-    }()
-    private static let searchShortDateFormatter: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "M/d/yyyy"; return f
-    }()
-
-    private func matchesSearch(query: String, date: Date, typeName: String, distanceKm: String) -> Bool {
-        if typeName.lowercased().contains(query) { return true }
-        if distanceKm.contains(query) { return true }
-        if Self.searchLongDateFormatter.string(from: date).lowercased().contains(query) { return true }
-        if Self.searchShortDateFormatter.string(from: date).lowercased().contains(query) { return true }
-        return false
-    }
-
-    private var statsWorkouts: [WorkoutSummary] {
-        let source = manualLoadEnabled ? cachedWorkouts : visibleWorkouts
-        guard selectedActivityType != .all else { return source }
-        return source.filter { workout in
-            guard let type = workout.activityType else { return false }
-            return selectedActivityType.matches(type)
-        }
-    }
-
-    private var sortedFlights: [Flight] {
-        let flights = filteredFlights
-        switch sortOption {
-        case .dateNewest:
-            return flights.sorted { $0.startDate > $1.startDate }
-        case .dateOldest:
-            return flights.sorted { $0.startDate < $1.startDate }
-        case .distanceLongest:
-            return flights.sorted { ($0.metrics?.totalDistance ?? 0) > ($1.metrics?.totalDistance ?? 0) }
-        case .distanceShortest:
-            return flights.sorted { ($0.metrics?.totalDistance ?? 0) < ($1.metrics?.totalDistance ?? 0) }
-        case .durationLongest:
-            return flights.sorted { ($0.metrics?.duration ?? 0) > ($1.metrics?.duration ?? 0) }
-        case .durationShortest:
-            return flights.sorted { ($0.metrics?.duration ?? 0) < ($1.metrics?.duration ?? 0) }
-        }
-    }
-
-    private var sortedWorkouts: [WorkoutSummary] {
-        let workouts = filteredWorkouts
-        switch sortOption {
-        case .dateNewest:
-            return workouts.sorted { $0.startDate > $1.startDate }
-        case .dateOldest:
-            return workouts.sorted { $0.startDate < $1.startDate }
-        case .distanceLongest:
-            return workouts.sorted { $0.totalDistance > $1.totalDistance }
-        case .distanceShortest:
-            return workouts.sorted { $0.totalDistance < $1.totalDistance }
-        case .durationLongest:
-            return workouts.sorted { $0.duration > $1.duration }
-        case .durationShortest:
-            return workouts.sorted { $0.duration < $1.duration }
-        }
-    }
-
-    private func workoutActivityID(_ workout: WorkoutSummary) -> String {
-        "w_\(workout.id.uuidString)"
-    }
-
-    private func flightActivityID(_ flight: Flight) -> String {
-        "f_\(flight.id.uuidString)"
-    }
-
-    private var allActivitiesForJump: [(date: Date, id: String)] {
-        var combined: [(date: Date, id: String)] = []
-        for workout in cachedWorkouts {
-            combined.append((date: workout.startDate, id: workoutActivityID(workout)))
-        }
-        for flight in sortedFlights {
-            combined.append((date: flight.startDate, id: flightActivityID(flight)))
-        }
-        return combined.sorted { $0.date > $1.date }
-    }
-
-    private static let monthIndexFormatter: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "yyyy MMM"; return f
-    }()
-
-    private var monthIndex: [(label: String, id: String)] {
-        let formatter = Self.monthIndexFormatter
-
-        var seen: Set<String> = []
-        var entries: [(label: String, id: String)] = []
-
-        for activity in allActivitiesForJump {
-            let label = formatter.string(from: activity.date)
-            if seen.contains(label) { continue }
-            seen.insert(label)
-            entries.append((label: label, id: activity.id))
-        }
-
-        return entries
-    }
-
     private func nearestActivityID(to date: Date) -> String? {
-        // Built once: each read re-filtered and re-sorted every saved workout.
-        let allActivitiesForJump = self.allActivitiesForJump
+        // Read from the snapshot (build 160): built once per change, same date-sorted list as before.
+        let allActivitiesForJump = listSnapshot.jumpActivities
         guard !allActivitiesForJump.isEmpty else { return nil }
         if let sameDay = allActivitiesForJump.first(where: { Calendar.current.isDate($0.date, inSameDayAs: date) }) {
             return sameDay.id
@@ -737,6 +643,8 @@ struct EnhancedFlightHistoryView: View {
         workouts = Array(cachedWorkouts.prefix(end))
         loadedWorkoutIDs = Set(workouts.map { $0.id })
         hasMoreWorkouts = cachedWorkouts.count > workouts.count
+        // The caller scrolls to this row right away; build the list now so the row exists (build 160).
+        rebuildListNow()
     }
 
     // MARK: - Cache Management
@@ -1310,6 +1218,12 @@ struct EnhancedFlightHistoryView: View {
                     allWorkouts.append(contentsOf: page)
                     if page.count < pageSize { break }
                     beforeDate = page.last?.startDate.addingTimeInterval(-1)
+                }
+
+                // The saved list loads in the background at launch (build 160). Deciding "not already saved"
+                // against a half-loaded list would download workouts the app already has, so wait for it.
+                while !(await MainActor.run { flightDataStore.isLoaded }) {
+                    try await Task.sleep(nanoseconds: 200_000_000)
                 }
 
                 // Filter to candidates that have routes and aren't already saved
@@ -2287,117 +2201,29 @@ struct CompactLineChart: View {
 // MARK: - Grouped Workouts Section
 
 struct GroupedWorkoutsSection: View, Equatable {
-    let flights: [Flight]
-    let workouts: [WorkoutSummary]
-    let sortOption: SortOption
+    /// Already filtered and sorted by the parent's snapshot (build 160).
+    let rows: [ActivityListRow]
+    /// Bumped each time the parent rebuilds its snapshot, i.e. only when an input really changed.
+    let token: Int
     let onWorkoutTap: (WorkoutSummary) -> Void
     let onWorkoutRecalculate: ((WorkoutSummary) -> Void)?
     let onFlightTap: (Flight) -> Void
     let onFlightResync: ((Flight) -> Void)?
     let onFlightRecalculate: ((Flight) -> Void)?
 
-    // Skip re-rendering this heavy list (sorts + builds every row) unless the
-    // activity set or sort order actually changes. Ignores the closures, which
-    // are recreated on every parent render (e.g. download progress ticks).
+    // Skip re-rendering this heavy list unless the parent rebuilt its rows. Ignores the closures, which are
+    // recreated on every parent render (e.g. download progress ticks). The token replaces two joined
+    // id:distance strings over every row that used to be built on each comparison (build 160).
     static func == (lhs: GroupedWorkoutsSection, rhs: GroupedWorkoutsSection) -> Bool {
-        lhs.sortOption == rhs.sortOption
-            && lhs.flights.count == rhs.flights.count
-            && lhs.workouts.count == rhs.workouts.count
-            && lhs.flightSignature == rhs.flightSignature
-            && lhs.workoutSignature == rhs.workoutSignature
-    }
-
-    private var flightSignature: String {
-        flights.map { "\($0.id.uuidString):\(Int(($0.metrics?.totalDistance ?? 0)))" }.joined(separator: ",")
-    }
-    private var workoutSignature: String {
-        workouts.map { "\($0.id.uuidString):\(Int($0.totalDistance))" }.joined(separator: ",")
-    }
-
-    // Combine and sort all activities by date
-    private var allActivities: [(date: Date, isWorkout: Bool, workout: WorkoutSummary?, flight: Flight?)] {
-        var combined: [(date: Date, isWorkout: Bool, workout: WorkoutSummary?, flight: Flight?)] = []
-
-        // Add HealthKit workouts
-        for workout in workouts {
-            combined.append((date: workout.startDate, isWorkout: true, workout: workout, flight: nil))
-        }
-
-        // Add local flights
-        for flight in flights {
-            combined.append((date: flight.startDate, isWorkout: false, workout: nil, flight: flight))
-        }
-
-        return combined
-    }
-
-    private func activityID(workout: WorkoutSummary?, flight: Flight?) -> String {
-        if let workout = workout {
-            return "w_\(workout.id.uuidString)"
-        }
-        if let flight = flight {
-            return "f_\(flight.id.uuidString)"
-        }
-        return UUID().uuidString
-    }
-
-    private func activityDistance(_ activity: (date: Date, isWorkout: Bool, workout: WorkoutSummary?, flight: Flight?)) -> Double {
-        if let workout = activity.workout {
-            return workout.totalDistance
-        }
-        if let flight = activity.flight {
-            return flight.metrics?.totalDistance ?? 0
-        }
-        return 0
-    }
-
-    private func activityDuration(_ activity: (date: Date, isWorkout: Bool, workout: WorkoutSummary?, flight: Flight?)) -> TimeInterval {
-        if let workout = activity.workout {
-            return workout.duration
-        }
-        if let flight = activity.flight {
-            return flight.metrics?.duration ?? 0
-        }
-        return 0
-    }
-
-    private var sortedActivities: [(date: Date, isWorkout: Bool, workout: WorkoutSummary?, flight: Flight?)] {
-        switch sortOption {
-        case .dateNewest:
-            return allActivities.sorted { $0.date > $1.date }
-        case .dateOldest:
-            return allActivities.sorted { $0.date < $1.date }
-        case .distanceLongest:
-            return allActivities.sorted {
-                let lhs = activityDistance($0)
-                let rhs = activityDistance($1)
-                return lhs == rhs ? $0.date > $1.date : lhs > rhs
-            }
-        case .distanceShortest:
-            return allActivities.sorted {
-                let lhs = activityDistance($0)
-                let rhs = activityDistance($1)
-                return lhs == rhs ? $0.date > $1.date : lhs < rhs
-            }
-        case .durationLongest:
-            return allActivities.sorted {
-                let lhs = activityDuration($0)
-                let rhs = activityDuration($1)
-                return lhs == rhs ? $0.date > $1.date : lhs > rhs
-            }
-        case .durationShortest:
-            return allActivities.sorted {
-                let lhs = activityDuration($0)
-                let rhs = activityDuration($1)
-                return lhs == rhs ? $0.date > $1.date : lhs < rhs
-            }
-        }
+        lhs.token == rhs.token
     }
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 20) {
-            ForEach(Array(sortedActivities.enumerated()), id: \.offset) { _, activity in
-                if activity.isWorkout, let workout = activity.workout {
+            // Stable w_/f_ identities instead of offsets (build 160), so a row keeps its own state when the
+            // list shifts; order is the snapshot's, unchanged.
+            ForEach(rows) { row in
+                if let workout = row.workout {
                     EnhancedWorkoutCard(
                         workout: workout,
                         onRecalculate: onWorkoutRecalculate.map { handler in { handler(workout) } }
@@ -2407,8 +2233,8 @@ struct GroupedWorkoutsSection: View, Equatable {
                         onWorkoutTap(workout)
                     }
                     .padding(.horizontal)
-                    .id(activityID(workout: workout, flight: nil))
-                } else if !activity.isWorkout, let flight = activity.flight {
+                    .id(row.scrollID)
+                } else if let flight = row.flight {
                     EnhancedFlightCard(
                         flight: flight,
                         onRecalculate: onFlightRecalculate.map { handler in { handler(flight) } },
@@ -2419,11 +2245,322 @@ struct GroupedWorkoutsSection: View, Equatable {
                         onFlightTap(flight)
                     }
                     .padding(.horizontal)
-                    .id(activityID(workout: nil, flight: flight))
+                    .id(row.scrollID)
                 }
             }
         }
     }
+}
+
+// MARK: - Activity list snapshot (build 160)
+
+/// One row of the grouped list.
+struct ActivityListRow: Identifiable {
+    /// ForEach identity: the w_/f_ id, suffixed only if the same activity appears twice.
+    let id: String
+    /// The w_/f_ id that `.id()` / scrollTo use, exactly as before.
+    let scrollID: String
+    let workout: WorkoutSummary?
+    let flight: Flight?
+}
+
+/// The lowercased strings the search box matches against, kept per activity across keystrokes and reused while
+/// the activity's date, type and distance are unchanged.
+struct ActivitySearchKey {
+    let date: Date
+    let typeRaw: UInt?
+    let distance: Double
+    let typeName: String
+    let distanceKm: String
+    let longDate: String
+    let shortDate: String
+
+    func matches(_ query: String) -> Bool {
+        typeName.contains(query) || distanceKm.contains(query) || longDate.contains(query) || shortDate.contains(query)
+    }
+}
+
+struct ActivityListInputs {
+    let savedFlights: [Flight]
+    let workouts: [WorkoutSummary]
+    let cachedWorkouts: [WorkoutSummary]
+    let activityType: WorkoutActivityType
+    let searchText: String
+    let sortOption: SortOption
+    let manualLoadEnabled: Bool
+}
+
+struct ActivityListSnapshot {
+    var token = 0
+    var visibleWorkoutCount = 0
+    var filteredFlightCount = 0
+    var filteredWorkoutCount = 0
+    var statsWorkouts: [WorkoutSummary] = []
+    var rows: [ActivityListRow] = []
+    var jumpActivities: [(date: Date, id: String)] = []
+    var monthIndex: [(label: String, id: String)] = []
+}
+
+/// Everything the history list derives from its inputs, in one pass. Each step is the code the view used to run
+/// in its computed properties, moved here unchanged (same filters, same sorts on the same input order, so the
+/// same ties), only run once per change instead of several times per render.
+enum ActivityListBuilder {
+    struct Result {
+        let snapshot: ActivityListSnapshot
+        let flightKeys: [UUID: ActivitySearchKey]
+        let workoutKeys: [UUID: ActivitySearchKey]
+    }
+
+    static func build(_ input: ActivityListInputs,
+                      flightKeys oldFlightKeys: [UUID: ActivitySearchKey],
+                      workoutKeys oldWorkoutKeys: [UUID: ActivitySearchKey]) -> Result {
+        // Linked workouts: shown as their saved flight, not twice.
+        let workoutIDs = Set(input.workouts.map { $0.id })
+        var linked: Set<UUID> = []
+        for flight in input.savedFlights {
+            if let workoutUUID = flight.workoutUUID {
+                linked.insert(workoutUUID)
+            } else if workoutIDs.contains(flight.id) {
+                linked.insert(flight.id)
+            }
+        }
+        let visibleWorkouts = input.workouts.filter { !linked.contains($0.id) }
+
+        let selectedType = input.activityType
+        let query = input.searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        var flightKeys = oldFlightKeys
+        var workoutKeys = oldWorkoutKeys
+
+        // Filtered flights
+        var filteredFlights = input.savedFlights
+        if selectedType != .all {
+            filteredFlights = filteredFlights.filter { flight in
+                guard let workoutTypeRaw = flight.workoutType,
+                      let workoutType = HKWorkoutActivityType(rawValue: workoutTypeRaw) else { return false }
+                return selectedType.matches(workoutType)
+            }
+        }
+        if !query.isEmpty {
+            filteredFlights = filteredFlights.filter { flight in
+                let distance = flight.metrics?.totalDistance ?? 0
+                let key = searchKey(cached: flightKeys[flight.id], date: flight.startDate,
+                                    typeRaw: flight.workoutType, distance: distance) {
+                    flight.workoutType
+                        .flatMap { HKWorkoutActivityType(rawValue: $0) }
+                        .map { activityDisplayName($0) } ?? "workout"
+                }
+                flightKeys[flight.id] = key
+                return key.matches(query)
+            }
+        }
+
+        // Filtered workouts
+        var filteredWorkouts = visibleWorkouts
+        if selectedType != .all {
+            filteredWorkouts = filteredWorkouts.filter { workout in
+                guard let type = workout.activityType else { return false }
+                return selectedType.matches(type)
+            }
+        }
+        if !query.isEmpty {
+            filteredWorkouts = filteredWorkouts.filter { workout in
+                let key = searchKey(cached: workoutKeys[workout.id], date: workout.startDate,
+                                    typeRaw: workout.activityTypeRaw, distance: workout.totalDistance) {
+                    workout.activityType.map { activityDisplayName($0) } ?? "workout"
+                }
+                workoutKeys[workout.id] = key
+                return key.matches(query)
+            }
+        }
+
+        // Stats workouts
+        var statsWorkouts = input.manualLoadEnabled ? input.cachedWorkouts : visibleWorkouts
+        if selectedType != .all {
+            statsWorkouts = statsWorkouts.filter { workout in
+                guard let type = workout.activityType else { return false }
+                return selectedType.matches(type)
+            }
+        }
+
+        var snapshot = ActivityListSnapshot()
+        snapshot.visibleWorkoutCount = visibleWorkouts.count
+        snapshot.filteredFlightCount = filteredFlights.count
+        snapshot.filteredWorkoutCount = filteredWorkouts.count
+        snapshot.statsWorkouts = statsWorkouts
+        snapshot.rows = sortedRows(workouts: filteredWorkouts, flights: filteredFlights, sortOption: input.sortOption)
+        snapshot.jumpActivities = jumpActivities(cachedWorkouts: input.cachedWorkouts,
+                                                 sortedFlights: sortedFlights(filteredFlights, input.sortOption))
+        snapshot.monthIndex = monthIndex(snapshot.jumpActivities)
+        return Result(snapshot: snapshot, flightKeys: flightKeys, workoutKeys: workoutKeys)
+    }
+
+    static func activityDisplayName(_ type: HKWorkoutActivityType) -> String {
+        switch type {
+        case .running: return "Running"
+        case .walking: return "Walking"
+        case .cycling: return "Cycling"
+        case .hiking: return "Hiking"
+        default: return "Workout"
+        }
+    }
+
+    /// One formatter per pattern, not two per item per keystroke. DateFormatter construction is expensive.
+    private static let searchLongDateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEEE MMMM d yyyy"; return f
+    }()
+    private static let searchShortDateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "M/d/yyyy"; return f
+    }()
+    private static let monthIndexFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy MMM"; return f
+    }()
+
+    /// Same strings the old matchesSearch built per item per keystroke, built once per activity.
+    private static func searchKey(cached: ActivitySearchKey?, date: Date, typeRaw: UInt?, distance: Double,
+                                  typeName: () -> String) -> ActivitySearchKey {
+        if let cached, cached.date == date, cached.typeRaw == typeRaw, cached.distance == distance {
+            return cached
+        }
+        return ActivitySearchKey(
+            date: date,
+            typeRaw: typeRaw,
+            distance: distance,
+            typeName: typeName().lowercased(),
+            distanceKm: String(format: "%.1f", distance / 1000),
+            longDate: searchLongDateFormatter.string(from: date).lowercased(),
+            shortDate: searchShortDateFormatter.string(from: date).lowercased()
+        )
+    }
+
+    private typealias Activity = (date: Date, isWorkout: Bool, workout: WorkoutSummary?, flight: Flight?)
+
+    private static func activityDistance(_ activity: Activity) -> Double {
+        if let workout = activity.workout { return workout.totalDistance }
+        if let flight = activity.flight { return flight.metrics?.totalDistance ?? 0 }
+        return 0
+    }
+
+    private static func activityDuration(_ activity: Activity) -> TimeInterval {
+        if let workout = activity.workout { return workout.duration }
+        if let flight = activity.flight { return flight.metrics?.duration ?? 0 }
+        return 0
+    }
+
+    /// The grouped list's old sortedActivities: workouts first, then flights, then the same sort.
+    private static func sortedRows(workouts: [WorkoutSummary], flights: [Flight], sortOption: SortOption) -> [ActivityListRow] {
+        var all: [Activity] = []
+        all.reserveCapacity(workouts.count + flights.count)
+        for workout in workouts {
+            all.append((date: workout.startDate, isWorkout: true, workout: workout, flight: nil))
+        }
+        for flight in flights {
+            all.append((date: flight.startDate, isWorkout: false, workout: nil, flight: flight))
+        }
+
+        let sorted: [Activity]
+        switch sortOption {
+        case .dateNewest:
+            sorted = all.sorted { $0.date > $1.date }
+        case .dateOldest:
+            sorted = all.sorted { $0.date < $1.date }
+        case .distanceLongest:
+            sorted = all.sorted {
+                let lhs = activityDistance($0)
+                let rhs = activityDistance($1)
+                return lhs == rhs ? $0.date > $1.date : lhs > rhs
+            }
+        case .distanceShortest:
+            sorted = all.sorted {
+                let lhs = activityDistance($0)
+                let rhs = activityDistance($1)
+                return lhs == rhs ? $0.date > $1.date : lhs < rhs
+            }
+        case .durationLongest:
+            sorted = all.sorted {
+                let lhs = activityDuration($0)
+                let rhs = activityDuration($1)
+                return lhs == rhs ? $0.date > $1.date : lhs > rhs
+            }
+        case .durationShortest:
+            sorted = all.sorted {
+                let lhs = activityDuration($0)
+                let rhs = activityDuration($1)
+                return lhs == rhs ? $0.date > $1.date : lhs < rhs
+            }
+        }
+
+        var seen: Set<String> = []
+        seen.reserveCapacity(sorted.count)
+        var rows: [ActivityListRow] = []
+        rows.reserveCapacity(sorted.count)
+        for activity in sorted {
+            let scrollID: String
+            if activity.isWorkout, let workout = activity.workout {
+                scrollID = "w_\(workout.id.uuidString)"
+            } else if !activity.isWorkout, let flight = activity.flight {
+                scrollID = "f_\(flight.id.uuidString)"
+            } else {
+                continue
+            }
+            var rowID = scrollID
+            var n = 1
+            while !seen.insert(rowID).inserted {
+                n += 1
+                rowID = "\(scrollID)#\(n)"
+            }
+            rows.append(ActivityListRow(id: rowID, scrollID: scrollID,
+                                        workout: activity.workout, flight: activity.flight))
+        }
+        return rows
+    }
+
+    private static func sortedFlights(_ flights: [Flight], _ sortOption: SortOption) -> [Flight] {
+        switch sortOption {
+        case .dateNewest:
+            return flights.sorted { $0.startDate > $1.startDate }
+        case .dateOldest:
+            return flights.sorted { $0.startDate < $1.startDate }
+        case .distanceLongest:
+            return flights.sorted { ($0.metrics?.totalDistance ?? 0) > ($1.metrics?.totalDistance ?? 0) }
+        case .distanceShortest:
+            return flights.sorted { ($0.metrics?.totalDistance ?? 0) < ($1.metrics?.totalDistance ?? 0) }
+        case .durationLongest:
+            return flights.sorted { ($0.metrics?.duration ?? 0) > ($1.metrics?.duration ?? 0) }
+        case .durationShortest:
+            return flights.sorted { ($0.metrics?.duration ?? 0) < ($1.metrics?.duration ?? 0) }
+        }
+    }
+
+    /// Old allActivitiesForJump: every cached workout, then the sorted filtered flights, then by date.
+    private static func jumpActivities(cachedWorkouts: [WorkoutSummary], sortedFlights: [Flight]) -> [(date: Date, id: String)] {
+        var combined: [(date: Date, id: String)] = []
+        combined.reserveCapacity(cachedWorkouts.count + sortedFlights.count)
+        for workout in cachedWorkouts {
+            combined.append((date: workout.startDate, id: "w_\(workout.id.uuidString)"))
+        }
+        for flight in sortedFlights {
+            combined.append((date: flight.startDate, id: "f_\(flight.id.uuidString)"))
+        }
+        return combined.sorted { $0.date > $1.date }
+    }
+
+    private static func monthIndex(_ activities: [(date: Date, id: String)]) -> [(label: String, id: String)] {
+        let formatter = monthIndexFormatter
+        var seen: Set<String> = []
+        var entries: [(label: String, id: String)] = []
+        for activity in activities {
+            let label = formatter.string(from: activity.date)
+            if seen.contains(label) { continue }
+            seen.insert(label)
+            entries.append((label: label, id: activity.id))
+        }
+        return entries
+    }
+}
+
+// TEMP until merge: FlightDataStore.isLoaded comes from the store owner's build 160 change.
+extension FlightDataStore {
+    var isLoaded: Bool { true }
 }
 
 struct EnhancedWorkoutCard: View {
