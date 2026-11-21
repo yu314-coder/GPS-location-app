@@ -11,7 +11,20 @@ enum SortOption: String, CaseIterable {
     case durationShortest = "Duration (Shortest)"
 }
 
+/// RESYNC AND RECALCULATE LIVE IN DEVELOPER (build 161, owner's request). The Workouts tab no longer shows the per-card
+/// Recalc / Resync buttons, the Resync tools, or the workout screen's Recalculate Distance; Settings → Developer →
+/// Workout maintenance opens this same list with `maintenance` on, where every one of them still works as before.
+private struct WorkoutMaintenanceKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var workoutMaintenance: Bool {
+        get { self[WorkoutMaintenanceKey.self] }
+        set { self[WorkoutMaintenanceKey.self] = newValue }
+    }
+}
+
 struct EnhancedFlightHistoryView: View {
+    /// Developer → Workout maintenance: show the Recalc / Resync controls (build 161).
+    var maintenance: Bool = false
     @StateObject private var flightDataStore = FlightDataStore.shared
     @State private var workouts: [WorkoutSummary] = []
     @State private var showLibraryTools = false
@@ -463,18 +476,18 @@ struct EnhancedFlightHistoryView: View {
                 rows: listSnapshot.rows,
                 token: listSnapshot.token,
                 onWorkoutTap: loadWorkoutDetails,
-                onWorkoutRecalculate: { workout in
+                onWorkoutRecalculate: maintenance ? { workout in
                     recalculateAndResyncWorkout(workout)
-                },
+                } : nil,
                 onFlightTap: { flight in
                     selectedFlight = flight
                 },
-                onFlightResync: { flight in
+                onFlightResync: maintenance ? { flight in
                     resyncFlight(flight)
-                },
-                onFlightRecalculate: { flight in
+                } : nil,
+                onFlightRecalculate: maintenance ? { flight in
                     recalculateFlight(flight)
-                }
+                } : nil
             )
             .equatable()
 
@@ -534,7 +547,7 @@ struct EnhancedFlightHistoryView: View {
     private var libraryTools: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("Tools", subtitle: "Import and resync")
+                SectionHeader("Tools", subtitle: maintenance ? "Import and resync" : "Import")
 
                 if !manualLoadEnabled && workouts.isEmpty {
                     SecondaryActionButton(title: "Load Recent HealthKit Workouts",
@@ -549,6 +562,7 @@ struct EnhancedFlightHistoryView: View {
                     downloadAllFromHealthKit()
                 }
 
+                if maintenance {
                 SecondaryActionButton(title: "Resync All to HealthKit",
                                       icon: "arrow.triangle.2.circlepath", tint: .orange,
                                       isEnabled: !isResyncingAll && !flightDataStore.savedFlights.isEmpty) {
@@ -559,6 +573,7 @@ struct EnhancedFlightHistoryView: View {
                                       icon: "calendar", tint: .green,
                                       isEnabled: !isResyncingAll && !flightDataStore.savedFlights.isEmpty) {
                     showResyncDayConfirm = true
+                }
                 }
             }
         }

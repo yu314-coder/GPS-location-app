@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import BackgroundTasks
 
 /// THE LOGS ALREADY ON THE PHONE (build 158). Logs written before build 158 are plain `.csv`: 4.1 GB in the owner's
 /// app on 2026-11-21, 3.76 GB of it raw traces. At launch the app offers once to store them compressed (the owner's
@@ -38,6 +39,44 @@ final class LogCompactor: ObservableObject {
             await MainActor.run { self.originalsKept = 0 }
         }
     }
+
+    /// REVERT (build 161): put every kept original back where it was and remove its compressed copy, so the app reads
+    /// the original again. A compressed copy that changed after the conversion (a saved route edited since, its date no
+    /// longer the original's) is newer than the original: that one is left compressed and its original stays here.
+    func restoreOriginals() {
+        let logs = logDirectory
+        Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            var restored = 0, kept = 0
+            let docs = Self.originalsDirectory.deletingLastPathComponent()
+            for (folder, dest) in [(Self.originalsDirectory.appendingPathComponent("VelocityLogs"), logs),
+                                   (Self.originalsDirectory, docs)] {
+                for url in (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+                    guard url.pathExtension == "csv" || url.pathExtension == "json" else { continue }
+                    let target = dest.appendingPathComponent(url.lastPathComponent)
+                    let compressed = dest.appendingPathComponent(url.lastPathComponent + ".gz")
+                    let originalDate = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                    let copyDate = try? compressed.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                    if let c = copyDate, let o = originalDate, c.timeIntervalSince(o) > 1 { kept += 1; continue }
+                    guard !fm.fileExists(atPath: target.path) else { kept += 1; continue }
+                    do {
+                        try fm.moveItem(at: url, to: target)
+                        try? fm.removeItem(at: compressed)
+                        restored += 1
+                    } catch { kept += 1 }
+                }
+            }
+            let left = Self.originalsBytes()
+            await MainActor.run {
+                self.originalsKept = left
+                self.restoreResult = (restored, kept)
+                // Restored on purpose: the launch offer to compress them again waits a week (Settings still offers it).
+                UserDefaults.standard.set(Date(), forKey: Self.askedKey)
+                self.refreshPending()
+            }
+        }
+    }
+    @Published var restoreResult: (restored: Int, kept: Int)?
 
     nonisolated static func originalsBytes() -> Int64 {
         guard let e = FileManager.default.enumerator(at: originalsDirectory, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
@@ -106,44 +145,173 @@ final class LogCompactor: ObservableObject {
         offer = nil
     }
 
+    // MARK: - Running (build 161)
+    //
+    // FASTER: files are converted by up to four workers at once, largest first so the big traces do not all finish last,
+    // and the read-back check is one pass: the compressed copy is read through the app's own reader (ChunkReader, what
+    // Re-run and Import read logs with) and compared byte for byte with the original - which also guarantees the same
+    // lines, so the separate line count of build 160 (two more full reads, a String per line) is gone. Routes are still
+    // decoded as the workout screen decodes them.
+    // IN THE BACKGROUND: on iOS 26 and later the work runs as a BGContinuedProcessingTask - started from the app, it
+    // keeps running after you leave it, and iOS shows its progress in a live activity (Lock Screen / Dynamic Island) whose
+    // subtitle the app updates ("41 of 151 files · 1.2 GB freed"). If iOS declines it, or on older systems, it runs as
+    // before while the app is open (and briefly after). A workout starting, low storage, or iOS ending the task stops it
+    // between files; nothing half-done is kept, and the rest is offered again.
+    nonisolated static let taskIdentifierPrefix = "euleryu.gps.compress"
+    nonisolated(unsafe) private static var pendingFiles: [URL] = []
+
+    /// Nothing to do at launch: a continued-processing handler is registered for its own concrete identifier just before
+    /// the request is submitted (start(_:)). Apple blocks a single handler for the "prefix.*" pattern (DTS, Apple
+    /// Developer Forums thread 799126), and continued-processing registrations are exempt from the at-launch rule.
+    nonisolated static func registerBackgroundTask() {}
+
+    /// The plain files waiting to be compressed, for the Settings row (shown only when there are some).
+    @Published var pending: (count: Int, bytes: Int64) = (0, 0)
+    func refreshPending() {
+        let dir = logDirectory
+        Task.detached(priority: .utility) {
+            let logs = Self.plainLogs(in: dir)
+            let b = logs.reduce(Int64(0)) { $0 + $1.1 }
+            await MainActor.run { self.pending = (logs.count, b) }
+        }
+    }
+
+    /// The Settings row: the same offer as at launch, for whatever is still plain.
+    func offerNow() {
+        let dir = logDirectory
+        Task.detached(priority: .utility) {
+            let logs = Self.plainLogs(in: dir)
+            guard !logs.isEmpty else { return }
+            let bytes = logs.reduce(Int64(0)) { $0 + $1.1 }
+            let estimate = logs.reduce(Int64(0)) { $0 + ($1.0.pathExtension == "json" ? $1.1 * 15 / 100 : $1.1 * 38 / 100) }
+            let routes = logs.filter { $0.0.pathExtension == "json" }.count
+            await MainActor.run { self.offer = Offer(files: logs.map { $0.0 }, bytes: bytes, estimate: estimate, routes: routes) }
+        }
+    }
+
     func start(_ offer: Offer) {
         self.offer = nil
         guard !running else { return }
         running = true
         progress = (0, offer.files.count)
         UserDefaults.standard.removeObject(forKey: Self.askedKey)
-        // A few minutes of work: keep going briefly if the app is sent to the background; a file cut short stays a
-        // hidden temporary copy, removed at the next launch, and its original is untouched.
-        var task = UIBackgroundTaskIdentifier.invalid
-        task = UIApplication.shared.beginBackgroundTask(withName: "Compress logs") {
-            UIApplication.shared.endBackgroundTask(task); task = .invalid
+        if #available(iOS 26.0, *) {
+            Self.pendingFiles = offer.files
+            let identifier = Self.taskIdentifierPrefix + "." + UUID().uuidString.prefix(8)
+            let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
+                guard let task = task as? BGContinuedProcessingTask else { task.setTaskCompleted(success: false); return }
+                Task { @MainActor in LogCompactor.shared.runContinued(task) }
+            }
+            guard registered else { runInApp(offer.files); return }
+            let request = BGContinuedProcessingTaskRequest(
+                identifier: identifier,
+                title: "Compressing stored data",
+                subtitle: "0 of \(offer.files.count) files")
+            request.strategy = .fail
+            do {
+                try BGTaskScheduler.shared.submit(request)
+                return                                   // runContinued(_:) does the work
+            } catch {
+                NSLog("📦 background task not accepted: %@", error.localizedDescription)
+            }
         }
-        let files = offer.files
+        runInApp(offer.files)
+    }
+
+    /// Without the background task: as before, while the app is open, plus the short time iOS gives after leaving it.
+    private func runInApp(_ files: [URL]) {
+        NSLog("📦 compression running in the app (no background task)")
+        var task = UIBackgroundTaskIdentifier.invalid
+        let stop = StopFlag()
+        task = UIApplication.shared.beginBackgroundTask(withName: "Compress logs") {
+            stop.set(); UIApplication.shared.endBackgroundTask(task); task = .invalid
+        }
         Task.detached(priority: .utility) {
-            var done = 0, failed = 0
-            var before: Int64 = 0, after: Int64 = 0
-            var stopped = false
-            for url in files {
-                if await MainActor.run(body: { WorkoutSession.shared.isActive }) { stopped = true; break }
-                let r = Self.compress(url)
+            let result = Self.runAll(files, stop: stop) { done, total, _, _ in
+                Task { @MainActor in self.progress = (done, total) }
+            }
+            await self.finish(result)
+            await MainActor.run { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
+        }
+    }
+
+    @available(iOS 26.0, *)
+    private func runContinued(_ task: BGContinuedProcessingTask) {
+        NSLog("📦 compression running as a background task (%@)", task.identifier)
+        var files = Self.pendingFiles
+        Self.pendingFiles = []
+        if files.isEmpty { files = Self.plainLogs(in: logDirectory).map { $0.0 } }   // e.g. relaunched by the system
+        running = true
+        progress = (0, files.count)
+        let stop = StopFlag()
+        task.expirationHandler = { stop.set() }
+        let totalBytes = files.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        task.progress.totalUnitCount = max(totalBytes, 1)
+        task.progress.completedUnitCount = 0
+        Task.detached(priority: .utility) {
+            let result = Self.runAll(files, stop: stop) { done, total, bytesDone, freed in
+                task.progress.completedUnitCount = bytesDone
+                task.updateTitle("Compressing stored data",
+                                 subtitle: "\(done) of \(total) files · \(Self.megabytes(freed)) freed")
+                Task { @MainActor in self.progress = (done, total) }
+            }
+            task.setTaskCompleted(success: !result.stopped)
+            await self.finish(result)
+        }
+    }
+
+    private func finish(_ result: Outcome) async {
+        let kept = Self.originalsBytes()
+        await MainActor.run {
+            self.originalsKept = kept
+            self.running = false
+            self.outcome = result
+            self.refreshPending()
+        }
+    }
+
+    /// Thread-safe stop request (iOS expiring the task, a workout starting).
+    final class StopFlag: @unchecked Sendable {
+        private let lock = NSLock(); private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    /// Convert `files` with parallel workers; `report(done, total, bytesDone, bytesFreed)` after each file.
+    nonisolated private static func runAll(_ files: [URL], stop: StopFlag,
+                                           report: @escaping (Int, Int, Int64, Int64) -> Void) -> Outcome {
+        let sized = files.map { ($0, Int64((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)) }
+            .sorted { $0.1 > $1.1 }
+        let workers = max(1, min(4, ProcessInfo.processInfo.activeProcessorCount - 2))
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = workers
+        queue.qualityOfService = .utility
+        let lock = NSLock()
+        var done = 0, failed = 0, finished = 0
+        var before: Int64 = 0, after: Int64 = 0, bytesDone: Int64 = 0
+        var stopped = false
+        for (url, size) in sized {
+            queue.addOperation {
+                lock.lock(); let skip = stopped; lock.unlock()
+                if skip || stop.isSet { lock.lock(); stopped = true; lock.unlock(); return }
+                if DispatchQueue.main.sync(execute: { WorkoutSession.shared.isActive }) {
+                    lock.lock(); stopped = true; lock.unlock(); return
+                }
+                let r = compress(url)
+                lock.lock()
                 switch r {
                 case .done(let b, let a): done += 1; before += b; after += a
                 case .failed: failed += 1
                 case .noSpace: stopped = true
                 }
-                if stopped { break }
-                let n = done + failed
-                await MainActor.run { self.progress = (n, files.count) }
-            }
-            let result = Outcome(files: done, before: before, after: after, failed: failed, stopped: stopped)
-            let kept = Self.originalsBytes()
-            await MainActor.run {
-                self.originalsKept = kept
-                self.running = false
-                self.outcome = result
-                if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+                finished += 1; bytesDone += size
+                let snapshot = (finished, bytesDone, before - after)
+                lock.unlock()
+                report(snapshot.0, sized.count, snapshot.1, snapshot.2)
             }
         }
+        queue.waitUntilAllOperationsAreFinished()
+        return Outcome(files: done, before: before, after: after, failed: failed, stopped: stopped || stop.isSet)
     }
 
     private enum Result { case done(Int64, Int64), failed, noSpace }
@@ -188,10 +356,14 @@ final class LogCompactor: ObservableObject {
     /// 64 MB is not decoded here - that can take a gigabyte of memory, too much for a background task - but it has
     /// already been compared byte for byte with the original the app opened before, and must still open and close as
     /// JSON.
+    nonisolated private static let decodeGate = DispatchSemaphore(value: 1)
     nonisolated private static func appWorks(_ compressed: URL, original: URL) throws {
         if original.pathExtension == "json" {
             let size = (try? original.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             if size <= 64_000_000 {
+                // One route decode at a time across the workers (build 161): a large route can take hundreds of MB
+                // decoded, and four at once could get the app ended for memory in the background.
+                decodeGate.wait(); defer { decodeGate.signal() }
                 let data = try LogCompression.gunzipIfNeeded(Data(contentsOf: compressed))
                 let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
                 _ = try decoder.decode(Flight.self, from: data)
@@ -205,13 +377,9 @@ final class LogCompactor: ObservableObject {
                 guard first == UInt8(ascii: "{") || first == UInt8(ascii: "["),
                       last == UInt8(ascii: "}") || last == UInt8(ascii: "]") else { throw CocoaError(.fileReadCorruptFile) }
             }
-        } else {
-            var lines = 0
-            try WorkoutLogReplay.forEachLine(compressed, compressed: true) { _ in lines += 1; return true }
-            var originalLines = 0
-            try WorkoutLogReplay.forEachLine(original) { _ in originalLines += 1; return true }
-            guard lines == originalLines, lines > 0 else { throw CocoaError(.fileReadCorruptFile) }
         }
+        // A log: compressFile has already read the copy back through ChunkReader - the reader Re-run and Import use - and
+        // matched the original byte for byte, so it gives the same lines (build 161: no separate count).
     }
 
     /// The checked original: kept in Before compression while the owner tests, deleted in the public release.
@@ -242,7 +410,7 @@ final class LogCompactor: ObservableObject {
         return logs > 0 && routes > 0 ? "\(l) and \(r)" : (routes > 0 ? r : l)
     }
 
-    static func megabytes(_ bytes: Int64) -> String {
+    nonisolated static func megabytes(_ bytes: Int64) -> String {
         bytes >= 1_000_000_000 ? String(format: "%.1f GB", Double(bytes) / 1e9) : String(format: "%.0f MB", Double(bytes) / 1e6)
     }
 }

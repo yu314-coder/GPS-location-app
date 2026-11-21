@@ -4,6 +4,7 @@ import MapKit
 import Charts
 
 struct WorkoutDetailView: View {
+    @Environment(\.workoutMaintenance) private var workoutMaintenance
     let flight: Flight
     @ObservedObject private var healthKitManager = HealthKitManager.shared
     @Environment(\.dismiss) private var dismiss
@@ -867,8 +868,8 @@ struct WorkoutDetailView: View {
                         }
                     }
 
-                    // Recalculate Distance button
-                    if !activeFlight.locations.isEmpty {
+                    // Recalculate Distance button - Developer → Workout maintenance only (build 161)
+                    if workoutMaintenance, !activeFlight.locations.isEmpty {
                         Button(action: {
                             recalculateDistance()
                         }) {

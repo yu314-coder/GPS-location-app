@@ -35,6 +35,7 @@ struct SettingsView: View {
     @State private var healthKitPermissionStatus = "Not Determined"
 
     @Environment(\.inSidebarLayout) private var inSidebarLayout
+    @ObservedObject private var compactor = LogCompactor.shared
 
     var body: some View {
         navigationWrapper {
@@ -44,9 +45,10 @@ struct SettingsView: View {
                 velocitySection
                 mapSection
                 workoutSection
+                storageSection
                 aboutSection
             }
-            .onAppear(perform: updatePermissionStatus)
+            .onAppear { updatePermissionStatus(); compactor.refreshPending() }
         }
     }
 
@@ -206,6 +208,28 @@ struct SettingsView: View {
             Text(useRawGPS
                  ? "Unfiltered: every fix is recorded exactly as reported, including inaccurate ones."
                  : "Fixes that contradict their own accuracy are discarded before they reach the track.")
+        }
+    }
+
+    /// COMPRESS OPTION (build 161): shown only while plain (uncompressed) logs or saved routes exist; while it runs, its
+    /// progress. Opens the same offer as at launch (see LogCompactor).
+    @ViewBuilder private var storageSection: some View {
+        if compactor.running || compactor.pending.count > 0 {
+            Section {
+                Button { compactor.offerNow() } label: {
+                    SettingsRow(symbol: "archivebox", tint: .teal,
+                                title: compactor.running ? "Compressing stored data…" : "Compress stored data",
+                                subtitle: compactor.running
+                                    ? "\(compactor.progress.done) of \(compactor.progress.total) files"
+                                    : "\(compactor.pending.count) files, \(LogCompactor.megabytes(compactor.pending.bytes)) uncompressed")
+                }
+                .buttonStyle(.plain)
+                .disabled(compactor.running)
+            } header: {
+                Text("Storage")
+            } footer: {
+                Text("Logs and saved routes from before version 158 are stored uncompressed. Compressed they take about a third of the space or less, with nothing lost; it keeps running in the background with its progress on the Lock Screen.")
+            }
         }
     }
 
