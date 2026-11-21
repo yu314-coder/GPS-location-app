@@ -134,8 +134,8 @@ final class LogCompactor: ObservableObject {
             let logs = Self.plainLogs(in: dir)
             guard !logs.isEmpty else { return }
             let bytes = logs.reduce(Int64(0)) { $0 + $1.1 }
-            // Measured: logs to ~38%, route JSON to ~15%.
-            let estimate = logs.reduce(Int64(0)) { $0 + ($1.0.pathExtension == "json" ? $1.1 * 15 / 100 : $1.1 * 38 / 100) }
+            // Measured at the conversion level (1): logs to ~42%, route JSON to ~30% or less.
+            let estimate = logs.reduce(Int64(0)) { $0 + ($1.0.pathExtension == "json" ? $1.1 * 30 / 100 : $1.1 * 43 / 100) }
             let routes = logs.filter { $0.0.pathExtension == "json" }.count
             await MainActor.run {
                 guard !WorkoutSession.shared.isActive else { return }
@@ -187,7 +187,7 @@ final class LogCompactor: ObservableObject {
             let logs = Self.plainLogs(in: dir)
             guard !logs.isEmpty else { return }
             let bytes = logs.reduce(Int64(0)) { $0 + $1.1 }
-            let estimate = logs.reduce(Int64(0)) { $0 + ($1.0.pathExtension == "json" ? $1.1 * 15 / 100 : $1.1 * 38 / 100) }
+            let estimate = logs.reduce(Int64(0)) { $0 + ($1.0.pathExtension == "json" ? $1.1 * 30 / 100 : $1.1 * 43 / 100) }
             let routes = logs.filter { $0.0.pathExtension == "json" }.count
             await MainActor.run { self.offer = Offer(files: logs.map { $0.0 }, bytes: bytes, estimate: estimate, routes: routes) }
         }

@@ -153,9 +153,11 @@ enum LogCompression {
     /// Compress `source` (a plain log) into `destination` (.csv.gz), then read the result back and compare it with the
     /// source byte for byte. Throws, leaving the source alone, if anything differs.
     /// `progress` gets the bytes of the original done after each 1 MB (build 162), so a long file shows movement.
-    /// `level` 3 for converting old files (build 164): measured 74 MB/s on a log and 140 MB/s on route JSON per core
-    /// against 25 and 64 at level 6, for 40.0% / 27.7% of the original against 36.4% / 25.9%.
-    static let conversionLevel: Int32 = 3
+    /// Level 1 for converting old files (build 165; level 3 in 164): per core, a raw log 170 MB/s against 80 at level 3
+    /// and 28 at level 6, route JSON 249 against 130 and 59; the result is 42.1% / 31.6% of the original against
+    /// 40.0% / 30.6% (level 3) and 36.4% / 29.0% (level 6). Apple's Compression zlib was no faster (44 / 75 MB/s).
+    /// Files written during workouts stay at level 6.
+    static let conversionLevel: Int32 = 1
     static func compressFile(_ source: URL, to destination: URL, level: Int32 = LogCompression.level,
                              progress: ((Int64) -> Void)? = nil) throws {
         let fm = FileManager.default
