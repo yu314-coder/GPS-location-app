@@ -2558,11 +2558,6 @@ enum ActivityListBuilder {
     }
 }
 
-// TEMP until merge: FlightDataStore.isLoaded comes from the store owner's build 160 change.
-extension FlightDataStore {
-    var isLoaded: Bool { true }
-}
-
 struct EnhancedWorkoutCard: View {
     let workout: WorkoutSummary
     var onRecalculate: (() -> Void)? = nil

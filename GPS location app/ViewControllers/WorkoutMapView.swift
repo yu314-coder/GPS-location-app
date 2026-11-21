@@ -1793,12 +1793,6 @@ private final class HealthSummaryCacheMemo {
     }
 }
 
-// TEMP until merge: FlightDataStore.isLoaded is being added in FlightDataStore.swift by another
-// change; delete this extension when that lands (it will then be a redeclaration).
-extension FlightDataStore {
-    var isLoaded: Bool { true }
-}
-
 private func roadAlignedRoute(
     coordinates: [CLLocationCoordinate2D],
     canRoadAlign: Bool,
