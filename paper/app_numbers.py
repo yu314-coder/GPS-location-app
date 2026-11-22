@@ -119,7 +119,7 @@ add('    /// Every data-dependent number the paper\'s text quotes (tables/number
 add('    enum Num {')
 import re as _re
 for name, val in _re.findall(r"\\newcommand\{\\n(\w+)\}\{(.*)\}", open(os.path.join(HERE, 'tables', 'numbers.tex')).read()):
-    v = val.replace('{,}', ',').replace('\\%', '%').replace('$', '')
+    v = val.replace('{,}', ',').replace('\\%', '%').replace('\\dg', '°').replace('$', '')
     add(f'        static let {name} = {q(v)}')
 add('    }')
 
