@@ -84,7 +84,9 @@ add('    ]')
 add('')
 add('    /// The recorded flight replayed with no GPS through the app\'s own code.')
 add('    static let flight: [FlightPoint] = [')
-add(',\n'.join(f'        .init(point: {q(f["label"])}, errorPercent: {f["error_pct"]})' for f in J['flight']))
+add(',\n'.join([f'        .init(point: {q(f["label"])}, errorPercent: {f["error_pct"]})' for f in J['flight']]
+               # What the app runs since build 112: the measured takeoff, then the typical airliner (the Plane row above).
+               + [f'        .init(point: "Takeoff, then typical flight", errorPercent: {_short_pct:.1f}, current: true)']))
 add('    ]')
 
 add('')

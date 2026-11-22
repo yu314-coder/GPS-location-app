@@ -230,31 +230,15 @@ struct VelocityMethodView: View {
                 as a share of what GPS measured:
                 """)
                 .font(.callout)
-                if chartsFit {
-                // The GPS line goes under the bars and each label inside its own bar: every bar ends
-                // within a few percent of 100, so labels beside the bars sat on the line.
-                Chart {
-                    RuleMark(x: .value("GPS", 100))
-                        .foregroundStyle(Color.primary.opacity(0.45))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    ForEach(VelocityMethodData.distance) { c in
-                        BarMark(x: .value("Counted", 100 + c.errorPercent), y: .value("Travel", c.name))
-                            .foregroundStyle(by: .value("Travel", c.name))
-                            .annotation(position: .overlay, alignment: .trailing) {
-                                Text(String(format: "%+.1f%%", c.errorPercent))
-                                    .font(.caption2.weight(.semibold)).foregroundStyle(.white)
-                                    .padding(.trailing, 4)
-                            }
-                    }
-                }
-                .chartForegroundStyleScale(VelocityMethodData.travelColors)
-                .chartLegend(.hidden)
-                .chartXScale(domain: 0...125)
-                .chartXAxisLabel("distance counted, % of GPS (dashed)")
-                .chartXAxis { AxisMarks(values: [0, 25, 50, 75, 100]) { AxisGridLine(); AxisValueLabel() } }
-                .chartYAxis { AxisMarks(position: .leading) { AxisValueLabel() } }
-                .frame(height: 170)
-                }
+                // Laid out by hand (build 169): Swift Charts put each name above its bar, clear of
+                // the axis, and the tick labels beside their grid lines rather than under them.
+                BarRows(rows: VelocityMethodData.distance.map {
+                            .init(name: $0.name, value: 100 + $0.errorPercent,
+                                  label: Self.signed($0.errorPercent),
+                                  color: VelocityMethodData.color($0.name))
+                        },
+                        domain: 110, ticks: [0, 25, 50, 75, 100], reference: 100,
+                        axisLabel: "distance counted, % of GPS (dashed line)")
 
                 Divider()
                 VStack(spacing: 0) {
@@ -276,6 +260,11 @@ struct VelocityMethodView: View {
                 .font(.caption2).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// "+1.3%" / "−7.7%", with a real minus sign as in the overview.
+    private static func signed(_ v: Double) -> String {
+        String(format: "%+.1f%%", v).replacingOccurrences(of: "-", with: "\u{2212}")
     }
 
     private static func km(_ v: Double) -> String {
@@ -323,6 +312,8 @@ struct VelocityMethodView: View {
                 .chartXScale(domain: 0...80)
                 .chartYScale(domain: 0...80)
                 .chartXAxisLabel("GPS, km/h")
+                .chartXAxis { AxisMarks(values: [0, 20, 40, 60, 80]) { AxisGridLine(); AxisTick(); AxisValueLabel(anchor: .top) } }
+                .chartYAxis { AxisMarks(position: .leading, values: [0, 20, 40, 60, 80]) { AxisGridLine(); AxisTick(); AxisValueLabel() } }
                 .chartYAxisLabel("the app, km/h")
                 .chartLegend(position: .top, alignment: .leading)
                 .frame(height: 260)
@@ -353,23 +344,12 @@ struct VelocityMethodView: View {
                 within 30°:
                 """)
                 .font(.callout)
-                if chartsFit {
-                Chart(VelocityMethodData.direction) { d in
-                    BarMark(x: .value("Travel", d.name), y: .value("Within 30°", d.within30))
-                        .foregroundStyle(by: .value("Travel", d.name))
-                        .annotation(position: .overlay, alignment: .top) {
-                            Text("\(d.within30)%").font(.caption2.weight(.semibold)).foregroundStyle(.white)
-                                .padding(.top, 3)
-                        }
-                }
-                .chartForegroundStyleScale(VelocityMethodData.travelColors)
-                .chartLegend(.hidden)
-                .chartYScale(domain: 0...110)
-                .chartYAxis { AxisMarks(values: [0, 25, 50, 75, 100]) }
-                .frame(height: 180)
-                } else {
-                    DirectionTable()
-                }
+                BarRows(rows: VelocityMethodData.direction.map {
+                            .init(name: $0.name, value: Double($0.within30), label: "\($0.within30)%",
+                                  color: VelocityMethodData.color($0.name))
+                        },
+                        domain: 100, ticks: [0, 25, 50, 75, 100], reference: nil,
+                        axisLabel: "seconds within 30° of GPS, %")
                 Text("""
                 Median error \(N.MotoDirMed)° on a motorcycle, \(N.CarDirMed)° in a car, \(N.WalkDirMed)° on foot and \(N.PlaneDirMed)° on \
                 the plane. Whole routes of at least 1 km, laid over the GPS track from the shared \
@@ -427,22 +407,14 @@ struct VelocityMethodView: View {
                 would have recorded:
                 """)
                 .font(.callout)
-                if chartsFit {
-                Chart(VelocityMethodData.flight) { f in
-                    BarMark(x: .value("Error", f.errorPercent), y: .value("Point", f.point))
-                        .foregroundStyle((abs(f.errorPercent) > 10 ? Color.red : Color.green).opacity(0.85))
-                        .annotation(position: f.errorPercent < 0 ? .leading : .trailing) {
-                            Text(String(format: "%+.1f%%", f.errorPercent))
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                }
-                .chartXAxisLabel("distance error, %")
-                .chartXAxis { AxisMarks { AxisGridLine(); AxisValueLabel() } }
-                .chartYAxis { AxisMarks(position: .leading) { AxisValueLabel() } }
-                .frame(height: 165)
-                } else {
-                    FlightTable()
-                }
+                BarRows(rows: VelocityMethodData.flight.map { f in
+                            .init(name: f.point + (f.current ? " (now)" : f.point.hasPrefix("Flight") ? " (earlier, read tilt)" : ""), value: 100 + f.errorPercent,
+                                  label: Self.signed(f.errorPercent),
+                                  color: f.current ? AppTheme.duration
+                                       : (abs(f.errorPercent) > 10 ? Color.red : Color.green).opacity(0.8))
+                        },
+                        domain: 110, ticks: [0, 25, 50, 75, 100], reference: 100,
+                        axisLabel: "distance counted, % of GPS (dashed line)")
                 Text("""
                 A smooth cabin reads as standing still, so the phone measures the takeoff itself for \
                 two minutes from the still moment before the roll: 265 km/h forty seconds in, where \
@@ -466,7 +438,8 @@ struct VelocityMethodView: View {
                 graded by the aircraft's public ADS-B track, 95%; the earlier tilt-reading engines \
                 (shown above) counted 39% on a phone in a bag. What it gives is a typical airliner's \
                 speed, so wind or a faster or slower aircraft will move it. ADS-B data: OpenSky Network, \
-                "Bringing up OpenSky: A large-scale ADS-B sensor network for research" (IPSN 2014). \
+                "Bringing up OpenSky: A large-scale ADS-B sensor network for research" (IPSN 2014).
+
                 The direction in the air does not use the compass, which a cabin disturbs: it starts \
                 from the takeoff roll's push, matched to a runway of the airport the phone was last \
                 fixed at (OurAirports, public domain), and follows the gyroscope through felt turns \
@@ -512,6 +485,8 @@ struct VelocityMethodView: View {
                 .chartXScale(domain: -5...80)
                 .chartYScale(domain: -12...30)
                 .chartXAxisLabel("km")
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisTick(); AxisValueLabel(anchor: .top) } }
+                .chartYAxis { AxisMarks(position: .leading) { AxisGridLine(); AxisTick(); AxisValueLabel() } }
                 .aspectRatio(85.0 / 42.0, contentMode: .fit)
             }
             Text("""
@@ -544,6 +519,8 @@ struct VelocityMethodView: View {
                 .chartForegroundStyleScale(VelocityMethodData.flightLines)
                 .chartLegend(position: .top, alignment: .leading)
                 .chartXAxisLabel("minutes from the start of the recording")
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisTick(); AxisValueLabel(anchor: .top) } }
+                .chartYAxis { AxisMarks(position: .leading) { AxisGridLine(); AxisTick(); AxisValueLabel() } }
                 .chartYAxisLabel("km/h")
                 .frame(height: 210)
             }
@@ -692,7 +669,7 @@ private struct OverviewRow: View {
     }
 
     @ViewBuilder private var figures: some View {
-        Figure(value: o.distance, label: "distance vs GPS")
+        Figure(value: o.distance, label: o.name == "Plane" ? "distance vs ADS-B, long flights" : "distance vs GPS")
         Figure(value: o.speed, label: o.speedLabel)
         Figure(value: o.direction, label: "direction within 30°")
     }
@@ -759,7 +736,11 @@ enum VelocityMethodData {
         let id = UUID(); let name: String; let graded: String
         let medianDegrees: Int; let within30: Int
     }
-    struct FlightPoint: Identifiable { let id = UUID(); let point: String; let errorPercent: Double }
+    struct FlightPoint: Identifiable {
+        let id = UUID(); let point: String; let errorPercent: Double
+        /// The way the app reads speed in the air now; the others are the ones it replaced.
+        var current = false
+    }
     /// One point of a drawn route, km, in drawing order.
     struct RoutePoint: Identifiable { let id = UUID(); let line: String; let order: Int; let x: Double; let y: Double }
     struct SpeedPoint: Identifiable { let id = UUID(); let minute: Double; let line: String; let kmh: Double }
@@ -832,7 +813,8 @@ enum VelocityMethodData {
     static let flight: [FlightPoint] = [
         .init(point: "Hold takeoff speed", errorPercent: -39.1),
         .init(point: "Flight network", errorPercent: 2.8),
-        .init(point: "Flight store", errorPercent: -0.6)
+        .init(point: "Flight store", errorPercent: -0.6),
+        .init(point: "Takeoff, then typical flight", errorPercent: 1.3, current: true)
     ]
 
     /// The recorded flight drawn with no GPS after the first point, turned by an arbitrary angle so it does
@@ -2305,9 +2287,12 @@ private struct SpeedBandTable: View {
             HStack {
                 Text("GPS km/h").font(.caption2).foregroundStyle(.secondary)
                 Spacer(minLength: 8)
-                Text("motorcycle").font(.caption2).foregroundStyle(.secondary)
+                // Each cell is the app's middle reading over GPS's, so say so in the header.
+                Text("motorcycle\napp / GPS").font(.caption2).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
                     .frame(minWidth: 84, alignment: .trailing)
-                Text("car").font(.caption2).foregroundStyle(.secondary)
+                Text("car\napp / GPS").font(.caption2).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
                     .frame(minWidth: 84, alignment: .trailing)
             }
             .padding(.bottom, 4)
@@ -2347,6 +2332,77 @@ private struct DirectionTable: View {
                 .padding(.vertical, 6)
             }
         }
+    }
+}
+
+/// Horizontal bars with the name and value inside the row, so nothing depends on where a chart
+/// library puts its axis labels. Ticks sit centred under their grid lines; the dashed line marks
+/// the reference (GPS = 100%).
+private struct BarRows: View {
+    struct Row: Identifiable {
+        let id = UUID(); let name: String; let value: Double; let label: String; let color: Color
+    }
+    let rows: [Row]
+    let domain: Double
+    let ticks: [Double]
+    let reference: Double?
+    let axisLabel: String
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(rows) { r in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(r.name).font(.caption)
+                        Spacer(minLength: 8)
+                        Text(r.label).font(.caption.weight(.semibold)).monospacedDigit()
+                    }
+                    track { w in
+                        Capsule().fill(r.color)
+                            .frame(width: max(4, w * min(r.value, domain) / domain), height: 12)
+                    }
+                    .frame(height: 12)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            if !typeSize.isAccessibilitySize {
+                GeometryReader { g in
+                    ForEach(ticks, id: \.self) { t in
+                        Text(Int(t).formatted()).font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                            .fixedSize()
+                            .position(x: g.size.width * t / domain, y: 7)
+                    }
+                }
+                .frame(height: 14)
+                .padding(.horizontal, 8)
+                .accessibilityHidden(true)
+            }
+            Text(axisLabel).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    /// The grid and reference line behind one bar, inset so the end tick labels fit.
+    private func track<Bar: View>(@ViewBuilder bar: @escaping (CGFloat) -> Bar) -> some View {
+        GeometryReader { g in
+            let w = g.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.12)).frame(height: 12)
+                ForEach(ticks.filter { $0 > 0 && $0 != reference }, id: \.self) { t in
+                    Rectangle().fill(Color.secondary.opacity(0.25)).frame(width: 1, height: 12)
+                        .offset(x: w * t / domain)
+                }
+                bar(w)
+                if let ref = reference {
+                    Path { p in
+                        p.move(to: CGPoint(x: w * ref / domain, y: -3))
+                        p.addLine(to: CGPoint(x: w * ref / domain, y: 15))
+                    }
+                    .stroke(Color.primary.opacity(0.75), style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
+                }
+            }
+        }
+        .padding(.horizontal, 8)
     }
 }
 

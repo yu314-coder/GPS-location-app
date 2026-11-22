@@ -9,6 +9,8 @@ struct SettingsView: View {
     @AppStorage("kalmanSensitivity") private var kalmanSensitivity = "medium"
     @AppStorage("healthKitExportType") private var healthKitExportType = "auto"
     @AppStorage(WatchSpeedEngine.defaultsKey) private var speedEngine = WatchSpeedEngine.auto.rawValue
+    /// The workout screen's two flight buttons, hidden unless switched on here (build 169, as on the iPhone).
+    @AppStorage("showFlightButton") private var showFlightButton = false
     // Hidden options, as on the iPhone: five taps on the version turn them on.
     @AppStorage(WatchSpeedEngine.developerKey) private var developerUnlocked = false
     @State private var versionTapCount = 0
@@ -66,6 +68,10 @@ struct SettingsView: View {
                             Text(engine.title).tag(engine.rawValue)
                         }
                     }
+                }
+
+                Section(footer: Text("Shows Flight: Auto and Force flight during workouts. Flights are found without them; a button that is on stays on screen.")) {
+                    Toggle("Flight buttons", isOn: $showFlightButton)
                 }
 
                 // Map Settings Section

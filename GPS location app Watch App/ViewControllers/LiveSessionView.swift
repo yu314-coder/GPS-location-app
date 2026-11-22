@@ -11,6 +11,8 @@ struct LiveSessionView: View {
     @State private var showWorkoutTypeSelector = false
     @State private var selectedWorkoutType: HKWorkoutActivityType = .walking
     @AppStorage("velocityModeEnabled") private var velocityModeBeforeStart = false
+    /// Set in Settings (build 169). A flight button that is on stays on screen so it can be turned off.
+    @AppStorage("showFlightButton") private var showFlightButton = false
     // Refresh Net shows only with the developer options on (five taps on the version in Settings).
     @AppStorage(WatchSpeedEngine.developerKey) private var developerUnlocked = false
     @State private var pausedTotal: TimeInterval = 0
@@ -354,6 +356,7 @@ struct LiveSessionView: View {
                         // itself once a takeoff roll or the cabin's climb confirms a flight. On: you
                         // say this is a flight, so the cabin leaving the ground is enough, and the
                         // watch's own flight speed leads even with an iPhone that hasn't found it.
+                        if showFlightButton || workoutSession.flightSpeedForced {
                         Button(action: {
                             workoutSession.flightSpeedForced.toggle()
                             print("⌚ 🔘 Flight speed -> \(workoutSession.flightSpeedForced ? "ON" : "Auto")")
@@ -386,9 +389,11 @@ struct LiveSessionView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(workoutSession.flightSpeedForced ? "Flight speed on" : "Flight speed automatic")
+                        }
 
                         // EMERGENCY FLIGHT (build 123): if the watch stops flying on its own mid-flight, keep the
                         // flight model running whatever the cabin says. Turn off after landing.
+                        if showFlightButton || workoutSession.flightEmergency {
                         Button(action: {
                             workoutSession.flightEmergency.toggle()
                         }) {
@@ -412,6 +417,7 @@ struct LiveSessionView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(workoutSession.flightEmergency ? "Flight forced on" : "Force flight")
+                        }
 
                         // Stop button
                         Button(action: {
