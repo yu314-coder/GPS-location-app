@@ -98,63 +98,6 @@ final class OfflineTileCache: ObservableObject {
         prefetch(paths)
     }
 
-    // MARK: - DEV ONLY: one flight's map (remove before the final release)
-
-    /// DEV ONLY - remove before the final release, with its button in DeveloperView.
-    ///
-    /// The map along one flight, fetched on the ground so the route can be checked in the air:
-    /// every tile within `halfWidthKm` of the great circle between two airports at zooms 3-9
-    /// (coasts and islands at a glance, towns at 9), and zooms 11-14 around both airports for the
-    /// taxi. About 850 tiles for Taoyuan-Changi. Bounded like the other pre-fetches, because the
-    /// OpenStreetMap tile policy forbids bulk downloads; past zoom 9 at sea the map enlarges the
-    /// stored tile instead (see CachingTileOverlay).
-    func downloadFlightCorridor(from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D,
-                                halfWidthKm: Double = 150) {
-        var seen = Set<String>()
-        var paths: [MKTileOverlayPath] = []
-        func add(_ x: Int, _ y: Int, _ z: Int) {
-            let n = 1 << z
-            guard x >= 0, y >= 0, x < n, y < n, seen.insert("\(z)/\(x)/\(y)").inserted else { return }
-            paths.append(MKTileOverlayPath(x: x, y: y, z: z, contentScaleFactor: 1))
-        }
-        let samples = (0...400).map { Self.greatCircle(a, b, fraction: Double($0) / 400) }
-        for z in 3...9 {
-            for p in samples {
-                let tileKm = 40_075.0 * cos(p.latitude * .pi / 180) / Double(1 << z)
-                let k = Int((halfWidthKm / tileKm).rounded(.up))
-                let (x, y) = Self.tile(p, z)
-                for dx in -k...k { for dy in -k...k { add(x + dx, y + dy, z) } }
-            }
-        }
-        for airport in [a, b] {
-            for z in 11...14 {
-                let (x, y) = Self.tile(airport, z)
-                for dx in -2...2 { for dy in -2...2 { add(x + dx, y + dy, z) } }
-            }
-        }
-        prefetch(paths)
-    }
-
-    private static func tile(_ c: CLLocationCoordinate2D, _ z: Int) -> (Int, Int) {
-        let n = Double(1 << z)
-        let latRad = c.latitude * .pi / 180
-        return (Int((c.longitude + 180.0) / 360.0 * n),
-                Int((1 - log(tan(latRad) + 1 / cos(latRad)) / .pi) / 2 * n))
-    }
-
-    private static func greatCircle(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D,
-                                    fraction f: Double) -> CLLocationCoordinate2D {
-        let r = Double.pi / 180
-        let (la1, lo1, la2, lo2) = (a.latitude * r, a.longitude * r, b.latitude * r, b.longitude * r)
-        let d = 2 * asin(sqrt(pow(sin((la2 - la1) / 2), 2) + cos(la1) * cos(la2) * pow(sin((lo2 - lo1) / 2), 2)))
-        guard d > 0 else { return a }
-        let wa = sin((1 - f) * d) / sin(d), wb = sin(f * d) / sin(d)
-        let x = wa * cos(la1) * cos(lo1) + wb * cos(la2) * cos(lo2)
-        let y = wa * cos(la1) * sin(lo1) + wb * cos(la2) * sin(lo2)
-        let zz = wa * sin(la1) + wb * sin(la2)
-        return CLLocationCoordinate2D(latitude: atan2(zz, hypot(x, y)) / r, longitude: atan2(y, x) / r)
-    }
-
     /// With nothing stored at this zoom and no network: the nearest stored coarser tile, enlarged,
     /// so zooming in past what was downloaded shows a blurred map rather than a blank one.
     fileprivate func enlargedFromParent(_ path: MKTileOverlayPath) -> Data? {

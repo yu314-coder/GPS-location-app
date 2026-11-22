@@ -19,9 +19,6 @@ struct DeveloperView: View {
     private struct RestoreNote: Identifiable { let id = UUID(); let restored: Int; let kept: Int }
     @ObservedObject private var compactor = LogCompactor.shared
     @State private var modelSummary = ""
-    // DEV ONLY - remove before the final release (the flight-map download below).
-    @StateObject private var tiles = OfflineTileCache.shared
-    @State private var tileBytes: Int64 = 0
 
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -200,31 +197,6 @@ struct DeveloperView: View {
                 Text("Signatures paired with GPS-measured speeds, learned automatically on every trip with GPS. Until it holds 3,000 of them, Velocity Mode reads speed with the built-in network instead.")
             }
 
-            // DEV ONLY - remove before the final release: the map along one flight, downloaded on
-            // the ground so the drawn route can be checked against it in the air.
-            Section {
-                Button {
-                    tiles.downloadFlightCorridor(
-                        from: CLLocationCoordinate2D(latitude: 25.0777, longitude: 121.2328),   // Taoyuan (TPE)
-                        to: CLLocationCoordinate2D(latitude: 1.3644, longitude: 103.9915))      // Changi (SIN)
-                } label: {
-                    SettingsRow(symbol: "airplane", tint: .orange,
-                                title: "Download map: Taiwan → Singapore",
-                                subtitle: tiles.isDownloading
-                                    ? "Downloading \(tiles.downloadedCount) of \(tiles.totalToDownload) tiles"
-                                    : "Map tiles on this phone: \(byteFormatter.string(fromByteCount: tileBytes))")
-                }
-                .buttonStyle(.plain)
-                .disabled(tiles.isDownloading)
-            } header: {
-                Text("Flight map (test only)")
-            } footer: {
-                Text("About 850 map tiles along the route, about 150 km either side, plus both airports. Download on Wi-Fi before the flight; in the air the live map draws from them. Zoomed in past them at sea, the map enlarges the nearest stored tile.")
-            }
-            // Summed off the main thread (build 160): a folder of map tiles listed at every appear.
-            .onAppear { refreshTileBytes() }
-            .onChange(of: tiles.isDownloading) { _, busy in if !busy { refreshTileBytes() } }
-
             Section {
                 infoRow("Version", Bundle.appVersionDisplay)
                 infoRow("Bundle", Bundle.main.bundleIdentifier ?? "—")
@@ -276,15 +248,6 @@ struct DeveloperView: View {
             Text(value)
                 .font(.system(.body, design: .monospaced))
                 .multilineTextAlignment(.trailing)
-        }
-    }
-
-    /// The tile folder's size, read in the background (build 160).
-    private func refreshTileBytes() {
-        let tiles = self.tiles
-        Task {
-            let bytes = await Task.detached(priority: .userInitiated) { tiles.cacheSizeBytes() }.value
-            tileBytes = bytes
         }
     }
 
