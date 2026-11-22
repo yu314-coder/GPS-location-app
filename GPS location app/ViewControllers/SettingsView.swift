@@ -28,6 +28,12 @@ struct SettingsView: View {
     @AppStorage("healthKitExportType") private var healthKitExportType = "auto"
     @AppStorage("velocityBackgroundRecording") private var velocityBackgroundRecording = true
     @AppStorage("diagnosticsLoggingEnabled") private var diagnosticsLoggingEnabled = true
+    /// The live screen's "Flight: Auto / forced ON" button (build 123), hidden unless switched on here (build 168).
+    @AppStorage("showFlightButton") private var showFlightButton = false
+
+    /// Set when Settings is opened from the live workout screen, which needs a way back.
+    var showsDone = false
+    @Environment(\.dismiss) private var dismiss
 
     @ObservedObject private var healthKitManager = HealthKitManager.shared
 
@@ -49,6 +55,13 @@ struct SettingsView: View {
                 aboutSection
             }
             .onAppear { updatePermissionStatus(); compactor.refreshPending() }
+            .toolbar {
+                if showsDone {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+            }
         }
     }
 
@@ -135,6 +148,11 @@ struct SettingsView: View {
                             title: "Diagnostics logs",
                             subtitle: "Write sensor CSVs for each workout")
             }
+            Toggle(isOn: $showFlightButton) {
+                SettingsRow(symbol: "airplane", tint: .cyan,
+                            title: "Flight button in workouts",
+                            subtitle: "Force the flight model on mid-flight")
+            }
         } header: {
             Text("Velocity Mode")
         } footer: {
@@ -142,8 +160,8 @@ struct SettingsView: View {
             // the honest answer is that switching off costs something specific and nothing else.
             Text("""
             Records a route without satellite positioning, from vibration and the motion sensors. \
-            The paper reports its measured error across 23 instrumented journeys, and the \
-            approaches that did not work.
+            The paper reports its measured error across \(VelocityMethodData.Num.Journeys) motorcycle \
+            and car journeys, and the approaches that did not work.
 
             It takes over on its own whenever satellite positioning drops out or degrades — a \
             tunnel, a car park, a street between tall buildings — carrying on from the last speed \
@@ -154,6 +172,9 @@ struct SettingsView: View {
             Diagnostics logs are the raw sensor files behind every accuracy figure in the paper. \
             They cost storage and nothing else — routes are recorded exactly the same way without \
             them.
+
+            The flight button keeps the flight model running if the phone stops flying on its own \
+            mid-flight. Flights are found without it; while it is forced on, it stays on screen.
             """)
         }
     }

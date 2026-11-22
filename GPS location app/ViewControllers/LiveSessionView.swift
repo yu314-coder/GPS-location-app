@@ -15,6 +15,10 @@ struct LiveSessionView: View {
     @State private var showSummary = false
     @State private var completedFlight: Flight?
     @State private var isStopping = false
+    @State private var showSettings = false
+    /// Set in Settings (build 168). A forced flight keeps the button on screen so it can be turned off.
+    @AppStorage("showFlightButton") private var showFlightButton = false
+    private var flightButtonShown: Bool { showFlightButton || workoutSession.flightForced }
 
 
     // Available workout types
@@ -50,6 +54,16 @@ struct LiveSessionView: View {
                 .frame(maxWidth: .infinity)
                 .padding()
                 .background(Color.blue)
+                .overlay(alignment: .trailing) {
+                    // Settings stay reachable during a workout: this screen cannot be dismissed.
+                    Button { showSettings = true } label: {
+                        Image(systemName: "gearshape.fill")
+                            .font(.title3)
+                            .foregroundColor(.white)
+                            .padding()
+                    }
+                    .accessibilityLabel("Settings")
+                }
 
                 // Content. On a wide screen - an unfolded iPhone Duo, an iPad - the cards and the live map
                 // sit side by side instead of the phone's one long column.
@@ -107,14 +121,14 @@ struct LiveSessionView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             HStack(spacing: 12) {
                                 forceVelocityButton
-                                flightButton
+                                if flightButtonShown { flightButton }
                             }
                             .fixedSize(horizontal: false, vertical: true)
                             unfamiliarVehicleNotice
                         } else {
                             pauseResumeButton
                             forceVelocityButton
-                            flightButton
+                            if flightButtonShown { flightButton }
                             unfamiliarVehicleNotice
                             stopButton
                         }
@@ -158,6 +172,10 @@ struct LiveSessionView: View {
             }
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewSize = $0 }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(showsDone: true)
+                .environment(\.inSidebarLayout, false)
+        }
         .sheet(isPresented: $showWorkoutTypeSelector) {
             WorkoutTypeSelectorView(selectedType: $selectedWorkoutType)
         }
