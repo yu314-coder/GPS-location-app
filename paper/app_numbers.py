@@ -21,6 +21,13 @@ import re as _re0
 F = {k: v.replace('{,}', ',') for k, v in
      _re0.findall(r"\\newcommand\{\\n(\w+)\}\{((?:[^{}]|\{[^{}]*\})*)\}", open(os.path.join(HERE, 'tables', 'numbers_flight.tex')).read())}
 _short_pct = (float(F['AirShortPooledKm']) / float(F['AirShortKm']) - 1) * 100
+# The two four-hour flights graded by ADS-B (paper7_flight.py writes tables/app_flight.json from the same replay).
+AF = json.load(open(os.path.join(HERE, 'tables', 'app_flight.json')))
+LG = AF['long']
+_out_pct = (LG['out_app_km'] / LG['out_km'] - 1) * 100
+_ret_pct = (LG['ret_app_km'] / LG['ret_km'] - 1) * 100
+_nasa_pct = (LG['out_nasa_km'] / LG['out_km'] - 1) * 100
+_long_app, _long_real = LG['out_app_km'] + LG['ret_app_km'], LG['out_km'] + LG['ret_km']
 
 
 def signed(x, digits=1):
@@ -61,8 +68,8 @@ add(f'        .init(name: "Car", detail: {q(f"{C["recordings"]} journeys, {C["wi
 add(f'              appKm: {C["app_km"]}, gpsKm: {C["gps_km"]}, errorPercent: {C["total_pct"]}),')
 add(f'        .init(name: "Walking", detail: {q(f"{W["stretches"]} straight stretches, counted by steps")},')
 add(f'              appKm: {W["app_km"]}, gpsKm: {W["gps_km"]}, errorPercent: {W["total_pct"]}),')
-add(f'        .init(name: "Plane", detail: "the short flight with GPS: takeoff, then the typical flight",')
-add(f'              appKm: {F["AirShortPooledKm"]}, gpsKm: {F["AirShortKm"]}, errorPercent: {_short_pct:.1f})')
+add(f'        .init(name: "Plane", detail: "two four-hour flights against their ADS-B tracks",')
+add(f'              appKm: {_long_app:.0f}, gpsKm: {_long_real:.0f}, errorPercent: {(_long_app / _long_real - 1) * 100:.1f})')
 add('    ]')
 add('')
 add('    static let speedBands: [SpeedBand] = [')
@@ -82,40 +89,40 @@ add(f'        .init(name: "Walking", graded: "{W["walks"]} walks", medianDegrees
 add(f'        .init(name: "Plane", graded: "6 recordings, 3 flights", medianDegrees: {F["AirDirAll"]}, within30: {F["AirDirAllW"]})')
 add('    ]')
 add('')
-add('    /// The recorded flight replayed with no GPS through the app\'s own code.')
+add('    /// Distance in the air, replayed with no GPS through the app\'s own code: the way it reads speed now on')
+add('    /// all three flights, then the ways it replaced, on the four-hour flight out.')
 add('    static let flight: [FlightPoint] = [')
-add(',\n'.join([f'        .init(point: {q(f["label"])}, errorPercent: {f["error_pct"]})' for f in J['flight']]
-               # What the app runs since build 112: the measured takeoff, then the typical airliner (the Plane row above).
-               + [f'        .init(point: "Takeoff, then typical flight", errorPercent: {_short_pct:.1f}, current: true)']))
+_fl = [('Four hours out, against ADS-B', _out_pct, True), ('Four hours back, against ADS-B', _ret_pct, True),
+       ('Short flight, against GPS', _short_pct, True),
+       ('Out: NASA medians alone', _nasa_pct, False),
+       ('Out: tilt engines, phone in a hand', int(F['AirTiltHand']) - 100, False),
+       ('Out: tilt engines, phone in a bag', int(F['AirTiltBag']) - 100, False)]
+add(',\n'.join(f'        .init(point: {q(n)}, errorPercent: {e:.1f}' + (', current: true)' if c else ')') for n, e, c in _fl))
 add('    ]')
-
 add('')
-add('    /// The recorded flight drawn with no GPS after the first point, turned by an arbitrary angle so it does')
-add('    /// not show where it was recorded (the paper\'s figure of the whole flight), km. Every 6 s.')
+add('    /// The four-hour flight back drawn with no GPS from the takeoff roll on, in the paper\'s km frame turned by an')
+add('    /// arbitrary angle: the ADS-B track (a coverage gap is its straight chord) and the app on two phones. Every ~8 km.')
 add('    static let flightRoute: [RoutePoint] = [')
 rows = []
-for name, label in (('gps', 'GPS'), ('neural', 'Neural'), ('algorithm', 'Algorithm')):
-    for i, (x, y) in enumerate(J['flight_route'][name]):
-        rows.append(f'        .init(line: "{label}", order: {i}, x: {x}, y: {y})')
+for name, pts in AF['ret_route'].items():
+    for i, (x, y) in enumerate(pts):
+        rows.append(f'        .init(line: {q(name)}, order: {i}, x: {x}, y: {y})')
 add(',\n'.join(rows))
 add('    ]')
-add(f'    static let flightTakeoff = (x: {J["flight_route"]["takeoff"][0]}, y: {J["flight_route"]["takeoff"][1]})')
-FS = J['flight_route_stats']
-add(f'    static let flightRouteStats = (neuralKm: {FS["neural"]["km"]}, algorithmKm: {FS["algorithm"]["km"]}, '
-    f'neuralEndKm: {FS["neural"]["end_km"]}, algorithmEndKm: {FS["algorithm"]["end_km"]}, medianKm: {FS["neural"]["median_km"]}, '
-    f'airOffsetDeg: {abs(J["flight_phases"]["air_offset_deg"])})')
+add(f'    static let flightRouteStats = (realKm: {LG["ret_km"]:.0f}, appKm: {LG["ret_app_km"]:.0f}, '
+    f'inUseEndKm: {F["AirEndRetPro"].replace(",", "")}, socketEndKm: {F["AirEndRetPhone"].replace(",", "")}, '
+    f'inUseEndOldKm: {F["AirEndRetProOld"].replace(",", "")}, socketEndOldKm: {F["AirEndRetPhoneOld"].replace(",", "")})')
 add('')
-add('    /// Speed through the flight, km/h, every 8 s: GPS (the answer key), then the two versions.')
+add('    /// Speed through the flight back, km/h, every 2 minutes: ADS-B (the answer key; a gap is its chord\'s average), then the app.')
 add('    static let flightSpeed: [SpeedPoint] = [')
 rows = []
-for m, g, n, a in J['flight_speed']:
-    if g is not None: rows.append(f'        .init(minute: {m}, line: "GPS", kmh: {g})')
-    rows.append(f'        .init(minute: {m}, line: "Neural", kmh: {n})')
-    rows.append(f'        .init(minute: {m}, line: "Algorithm", kmh: {a})')
+for h, r, a_ in AF['ret_speed']:
+    rows.append(f'        .init(minute: {round(h * 60, 1)}, line: "ADS-B", kmh: {r})')
+    rows.append(f'        .init(minute: {round(h * 60, 1)}, line: "The app", kmh: {a_})')
 add(',\n'.join(rows))
 add('    ]')
-add(f'    static let flightPhases = (airborneMinute: {J["flight_phases"]["t_air_min"]}, enginesMinute: {J["flight_phases"]["t_engine_min"]})')
-
+add(f'    static let flightPhases = (climbEndHour: {AF["ret_phases"]["toc_h"]}, descentHour: {AF["ret_phases"]["tod_h"]}, '
+    f'share: {F["AirRetShare"]}, climbErr: {F["AirRetClimb"]}, cruiseErr: {F["AirRetCruise"]}, descentErr: {F["AirRetDescent"]})')
 add('')
 add('    /// Every data-dependent number the paper\'s text quotes (tables/numbers.tex), for the page\'s own text.')
 add('    enum Num {')
